@@ -3,10 +3,12 @@
 ## found in the COPYING file.
 
 cmake_minimum_required(VERSION 2.8)
-project(LibQi)
-find_package(qibuild)
-qi_sanitize_compile_flags(HIDDEN_SYMBOLS)
+project(naoqi_libqi)
+find_package(catkin)
 
+catkin_package(INCLUDE_DIRS qi/detail qi compat
+   LIBRARIES qi
+)
 
 include(CheckSymbolExists)
 check_symbol_exists(_SC_HOST_NAME_MAX "unistd.h" HAVE_SC_HOST_NAME_MAX)
@@ -45,26 +47,9 @@ endif()
 # Remove this line to use QT if usable
 set(WITH_QT5_CORE OFF)
 
-qi_add_optional_package(QT5_CORE "Enable QT")
-qi_add_optional_package(BOOST_LOCALE "Enable usage of boost::locale")
-if(WITH_BOOST_LOCALE)
-  add_definitions(" -DWITH_BOOST_LOCALE ")
-endif()
 
 enable_testing()
 include(CMakeDependentOption)
-
-if (WITH_PROBES)
-  find_package(qiprobes)
-  qiprobes_create_probe(tp_qi
-    src/tp_qi.in.h
-    PROVIDER_NAME qi_qi)
-  qiprobes_instrument_files(tp_qi
-    src/eventloop.cpp)
-  set(_tp_qi "tp_qi")
-else()
-  set(_tp_qi "")
-endif()
 
 set(QI_H qi/detail/clock.hxx
          qi/detail/eventloop.hxx
@@ -321,15 +306,16 @@ set(QIPERF_C
   src/perf/measure.cpp
 )
 
-qi_create_config_h(_out qi/config.hpp.in qi/config.hpp)
-list(APPEND QI_C ${_out})
+configure_file(qi/config.hpp.in ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi/config.hpp)
+include_directories(${CATKIN_DEVEL_PREFIX}/include)
 
 if(WITH_BOOST_LOCALE)
   list(APPEND QI_H qi/translator.hpp)
   list(APPEND QI_C src/translator.cpp)
 endif()
 
-qi_install_header(${QI_H} ${QITYPE_H} ${QIM_H} ${QIPERF_H} KEEP_RELATIVE_PATHS)
+install(DIRECTORY qi DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION})
+install(FILES ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi/config.hpp DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi)
 
 if (WIN32)
   list(APPEND QI_C
@@ -371,16 +357,15 @@ endif()
 
 include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
 
-qi_stage_cmake(qimodule-config.cmake)
 include(qimodule-config.cmake)
 
-qi_create_lib(qi SHARED
+add_library(qi SHARED
                  ${QI_H}     ${QI_C}
                  ${QITYPE_H} ${QITYPE_C}
                  ${QIM_H}    ${QIM_C}
-                 ${QIPERF_H} ${QIPERF_C}
-              DEPENDS ASSUME_SYSTEM_INCLUDE BOOST BOOST_ATOMIC BOOST_DATE_TIME BOOST_THREAD BOOST_CHRONO BOOST_FILESYSTEM BOOST_LOCALE BOOST_REGEX BOOST_PROGRAM_OPTIONS ${_ssldeps}
-              SUBMODULE ${_tp_qi})
+            )
+find_package(Boost QUIET COMPONENTS chrono filesystem program_options regex system thread)
+target_link_libraries(qi ${Boost_LIBRARIES})
 
 if (WITH_QT5_CORE)
   qi_use_lib(qi QT5_CORE)
@@ -390,26 +375,16 @@ if(WITH_BOOST_LOCALE)
 endif()
 
 if (UNIX)
-  qi_use_lib(qi PTHREAD)
-endif()
-
-if(ANDROID)
-  target_link_libraries(qi log)
+  target_link_libraries(qi pthread)
 endif()
 
 if(UNIX AND NOT APPLE AND NOT ANDROID)
-  qi_use_lib(qi DL RT)
+  target_link_libraries(qi dl rt)
 endif()
 
 if(WIN32)
   qi_use_lib(qi WSOCK IPHLPAPI PSAPI WSA) #Really?
 endif()
 
-qi_stage_lib(qi INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/compat")
-
-
-option(BUILD_EXAMPLES "build examples")
-if (BUILD_EXAMPLES)
-  add_subdirectory("examples")
-endif()
-add_subdirectory("tests")
+install(TARGETS qi DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
+install(FILES package.xml DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})

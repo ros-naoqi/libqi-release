@@ -18,11 +18,8 @@
 #include <qi/getenv.hpp>
 
 #include "eventloop_p.hpp"
-#ifdef WITH_PROBES
-# include "tp_qi.h"
-#else
+
 # define tracepoint(...)
-#endif
 
 qiLogCategory("qi.eventloop");
 
