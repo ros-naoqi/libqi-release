@@ -22,6 +22,7 @@ namespace qi
 {
   class Message;
   class BoundObject;
+  class StreamContext;
   typedef boost::shared_ptr<BoundObject> BoundAnyObject;
 
   class ObjectHost
@@ -30,21 +31,22 @@ namespace qi
     ObjectHost(unsigned int service);
     ~ObjectHost();
     void onMessage(const qi::Message &msg, TransportSocketPtr socket);
-    unsigned int addObject(BoundAnyObject obj, unsigned int objId = 0);
+    unsigned int addObject(BoundAnyObject obj, StreamContext* remoteReferencer, unsigned int objId = 0);
     void removeObject(unsigned int);
+    void removeRemoteReferences(TransportSocketPtr socket);
     unsigned int service() { return _service;}
-    unsigned int nextId() { return ++_nextId;}
+    virtual unsigned int nextId() = 0;
+    typedef std::map<unsigned int, BoundAnyObject > ObjectMap;
+    const ObjectMap& objects() const { return _objectMap; }
     qi::Signal<> onDestroy;
   protected:
     void clear();
   private:
-    typedef std::map<unsigned int, BoundAnyObject > ObjectMap;
+    typedef std::map<StreamContext*, std::vector<unsigned int> > RemoteReferencesMap;
     boost::recursive_mutex    _mutex;
     unsigned int    _service;
     ObjectMap       _objectMap;
-    /* Be static for better readability
-    */
-    static qi::Atomic<int> _nextId;
+    RemoteReferencesMap _remoteReferences;
   };
 }
 

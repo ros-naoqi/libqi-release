@@ -89,17 +89,10 @@ namespace detail {
     {
       return go()->metaPost(nameWithOptionalSignature, in);
     }
-    inline void post(const std::string& eventName,
-      qi::AutoAnyReference p1 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p2 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p3 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p4 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p5 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p6 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p7 = qi::AutoAnyReference(),
-      qi::AutoAnyReference p8 = qi::AutoAnyReference()) const
+    template <typename... Args>
+    inline void post(const std::string& eventName, Args&&... args) const
     {
-      return go()->post(eventName, p1, p2, p3, p4, p5, p6, p7, p8);
+      return go()->post(eventName, std::forward<Args>(args)...);
     }
     template <typename FUNCTOR_TYPE>
     inline qi::FutureSync<SignalLink> connect(const std::string& eventName, FUNCTOR_TYPE callback,
@@ -171,19 +164,16 @@ namespace detail {
     {
       return go()->forceExecutionContext(ec);
     }
-    #define genCall(n, ATYPEDECL, ATYPES, ADECL, AUSE, comma)       \
-      template<typename R> qi::Future<R> async(                     \
-          const std::string& methodName comma                       \
-          QI_GEN_ARGSDECLSAMETYPE(n, qi::AutoAnyReference)) const { \
-        return go()->template async<R>(methodName comma AUSE);      \
-      }                                                             \
-      template<typename R> R call(                                  \
-          const std::string& methodName comma                       \
-          QI_GEN_ARGSDECLSAMETYPE(n, qi::AutoAnyReference)) const { \
-        return go()->template call<R>(methodName comma AUSE);       \
-      }
-    QI_GEN(genCall)
-    #undef genCall
+    template <typename R, typename... Args>
+    qi::Future<R> async(const std::string& methodName, Args&&... args) const
+    {
+      return go()->template async<R>(methodName, std::forward<Args>(args)...);
+    }
+    template <typename R, typename... Args>
+    R call(const std::string& methodName, Args&&... args) const
+    {
+      return go()->template call<R>(methodName, std::forward<Args>(args)...);
+    }
 
   private:
     inline GenericObject* go() const
@@ -218,10 +208,10 @@ public:
   Object();
 
   template<typename U> Object(const Object<U>& o);
-  template<typename U> void operator=(const Object<U>& o);
+  template<typename U> Object<T>& operator=(const Object<U>& o);
   // Templates above do not replace default ctor or copy operator
   Object(const Object& o);
-  void operator=(const Object& o);
+  Object<T>& operator=(const Object& o);
   // Disable the ctor taking future if T is Empty, as it would conflict with
   // We use None to disable it. The method must be instantiable because when we
   // export the class under windows, all functions are instanciated
@@ -254,13 +244,9 @@ public:
 
   boost::shared_ptr<T> asSharedPtr();
 
-  T& asT();
-  const T& asT() const;
-  T* operator ->();
-  const T* operator->() const;
-
-  T& operator *();
-  const T& operator *() const;
+  T& asT() const;
+  T* operator->() const;
+  T& operator *() const;
   bool unique() const;
   GenericObject* asGenericObject() const;
   void reset();
@@ -362,23 +348,30 @@ inline Object<T>::Object(const Object<U>& o)
 }
 template<typename T>
 template<typename U>
-inline void Object<T>::operator=(const Object<U>& o)
+inline Object<T>& Object<T>::operator=(const Object<U>& o)
 {
   static bool unused = qi::detail::ForceProxyInclusion<T>().dummyCall();
   (void)unused;
 
   const_cast<Object<U>&>(o).checkT();
   init(o._obj);
+
+  return *this;
 }
 template<typename T> inline Object<T>::Object(const Object<T>& o)
 {
   const_cast<Object<T>&>(o).checkT();
   init(o._obj);
 }
-template<typename T>inline void Object<T>::operator=(const Object<T>& o)
+template<typename T> inline Object<T>& Object<T>::operator=(const Object<T>& o)
 {
+  if (this == &o)
+    return *this;
+
   const_cast<Object<T>&>(o).checkT();
   init(o._obj);
+
+  return *this;
 }
 template<typename T> inline Object<T>::Object(GenericObject* go)
 {
@@ -474,8 +467,13 @@ template<typename T> void Object<T>::checkT()
 {
   if (boost::is_same<T, Empty>::value || !_obj)
     return;
-  if (_obj->type->info() != typeOf<T>()->info()
-    && _obj->type->inherits(typeOf<T>())==-1)
+
+  const auto isMatchingType = [&] {
+    return _obj->type->info() == typeOf<T>()->info()
+      || _obj->type->inherits(typeOf<T>()) != ObjectTypeInterface::INHERITS_FAILED;
+  };
+
+  if (!isMatchingType())
   { // No T interface, try upgrading _obj
     detail::ProxyGeneratorMap& map = detail::proxyGeneratorMap();
     detail::ProxyGeneratorMap::iterator it = map.find(typeOf<T>()->info());
@@ -485,34 +483,22 @@ template<typename T> void Object<T>::checkT()
       AnyReference ref = it->second(AnyObject(_obj));
       _obj = ref.to<detail::ManagedObjectPtr>();
       ref.destroy();
+      assert(isMatchingType());
       return;
     }
     throw std::runtime_error(std::string() + "Object does not have interface " + typeOf<T>()->infoString());
   }
 }
-template<typename T> T& Object<T>::asT()
-{
-  checkT();
-  return *reinterpret_cast<T*>(_obj->value);
-}
-template<typename T> const T& Object<T>::asT() const
+template<typename T> T& Object<T>::asT() const
 {
   const_cast<Object<T>* >(this)->checkT();
-  return *reinterpret_cast<const T*>(_obj->value);
+  return *static_cast<T*>(_obj->value);
 }
-template<typename T> T* Object<T>::operator ->()
-{
-    return &asT();
-}
-template<typename T> const T* Object<T>::operator->() const
+template<typename T> T* Object<T>::operator->() const
 {
   return &asT();
 }
-template<typename T> T& Object<T>::operator *()
-{
-  return asT();
-}
-template<typename T> const T& Object<T>::operator *() const
+template<typename T> T& Object<T>::operator *() const
 {
   return asT();
 }
@@ -560,4 +546,4 @@ template class QI_API Object<Empty>;
 
 }
 
-#endif  // _QITYPE_DETAILS_GENERICOBJECT_HXX_
+#endif  // _QITYPE_DETAIL_OBJECT_HXX_

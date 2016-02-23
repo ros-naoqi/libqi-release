@@ -7,7 +7,6 @@
 #include <boost/lexical_cast.hpp>
 #include <boost/thread.hpp>
 #include <boost/enable_shared_from_this.hpp>
-#include <boost/chrono/chrono_io.hpp>
 #include <qi/log.hpp>
 #include <qi/periodictask.hpp>
 
@@ -15,14 +14,14 @@
 qiLogCategory("qi.PeriodicTask");
 
 // WARNING: if you add a state, review trigger() so that it stays lockfree
-enum TaskState
+enum class TaskState
 {
-  Task_Stopped = 0,
-  Task_Scheduled = 1, //< scheduled in an async()
-  Task_Running = 2,   //< being executed
-  Task_Stopping = 5, //< stop requested
-  Task_Triggering = 6, //< force trigger
-  Task_TriggerReady = 7, //< force trigger (step 2)
+  Stopped = 0,
+  Scheduled = 1, //< scheduled in an async()
+  Running = 2,   //< being executed
+  Stopping = 5, //< stop requested
+  Triggering = 6, //< force trigger
+  TriggerReady = 7, //< force trigger (step 2)
 };
 
 /* Transition matrix:
@@ -71,9 +70,9 @@ namespace qi
     _p->_period = qi::Duration(-1);
     _p->_tid = invalidThreadId;
     _p->_compensateCallTime =false;
-    _p->_statsDisplayTime = qi::steadyClockNow();
+    _p->_statsDisplayTime = qi::SteadyClock::now();
     _p->_name = "PeriodicTask_" + boost::lexical_cast<std::string>(this);
-    _p->_state = Task_Stopped;
+    _p->_state = TaskState::Stopped;
   }
 
 
@@ -97,11 +96,8 @@ namespace qi
   void PeriodicTask::setStrand(qi::Strand* strand)
   {
     if (strand)
-      _p->_scheduleCallback = boost::bind<qi::Future<void> >(
-              static_cast<qi::Future<void>(qi::Strand::*)(const Callback&,
-                qi::Duration)>(
-                  &qi::Strand::async),
-              strand, _1, _2);
+      _p->_scheduleCallback = boost::bind(
+          &qi::Strand::asyncDelay<const Callback&>, strand, _1, _2);
     else
       _p->_scheduleCallback = ScheduleCallback();
   }
@@ -130,12 +126,10 @@ namespace qi
     if (os::gettid() == _p->_tid)
       return;
 
-    //Stopping is not handled by start, stop will handle it for us.
-    stop();
     boost::mutex::scoped_lock l(_p->_mutex);
-    if (_p->_state != Task_Stopped)
+    if (_p->_state != TaskState::Stopped)
     {
-      qiLogDebug() << _p->_state << " task was not stopped";
+      qiLogDebug() << static_cast<int>(_p->_state) << " task was not stopped";
       return; // Already running or being started.
     }
     _p->_reschedule(immediate ? qi::Duration(0) : _p->_period);
@@ -146,17 +140,17 @@ namespace qi
     boost::mutex::scoped_lock l(_p->_mutex);
     // we are allowed to go from Scheduled and Running to Stopping
     // also handle multiple stop() calls
-    while (_p->_state != Task_Stopping)
+    while (_p->_state != TaskState::Stopping)
     {
       switch (_p->_state)
       {
-      case Task_Scheduled:
-        _p->_state = Task_Stopping;
+      case TaskState::Scheduled:
+        _p->_state = TaskState::Stopping;
         continue;
-      case Task_Running:
-        _p->_state = Task_Stopping;
+      case TaskState::Running:
+        _p->_state = TaskState::Stopping;
         continue;
-      case Task_Stopped:
+      case TaskState::Stopped:
         return;
       default:
         break;
@@ -177,7 +171,7 @@ namespace qi
       return;
 
     boost::mutex::scoped_lock l(_p->_mutex);
-    while (_p->_state == Task_Stopping)
+    while (_p->_state == TaskState::Stopping)
       _p->_cond.wait(l);
   }
 
@@ -185,13 +179,13 @@ namespace qi
   {
     qiLogDebug() << "triggering";
     boost::mutex::scoped_lock l(_p->_mutex);
-    if (_p->_state == Task_Scheduled)
+    if (_p->_state == TaskState::Scheduled)
     {
-      _p->_state = Task_Triggering;
+      _p->_state = TaskState::Triggering;
       _p->_task.cancel();
-      while (_p->_state == Task_Triggering)
+      while (_p->_state == TaskState::Triggering)
         _p->_cond.wait(l);
-      if (_p->_state != Task_TriggerReady)
+      if (_p->_state != TaskState::TriggerReady)
       {
         qiLogDebug() << "already triggered";
         return;
@@ -206,10 +200,10 @@ namespace qi
     {
       qiLogDebug() << "run canceled";
       boost::mutex::scoped_lock l(_mutex);
-      if (_state == Task_Stopping)
-        _state = Task_Stopped;
-      else if (_state == Task_Triggering)
-        _state = Task_TriggerReady;
+      if (_state == TaskState::Stopping)
+        _state = TaskState::Stopped;
+      else if (_state == TaskState::Triggering)
+        _state = TaskState::TriggerReady;
       else
         assert(false && "state is not stopping nor triggering");
       _cond.notify_all();
@@ -218,12 +212,12 @@ namespace qi
 
   void PeriodicTaskPrivate::_reschedule(qi::Duration delay)
   {
-    qiLogDebug() << "rescheduling in " << delay;
+    qiLogDebug() << "rescheduling in " << qi::to_string(delay);
     if (_scheduleCallback)
       _task = _scheduleCallback(boost::bind(&PeriodicTaskPrivate::_wrap, shared_from_this()), delay);
     else
-      _task = getEventLoop()->async(boost::bind(&PeriodicTaskPrivate::_wrap, shared_from_this()), delay);
-    _state = Task_Scheduled;
+      _task = getEventLoop()->asyncDelay(boost::bind(&PeriodicTaskPrivate::_wrap, shared_from_this()), delay);
+    _state = TaskState::Scheduled;
     _task.connect(boost::bind(
           &PeriodicTaskPrivate::_onTaskFinished, shared_from_this(), _1));
   }
@@ -233,19 +227,19 @@ namespace qi
     qiLogDebug() << "callback start";
     {
       boost::mutex::scoped_lock l(_mutex);
-      assert(_state != Task_Stopped);
+      assert(_state != TaskState::Stopped);
       /* To avoid being stuck because of unhandled transition, the rule is
        * that any other thread playing with our state can only do so
        * to stop us, and must eventualy reach the Stopping state
        */
-      if (_state == Task_Stopping)
+      if (_state == TaskState::Stopping)
       {
-        _state = Task_Stopped;
+        _state = TaskState::Stopped;
         _cond.notify_all();
         return;
       }
-      assert(_state == Task_Scheduled || _state == Task_Triggering);
-      _state = Task_Running;
+      assert(_state == TaskState::Scheduled || _state == TaskState::Triggering);
+      _state = TaskState::Running;
       _cond.notify_all();
     }
     bool shouldAbort = false;
@@ -255,12 +249,12 @@ namespace qi
     bool compensate = _compensateCallTime; // we don't want that bool to change in the middle
     try
     {
-      qi::SteadyClockTimePoint start = qi::steadyClockNow();
+      qi::SteadyClockTimePoint start = qi::SteadyClock::now();
       std::pair<qi::int64_t, qi::int64_t> cpu = qi::os::cputime();
       _tid = os::gettid();
       _callback();
       _tid = invalidThreadId;
-      now = qi::steadyClockNow();
+      now = qi::SteadyClock::now();
       delta = now - start;
       std::pair<qi::int64_t, qi::int64_t> cpu2 = qi::os::cputime();
       usr = cpu2.first - cpu.first;
@@ -280,7 +274,7 @@ namespace qi
     {
       qiLogDebug() << "should abort, bye";
       boost::mutex::scoped_lock l(_mutex);
-      _state = Task_Stopped;
+      _state = TaskState::Stopped;
       _cond.notify_all();
       return;
     }
@@ -311,11 +305,11 @@ namespace qi
       qiLogDebug() << "continuing";
       {
         boost::mutex::scoped_lock l(_mutex);
-        if (_state != Task_Running)
+        if (_state != TaskState::Running)
         {
-          qiLogDebug() << "continuing " << _state;
-          assert(_state == Task_Stopping);
-          _state = Task_Stopped;
+          qiLogDebug() << "continuing " << static_cast<int>(_state);
+          assert(_state == TaskState::Stopping);
+          _state = TaskState::Stopped;
           _cond.notify_all();
           return;
         }
@@ -331,21 +325,21 @@ namespace qi
 
   bool PeriodicTask::isRunning() const
   {
-    int s;
+    TaskState s;
     {
       boost::mutex::scoped_lock l(_p->_mutex);
       s = _p->_state;
     }
-    return s != Task_Stopped && s != Task_Stopping;
+    return s != TaskState::Stopped && s != TaskState::Stopping;
   }
 
   bool PeriodicTask::isStopping() const
   {
-    int s;
+    TaskState s;
     {
       boost::mutex::scoped_lock l(_p->_mutex);
       s = _p->_state;
     }
-    return s == Task_Stopped || s == Task_Stopping;
+    return s == TaskState::Stopped || s == TaskState::Stopping;
   }
 }

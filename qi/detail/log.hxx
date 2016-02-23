@@ -5,9 +5,10 @@
  * found in the COPYING file.
  */
 
-#ifndef _QI_DETAILS_LOG_HXX_
-#define _QI_DETAILS_LOG_HXX_
+#ifndef _QI_DETAIL_LOG_HXX_
+#define _QI_DETAIL_LOG_HXX_
 
+#include <boost/noncopyable.hpp>
 
 #if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
 #   define _qiLogDebug(...)      qi::log::LogStream(qi::LogLevel_Debug, "", __FUNCTION__, 0, __VA_ARGS__).self()
@@ -68,7 +69,7 @@
 #  define _QI_LOG_MESSAGE(Type, Message)                        \
   do                                                            \
   {                                                             \
-    if (::qi::log::detail::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type))  \
+    if (::qi::log::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type))  \
       ::qi::log::log(::qi::Type,                                \
                          _QI_LOG_CATEGORY_GET(),                \
                          Message,                               \
@@ -79,7 +80,7 @@
 #  define _QI_LOG_MESSAGE(Type, Message)                        \
   do                                                            \
   {                                                             \
-    if (::qi::log::detail::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type))  \
+    if (::qi::log::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type))  \
       ::qi::log::log(::qi::Type,                                \
                          _QI_LOG_CATEGORY_GET(),                \
                          Message,                               \
@@ -97,7 +98,7 @@
 
 // no extra argument
 #define _QI_LOG_MESSAGE_STREAM_HASCAT_1(Type, TypeCased, ...) \
-  ::qi::log::detail::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type) \
+  ::qi::log::isVisible(_QI_LOG_CATEGORY_GET(), ::qi::Type) \
   && BOOST_PP_CAT(_qiLog, TypeCased)(_QI_LOG_CATEGORY_GET())
 
 // Visual bouncer for macro evalution order glitch.
@@ -199,16 +200,16 @@ namespace qi {
       };
 
       QI_API boost::format getFormat(const std::string& s);
+    }
 
-      //inlined for perf
-      inline bool isVisible(Category* category, qi::LogLevel level)
-      {
-        return category && level <= category->maxLevel;
-      }
+    //inlined for perf
+    inline bool isVisible(CategoryType category, qi::LogLevel level)
+    {
+      return category && level <= category->maxLevel;
     }
 
     typedef detail::Category* CategoryType;
-    class LogStream: public std::stringstream
+    class LogStream: public std::stringstream, boost::noncopyable
     {
     public:
       LogStream(const qi::LogLevel level,
@@ -272,12 +273,8 @@ namespace qi {
       const char   *_file;
       const char   *_function;
       int           _line;
-
-      //avoid copy
-      LogStream(const LogStream &rhs);
-      LogStream &operator=(const LogStream &rhs);
     };
   }
 }
 
-#endif  // _QI_DETAILS_LOG_HXX_
+#endif  // _QI_DETAIL_LOG_HXX_

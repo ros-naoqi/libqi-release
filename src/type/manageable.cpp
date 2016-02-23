@@ -57,10 +57,15 @@ namespace qi
     _p->executionContext = b._p->executionContext;
   }
 
-  void Manageable::operator=(const Manageable& b)
+  Manageable& Manageable::operator=(const Manageable& b)
   {
+    if (this == &b)
+      return *this;
+
     _p.reset(new ManageablePrivate());
     _p->executionContext = b._p->executionContext;
+
+    return *this;
   }
 
   Manageable::~Manageable()
@@ -129,9 +134,9 @@ namespace qi
 
   namespace manageable
   {
-  static Manageable::MethodMap* methodMap = 0;
-  static Manageable::SignalMap* signalMap = 0;
-  static MetaObject* metaObject = 0;
+  static Manageable::MethodMap* methodMap = nullptr;
+  static Manageable::SignalMap* signalMap = nullptr;
+  static MetaObject* metaObject = nullptr;
   }
   void Manageable::_build()
   {

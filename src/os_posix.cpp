@@ -52,7 +52,6 @@
 #include <qi/os.hpp>
 #include <qi/log.hpp>
 #include <qi/path.hpp>
-#include "filesystem.hpp"
 #include "utils.hpp"
 
 qiLogCategory("qi.os");
@@ -61,17 +60,16 @@ namespace qi {
   namespace os {
 
     FILE* fopen(const char *filename, const char *mode) {
-      return ::fopen(boost::filesystem::path(filename, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str(),
-                     boost::filesystem::path(mode, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str());
+      return ::fopen(filename, mode);
 
     }
 
     int stat(const char *filename, struct ::stat* status) {
-      return ::stat(boost::filesystem::path(filename, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str(), status);
+      return ::stat(filename, status);
     }
 
     std::string getenv(const char *var) {
-      char *res = ::getenv(boost::filesystem::path(var, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str());
+      char *res = ::getenv(var);
       if (res == NULL)
         return "";
       return std::string(res);
@@ -82,8 +80,7 @@ namespace qi {
     }
 
     int setenv(const char *var, const char *value) {
-      return ::setenv(boost::filesystem::path(var, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str(),
-                      boost::filesystem::path(value, qi::unicodeFacet()).string(qi::unicodeFacet()).c_str(), 1);
+      return ::setenv(var, value, 1);
     }
 
     void sleep(unsigned int seconds) {
@@ -325,9 +322,9 @@ namespace qi {
     std::map<std::string, std::vector<std::string> > hostIPAddrs(bool ipv6Addr)
     {
       std::map<std::string, std::vector<std::string> > ifsMap;
-      struct ifaddrs *ifAddrStruct = 0;
-      struct ifaddrs *ifa = 0;
-      void *tmpAddrPtr = 0;
+      struct ifaddrs *ifAddrStruct = nullptr;
+      struct ifaddrs *ifa = nullptr;
+      void *tmpAddrPtr = nullptr;
       int ret = 0;
 
       ret = getifaddrs(&ifAddrStruct);

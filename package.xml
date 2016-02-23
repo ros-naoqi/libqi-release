@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package>
   <name>naoqi_libqi</name>
-  <version>2.3.0</version>
+  <version>2.5.0</version>
   <description>Aldebaran's libqi: a core library for NAOqiOS development</description>
 
   <maintainer email="mikael.arguedas@gmail.com">Mikael Arguedas</maintainer>

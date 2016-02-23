@@ -4,7 +4,6 @@
  * found in the COPYING file.
  */
 
-#include <iostream>
 #include <sstream>
 #include <numeric>
 
@@ -17,10 +16,10 @@
 #include <boost/algorithm/string/split.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/regex.hpp>
+#include <boost/foreach.hpp>
 #include <locale>
 #include <set>
 #include "sdklayout.hpp"
-#include "filesystem.hpp"
 #include "utils.hpp"
 #include <boost/system/error_code.hpp>
 
@@ -29,7 +28,7 @@ qiLogCategory("qi.path.sdklayout");
 namespace {
 
 // returns a regex which corresponds to the provided glob pattern,
-static std::string globToRegex(std::string glob)
+std::string globToRegex(std::string glob)
 {
   boost::trim(glob);
   const char expression[] = "(\\*)|(\\?)|([\\.\\^\\$\\|\\(\\)\\[\\]\\+\\\\])";
@@ -45,8 +44,9 @@ static std::string globToRegex(std::string glob)
 
 // return the path "relative' such that full == base / relative
 // This function assumes that full is a child path of base.
-static std::string relative(const boost::filesystem::path &base,
-                            const boost::filesystem::path &full)
+std::string relative(
+    const boost::filesystem::path &base,
+    const boost::filesystem::path &full)
 {
   boost::filesystem::path relative, parent(full), cleanBase(base);
   if(cleanBase.filename() == ".")
@@ -62,7 +62,7 @@ static std::string relative(const boost::filesystem::path &base,
   return relative.string(qi::unicodeFacet());
 }
 
-}
+} // anonymous
 
 namespace qi {
 
@@ -81,10 +81,15 @@ namespace qi {
 
     void initSDKlayout()
     {
-      std::string prefix = qi::Application::suggestedSdkPath();
+      std::string prefix = qi::Application::_suggestedSdkPath();
       if (!prefix.empty())
         _sdkPrefixes.push_back(prefix);
       initSDKlayoutFromExec();
+      const std::vector<std::string>& prefixes = qi::Application::_suggestedSdkPaths();
+      _sdkPrefixes.insert(_sdkPrefixes.end(), prefixes.begin(), prefixes.end());
+
+      BOOST_FOREACH(const std::string& prefix, _sdkPrefixes)
+        qiLogVerbose() << "Prefix: " << prefix;
     }
 
     void initSDKlayoutFromExec(bool real = false)
@@ -109,8 +114,15 @@ namespace qi {
 
       boost::filesystem::path execPath(program, qi::unicodeFacet());
       if(!boost::filesystem::exists(execPath)) {
-        _mode = "error";
-        return;
+        if (!real)
+        {
+          return initSDKlayoutFromExec(true);
+        }
+        else
+        {
+          _mode = "error";
+          return;
+        }
       }
 
       execPath = boost::filesystem::system_complete(execPath).make_preferred();
@@ -182,7 +194,7 @@ namespace qi {
         }
         catch (const boost::filesystem::filesystem_error &e)
         {
-          qiLogDebug() << e.what();
+          qiLogError() << "Cannot create directory '" << dest << "' error was: " << e.what();
           return std::string();
         }
       }
@@ -200,17 +212,6 @@ namespace qi {
   {
     _p->initSDKlayout();
     _p->checkInit();
-  }
-
-  SDKLayout::SDKLayout(const SDKLayout &rhs)
-    : _p(new PrivateSDKLayout)
-  {
-    *_p = *rhs._p;
-  }
-
-  SDKLayout & SDKLayout::operator=(const SDKLayout &rhs) {
-    *_p = *rhs._p;
-    return *this;
   }
 
   // FIXME: Add exception if prefix == ""
@@ -261,32 +262,30 @@ namespace qi {
 
   std::string SDKLayout::findBin(const std::string &name, bool searchInPath) const
   {
-    boost::filesystem::path bin(name, qi::unicodeFacet());
+    qi::Path bin = name;
     try
     {
       // try if the name is a full path
-      bin = boost::filesystem::system_complete(bin);
-      if (boost::filesystem::exists(bin)
-          && !boost::filesystem::is_directory(bin))
-        return bin.string(qi::unicodeFacet());
+      bin = qi::Path(boost::filesystem::system_complete(bin.bfsPath()));
+      if (bin.exists() && !bin.isDir())
+        return bin.str();
 
       std::vector<std::string>::const_iterator it;
       for (it = _p->_sdkPrefixes.begin();
            it != _p->_sdkPrefixes.end();
            ++it)
       {
-        boost::filesystem::path p;
-        p = boost::filesystem::path(fsconcat(*it, "bin", name), qi::unicodeFacet());
+        qi::Path p = *it;
+        p = p / "bin" / name;
 
-        if (boost::filesystem::exists(p)
-            && !boost::filesystem::is_directory(p))
-          return p.string(qi::unicodeFacet());
+        if (p.exists() && !p.isDir())
+          return p.str();
 #ifndef NDEBUG
-        if (boost::filesystem::exists(boost::filesystem::path(p.string(qi::unicodeFacet()) + "_d.exe", qi::unicodeFacet())))
-          return (p.string(qi::unicodeFacet()) + "_d.exe");
+        if (qi::Path(p.str() + "_d.exe").exists())
+          return p.str() + "_d.exe";
 #endif
-        if (boost::filesystem::exists(boost::filesystem::path(p.string(qi::unicodeFacet()) + ".exe", qi::unicodeFacet())))
-          return (p.string(qi::unicodeFacet()) + ".exe");
+        if (qi::Path(p.str() + ".exe").exists())
+          return p.str() + ".exe";
       }
     }
     catch (const boost::filesystem::filesystem_error &e)
@@ -457,6 +456,7 @@ namespace qi {
       std::vector<std::string>::const_iterator it;
       for (it = paths.begin(); it != paths.end(); ++it)
       {
+        qiLogVerbose() << "Looking conf in " << *it;
         boost::filesystem::path p(fsconcat(*it, filename), qi::unicodeFacet());
 
         if (boost::filesystem::exists(p))
@@ -471,9 +471,10 @@ namespace qi {
   }
 
   std::string SDKLayout::findData(const std::string &applicationName,
-                                  const std::string &filename) const
+                                  const std::string &filename,
+                                  bool excludeUserWritablePath) const
   {
-    std::vector<std::string> paths = dataPaths(applicationName);
+    std::vector<std::string> paths = dataPaths(applicationName, excludeUserWritablePath);
     try
     {
       std::vector<std::string>::const_iterator it;
@@ -585,9 +586,10 @@ namespace qi {
 
 
   std::vector<std::string> SDKLayout::listData(const std::string &applicationName,
-                                               const std::string &pattern) const
+                                               const std::string &pattern,
+                                               bool excludeUserWritablePath) const
   {
-    return listFiles(dataPaths(applicationName), pattern);
+    return listFiles(dataPaths(applicationName, excludeUserWritablePath), pattern);
   }
 
 
@@ -623,20 +625,24 @@ namespace qi {
   }
 
   // FIXME: Auto-test needed
-  std::vector<std::string> SDKLayout::dataPaths(const std::string &applicationName) const
+  std::vector<std::string> SDKLayout::dataPaths(const std::string &applicationName, bool excludeUserWritablePath) const
   {
-    std::vector<std::string> res;
-    // Pass an empty string to get the directory:
-    res.push_back(userWritableDataPath(applicationName, ""));
+    std::vector<std::string> paths;
+    if (!excludeUserWritablePath)
+    {
+      // Pass an empty string to get the directory:
+      paths.push_back(userWritableDataPath(applicationName, ""));
+    }
 
     std::vector<std::string>::const_iterator it;
     for (it = _p->_sdkPrefixes.begin();
          it != _p->_sdkPrefixes.end();
          ++it)
     {
-      res.push_back(fsconcat(*it, "share", applicationName));
+      paths.push_back(fsconcat(*it, "share", applicationName));
     }
-    return res;
+
+    return paths;
   }
 
 

@@ -4,8 +4,8 @@
 **  See COPYING for the license
 */
 
-#ifndef _QITYPE_DETAILS_ANYFUNCTIONFACTORY_HXX_
-#define _QITYPE_DETAILS_ANYFUNCTIONFACTORY_HXX_
+#ifndef _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_
+#define _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_
 
 #include <boost/mpl/for_each.hpp>
 #include <boost/mpl/transform_view.hpp>
@@ -237,9 +237,28 @@ namespace qi
       AnyReferenceCopy &operator()() { return *this; }
     };
 
-    template<typename T> void operator,(AnyReferenceCopy& g, const T& any)
+    template <typename T>
+    struct AssignAnyRef
     {
-      *(AnyReference*)&g = AnyReference::from(any).clone();
+      static void assignAnyRef(AnyReference* ref, T any)
+      {
+        *ref = AnyReference(qi::typeOf<T>(), new T(std::move(any)));
+      }
+    };
+
+    template <typename T>
+    struct AssignAnyRef<T*>
+    {
+      static void assignAnyRef(AnyReference* ref, T* any)
+      {
+        *ref = AnyReference::from(any);
+      }
+    };
+
+    template <typename T>
+    void operator,(AnyReferenceCopy& g, T any)
+    {
+      AssignAnyRef<T>::assignAnyRef(&g, std::move(any));
     }
 
     // makeCall function family
@@ -671,4 +690,4 @@ namespace qi
   }
 
 }
-#endif  // _QITYPE_DETAILS_ANYFUNCTIONFACTORY_HXX_
+#endif  // _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_

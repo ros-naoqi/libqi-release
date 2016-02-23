@@ -14,7 +14,6 @@
 #include <sys/stat.h>
 #include <sys/timeb.h>
 
-#include <iostream>
 #include <io.h>       //_wopen _isatty
 #include <windows.h>  //Sleep, *CPU*
 #include <winsock2.h>
@@ -28,7 +27,6 @@
 #include <qi/log.hpp>
 #include <qi/os.hpp>
 #include <qi/path.hpp>
-#include "filesystem.hpp"
 
 #include "utils.hpp"
 
@@ -87,7 +85,7 @@ namespace qi {
                          boost::filesystem::path(mode, qi::unicodeFacet()).wstring().c_str());
       }
       catch (boost::filesystem::filesystem_error &) {
-        return 0;
+        return  nullptr;
       }
     }
 
@@ -117,30 +115,23 @@ namespace qi {
       size_t       bufSize;
       std::wstring wvar = boost::filesystem::path(var, qi::unicodeFacet()).wstring();
 
+      wchar_t *envDir = NULL;
      #ifdef _MSC_VER
-      wchar_t     *envDir = NULL;
       _wdupenv_s(&envDir, &bufSize, wvar.c_str());
-      if (envDir == NULL)
-        return "";
-
-      boost::filesystem::path dest(envDir, qi::unicodeFacet());
-      std::string ret(dest.string(qi::unicodeFacet()).c_str());
-      free(envDir);
-      return ret;
     #else
       _wgetenv_s(&bufSize, NULL, 0,  wvar.c_str());
 
-      wchar_t *envDir = (wchar_t *) malloc(bufSize * sizeof(wchar_t));
+      envDir = (wchar_t *) malloc(bufSize * sizeof(wchar_t));
       _wgetenv_s(&bufSize, envDir, bufSize, wvar.c_str());
+     #endif
 
       if (envDir == NULL)
         return "";
 
-      boost::filesystem::path dest(envDir, qi::unicodeFacet());
-      std::string ret(dest.string(qi::unicodeFacet()).c_str());
+      qi::Path dest = boost::filesystem::path(envDir);
+      std::string ret = dest.str();
       free(envDir);
       return ret;
-     #endif
     }
 
     std::string pathsep() {
@@ -414,8 +405,7 @@ namespace qi {
         pAdapter = pAdapter->Next;
       }
 
-      if (pAdapterInfo)
-        free(pAdapterInfo);
+      free(pAdapterInfo);
 
       // not given by default
       if (ifsMap.find("Loopback") == ifsMap.end())

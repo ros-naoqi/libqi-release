@@ -2,7 +2,6 @@
 **  Copyright (C) 2012 Aldebaran Robotics
 **  See COPYING for the license
 */
-#include <iostream>
 #include <cstring>
 #include <qi/log.hpp>
 #include "signatureconvertor.hpp"
@@ -63,6 +62,12 @@ namespace qi {
         break;
       case 'C':
         _result += "UInt8";
+        break;
+      case 'w':
+        _result += "Int16";
+        break;
+      case 'W':
+        _result += "UInt16";
         break;
       case 'i':
         _result += "Int32";

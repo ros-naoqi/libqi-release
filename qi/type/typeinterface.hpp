@@ -148,6 +148,8 @@ namespace qi{
     /// Get the pointed element (must not be destroyed)
     virtual AnyReference dereference(void* storage) = 0;
     /// Set new pointee value. pointer must be a *pointer* to type pointedType()
+    virtual void set(void** storage, AnyReference pointer) = 0;
+    /// Set new pointee value. pointer must be a *pointer* to type pointedType()
     virtual void setPointee(void** storage, void* pointer) = 0;
     virtual TypeKind kind() { return TypeKind_Pointer; }
   };
@@ -264,27 +266,37 @@ namespace qi{
 
     /** @{
     *
-    *  Versioning support.
+    * Versioning support.
     *
-    * Conversion between non-equivalent structs will be attempted if all
-    * fields are named: fields with matching names will be automatically mapped
-    * to each other.
-    * canDropFields() will be called on the source to ask
-    * if fields given as argument can be dropped (because they do not exist
-    * on the target).
+    * Conversion between non-equivalent structs will be attempted if all fields
+    * are named: fields with matching names will be automatically mapped to each
+    * other.
     *
-    * fillMissingFields(fields, missing) will be called on the target,
-    * with a map of
-    * fields that were converted, and the list of missing field names.
-    * The function must fill fields with a value for each of the missing fields,
-    * or return false (no storage is provided, because the struct cant be
-    * instanciated without a value for all fields being available.
+    * convertFrom(fields, missing, dropFields) will be called on the target,
+    * with a map of fields that were converted, the list of missing field names and typeinterfaces
+    * and the list of fields that are being dropped.  The function must fill
+    * fields with a value for each of the missing fields, or return false (no
+    * storage is provided, because the struct cant be instanciated without a
+    * value for all fields being available.
+    *
+    * convertTo is called the same way when converting this structure to
+    * another.
     */
 
-    /// Return whether struct accepts field-name-based conversion that drops \p fieldNames.
-    virtual bool canDropFields(void* storage, const std::vector<std::string>& fieldNames) { return false;}
     /// Fill missing fields caused by conversion from a different struct. Return whether fill succeeded.
-    virtual bool fillMissingFields(std::map<std::string, AnyValue>& fields, const std::vector<std::string>& missing) { return false;}
+    virtual bool convertFrom(std::map<std::string, ::qi::AnyValue>& fields,
+                             const std::vector<std::tuple<std::string, TypeInterface*>>& missing,
+                             const std::map<std::string, ::qi::AnyReference>& dropfields)
+    {
+      return false;
+    }
+    /// Fill missing fields caused by conversion to a different struct. Return whether fill succeeded.
+    virtual bool convertTo(std::map<std::string, ::qi::AnyValue>& fields,
+                           const std::vector<std::tuple<std::string, TypeInterface*>>& missing,
+                           const std::map<std::string, ::qi::AnyReference>& dropfields)
+    {
+      return false;
+    }
 
     /// @}
   };
@@ -358,14 +370,32 @@ namespace qi{
 #define QI_TEMPLATE_TYPE_GET(typeInst, templateName) \
   dynamic_cast< ::qi::TypeOfTemplate<templateName>*>(typeInst)
 
+/**
+ * TODO: Find the right size of enum values
+ */
+#define QI_TYPE_ENUM(Enum)                                  \
+  namespace qi                                              \
+  {                                                         \
+    template <>                                             \
+    class TypeImpl<Enum> : public IntTypeInterfaceImpl<int> \
+    {                                                       \
+    };                                                      \
+  }
 
-  /**
-   * TODO: Find the right size of enum values
-   */
-  #define QI_TYPE_ENUM_REGISTER(Enum)                                \
-    namespace qi {                                                   \
-      template<> class TypeImpl<Enum>: public IntTypeInterfaceImpl<int> {};  \
-    }
+namespace detail
+{
+  struct QI_API_DEPRECATED QI_TYPE_ENUM_REGISTER_ {};
+}
+
+#define QI_TYPE_ENUM_REGISTER(Enum)                                  \
+  namespace qi                                                       \
+  {                                                                  \
+    template <>                                                      \
+    class TypeImpl<Enum> : public IntTypeInterfaceImpl<int>          \
+    {                                                                \
+      static const detail::QI_TYPE_ENUM_REGISTER_ BLAH;              \
+    };                                                               \
+  }
 
 #define QI_TYPE_STRUCT_DECLARE(name)                                      \
  __QI_TYPE_STRUCT_DECLARE(name, /**/)

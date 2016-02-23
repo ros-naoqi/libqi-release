@@ -96,7 +96,16 @@ namespace detail
       AnyReference pointedDst = pointedDstPair.first;
       void* ptr = pointedDst._type->ptrFromStorage(&pointedDst._value);
       result = AnyReference((TypeInterface*)targetType);
-      targetType->setPointee(&result._value, ptr);
+      try
+      {
+        targetType->setPointee(&result._value, ptr);
+      }
+      catch (std::exception& e)
+      {
+        qiLogVerbose() << "setPointee: " << e.what();
+        result.destroy();
+        return std::make_pair(AnyReference(), false);
+      }
       return std::make_pair(result, false);
     }
     case TypeKind_Object:
@@ -104,12 +113,20 @@ namespace detail
       std::pair<AnyReference, bool> gv = convert(
                                               static_cast<PointerTypeInterface*>(targetType)->pointedType());
       if (!gv.first._type)
-        return gv;
+        return std::make_pair(AnyReference(), false);
       // Re-pointerise it
       void* ptr = gv.first._type->ptrFromStorage(&gv.first._value);
-      AnyReference result;
-      result._type = targetType;
-      result._value = targetType->initializeStorage(&ptr);
+      AnyReference result(targetType);
+      try
+      {
+        targetType->setPointee(&result._value, ptr);
+      }
+      catch (std::exception& e)
+      {
+        qiLogVerbose() << "setPointee: " << e.what();
+        result.destroy();
+        return std::make_pair(AnyReference(), false);
+      }
       return std::make_pair(result, false);
     }
     default:
@@ -296,9 +313,9 @@ namespace detail
     // Cleanup allocated stuff when exiting scope
     struct CleanUp
     {
-      CleanUp(std::vector<void*>& targetData,
-        std::vector<bool>& mustDestroy,
-        std::vector<TypeInterface*>& dstTypes)
+      CleanUp(const std::vector<void*>& targetData,
+        const std::vector<bool>& mustDestroy,
+        const std::vector<TypeInterface*>& dstTypes)
       : targetData(targetData)
       , mustDestroy(mustDestroy)
       , dstTypes(dstTypes) {}
@@ -310,64 +327,84 @@ namespace detail
             dstTypes[i]->destroy(targetData[i]);
         }
       }
-      std::vector<void*>& targetData;
-      std::vector<bool>& mustDestroy;
-      std::vector<TypeInterface*>& dstTypes;
+      const std::vector<void*>& targetData;
+      const std::vector<bool>& mustDestroy;
+      const std::vector<TypeInterface*>& dstTypes;
     };
+  }
+
+  static std::string fieldList(const std::map<std::string, qi::AnyReference>& map)
+  {
+    std::string ret;
+    for (const auto& item : map)
+    {
+      if (!ret.empty())
+        ret += ", ";
+      ret += item.first;
+    }
+    return ret;
   }
 
   static std::pair<AnyReference, bool> structConverter(const AnyReferenceBase* src, StructTypeInterface* tdst)
   {
     StructTypeInterface* tsrc = static_cast<StructTypeInterface*>(src->type());
 
-    std::vector<std::string> srcNames = tsrc->elementsName();
-    std::vector<std::string> dstNames = tdst->elementsName();
-    std::vector<TypeInterface*> srcTypes = tsrc->memberTypes();
-    std::vector<TypeInterface*> dstTypes = tdst->memberTypes();
+    const std::vector<std::string> srcNames = tsrc->elementsName();
+    const std::vector<std::string> dstNames = tdst->elementsName();
+    const std::vector<TypeInterface*> srcTypes = tsrc->memberTypes();
+    const std::vector<TypeInterface*> dstTypes = tdst->memberTypes();
     if (srcTypes.size() != srcNames.size() || dstTypes.size() != dstNames.size())
     {
-      qiLogVerbose() << "Cannot convert between not fully named mismatching tuples "
-        << tsrc->infoString() << " and " << tdst->infoString();
+      qiLogVerbose() << "Cannot convert between not fully named mismatching tuples " << tsrc->infoString() << " and "
+                     << tdst->infoString();
       return std::make_pair(AnyReference(), false);
     }
     // Compute mapping between src and dst fields based on names
-    std::vector<int> fieldMap; //fieldMap[i] = index of src's field i in dst (-1 for not present)
-    std::vector<std::string> fieldDrop; // unused src fields
-    for (unsigned i=0; i<srcNames.size(); ++i)
+    std::vector<int> fieldMap; // fieldMap[i] = index of src's field i in dst (-1 for not present)
+    std::map<std::string, qi::AnyReference> fieldDrop; // unused src fields
+    for (unsigned i = 0; i < srcNames.size(); ++i)
     {
-      std::vector<std::string>::iterator it = std::find(dstNames.begin(), dstNames.end(), srcNames[i]);
-      if (it == dstNames.end())
-        fieldDrop.push_back(srcNames[i]);
-      fieldMap.push_back(it == dstNames.end() ? -1 : it - dstNames.begin());
+      std::vector<std::string>::const_iterator it = std::find(dstNames.begin(), dstNames.end(), srcNames[i]);
+      if (it != dstNames.end())
+        fieldMap.push_back(it - dstNames.begin());
+      else
+      {
+        fieldDrop[srcNames[i]] = AnyReference(srcTypes[i], tsrc->get(src->rawValue(), i));
+        fieldMap.push_back(-1);
+      }
     }
-    std::vector<std::string> fieldMissing; // unfilled dst fields
-    for (unsigned i=0; i<dstNames.size(); ++i)
+    std::vector<std::tuple<std::string, TypeInterface*>> fieldMissing; // unfilled dst fields
+    for (unsigned i = 0; i < dstNames.size(); ++i)
     {
       std::vector<int>::iterator it = std::find(fieldMap.begin(), fieldMap.end(), i);
       if (it == fieldMap.end())
-        fieldMissing.push_back(dstNames[i]);
+        fieldMissing.push_back(std::make_tuple(dstNames[i], dstTypes[i]));
     }
+    auto vecOfTuplesToStrings = [](const std::vector<std::tuple<std::string, TypeInterface*>>& vec) {
+      std::string out;
+      for (const auto& t : vec)
+      {
+        if (!out.empty())
+          out += ", ";
+        out += std::get<0>(t);
+      }
+      return out;
+    };
     qiLogDebug() << "Field mapping:"
-      << " drop=" << boost::algorithm::join(fieldDrop, ", ")
-      << "  missing=" << boost::algorithm::join(fieldMissing, ", ");
-    // Start by asking source if it is ok to drop
-    if (!fieldDrop.empty() && !tsrc->canDropFields(src->rawValue(), fieldDrop))
-    {
-      qiLogVerbose() << "Source " << tsrc->infoString() <<" refused to drop fields " << boost::algorithm::join(fieldDrop, ", ");
-      return std::make_pair(AnyReference(), false);
-    }
-    // convert what we can (missing field check might need the data)
+                 << " drop=" << fieldList(fieldDrop)
+                 << " missing=" << vecOfTuplesToStrings(fieldMissing);
 
+    // convert what we can (missing field check might need the data)
     std::vector<void*> targetData;
     std::vector<bool> mustDestroy;
     targetData.resize(dstTypes.size(), 0);
     mustDestroy.resize(dstTypes.size(), false);
 
-    std::vector<void*> sourceData = tsrc->get(src->rawValue());
+    const std::vector<void*> sourceData = tsrc->get(src->rawValue());
 
     CleanUp scopeCleanup(targetData, mustDestroy, dstTypes);
 
-    for (unsigned i=0; i<srcTypes.size(); ++i)
+    for (unsigned i = 0; i < srcTypes.size(); ++i)
     {
       int targetIndex = fieldMap[i];
       if (targetIndex == -1)
@@ -375,17 +412,17 @@ namespace detail
       std::pair<AnyReference, bool> conv = AnyReference(srcTypes[i], sourceData[i]).convert(dstTypes[targetIndex]);
       if (!conv.first.type())
       {
-        qiLogVerbose() << "Conversion failure in tuple member "
-          << srcNames[i] << " between "
-          << srcTypes[i]->infoString() << " and " << dstTypes[targetIndex]->infoString();
+        qiLogVerbose() << "Conversion failure in tuple member " << srcNames[i] << " between "
+                       << srcTypes[i]->infoString() << " and " << dstTypes[targetIndex]->infoString();
         return std::make_pair(AnyReference(), false);
       }
       targetData[targetIndex] = conv.first.rawValue();
       mustDestroy[targetIndex] = conv.second;
     }
+
+    // Then ask source and target if it's okay to drop fields and fill missing fields
     std::map<std::string, AnyValue> fields; // used only in if below but must survive longuer
-    // Then ask target to generate a value for missing fields
-    if (!fieldMissing.empty())
+    if (!fieldMissing.empty() || !fieldDrop.empty())
     {
       // Unfortunately we cannot instanciate target type, because of the
       // missing fields (in case struct is in constructor mode), so present
@@ -395,25 +432,27 @@ namespace detail
       // we transfer ownership to the map, so that fillMissing can replace
       // existing values
       // Preallocates all elements so that stuff dont move
-      for (unsigned i=0; i<dstNames.size(); ++i)
+      for (unsigned i = 0; i < dstNames.size(); ++i)
         fields[dstNames[i]] = AnyValue();
       // Fill elements we have, transfering ownership
-      for (unsigned i=0; i<dstNames.size(); ++i)
+      for (unsigned i = 0; i < dstNames.size(); ++i)
         if (std::find(fieldMap.begin(), fieldMap.end(), i) != fieldMap.end())
           fields[dstNames[i]].reset(AnyReference(dstTypes[i], targetData[i]), false, mustDestroy[i]);
       mustDestroy.assign(false, mustDestroy.size());
-      if (!tdst->fillMissingFields(fields, fieldMissing))
+      // attempt both conversions
+      if (!tsrc->convertTo(fields, fieldMissing, fieldDrop) &&
+          !tdst->convertFrom(fields, fieldMissing, fieldDrop))
       {
-        qiLogVerbose() << "Target cannot fill missing fields " << boost::algorithm::join(fieldMissing, ", ");
+        qiLogVerbose() << "Source and target cannot convert struct";
         return std::make_pair(AnyReference(), false);
       }
       // move stuff back to targetdata
-      for (unsigned i=0; i<dstNames.size(); ++i)
+      for (unsigned i = 0; i < dstNames.size(); ++i)
         targetData[i] = fields[dstNames[i]].rawValue();
     }
     void* dst = tdst->initializeStorage();
     tdst->set(&dst, targetData);
-    return std::make_pair(AnyReference(tdst, dst) , true);
+    return std::make_pair(AnyReference(tdst, dst), true);
   }
 
   std::pair<AnyReference, bool> AnyReferenceBase::convert(StructTypeInterface* targetType) const
@@ -429,10 +468,23 @@ namespace detail
       std::vector<void*> sourceData = tsrc->get(_value);
       std::vector<TypeInterface*> srcTypes = tsrc->memberTypes();
       std::vector<TypeInterface*> dstTypes = tdst->memberTypes();
-      if (dstTypes.size() != sourceData.size())
+      assert(sourceData.size() == srcTypes.size());
+      if (srcTypes.size() != dstTypes.size())
       {
         qiLogVerbose() << "Conversion glitch: tuple size mismatch between " << tsrc->infoString() << " and " << tdst->infoString();
         return structConverter(this, targetType);
+      }
+      std::vector<std::string> srcNames = tsrc->elementsName();
+      std::vector<std::string> dstNames = tdst->elementsName();
+      if (srcNames.size() == srcTypes.size() && dstNames.size() == dstTypes.size())
+      {
+        std::sort(srcNames.begin(), srcNames.end());
+        std::sort(dstNames.begin(), dstNames.end());
+        if (srcNames != dstNames)
+        {
+          qiLogVerbose() << "Conversion glitch: names mismatch in named tuple";
+          return structConverter(this, targetType);
+        }
       }
       // Note: start converting without further check.
       // It means the case where a struct was modified but the
@@ -472,14 +524,14 @@ namespace detail
         std::vector<TypeInterface*> dstTypes = targetType->memberTypes();
 
         if (elems.size() != dstTypes.size()) {
-          qiLogWarning() << "convert from map to struct, cant convert to tuple";
+          qiLogWarning() << "convert from map to struct, can't convert to tuple";
           return std::make_pair(AnyReference(), false);
         }
 
         std::vector<void*> targetData;
-        targetData.reserve(dstTypes.size());
+        targetData.resize(dstTypes.size());
         std::vector<bool> mustDestroy;
-        mustDestroy.reserve(dstTypes.size());
+        mustDestroy.resize(dstTypes.size());
         size_t count = 0;
         for (AnyIterator iter = tsrc->begin(_value), end = tsrc->end(_value);
             iter != end;
@@ -489,7 +541,7 @@ namespace detail
           try {
             lname = (*iter)[0].to<std::string>();
           }
-          catch (std::exception& e) {
+          catch (std::exception& /* e */) {
             qiLogVerbose() << "can't convert map key " << (*iter)[0].type()->infoString() << " to string";
             continue;
           }
@@ -513,26 +565,30 @@ namespace detail
             qiLogWarning() << "convert from map to struct, cant convert to the right type for '" << *riter << "' from " << ref.type()->infoString() << " to " << dstTypes[rpos]->infoString();
             return std::make_pair(AnyReference(), false);
           }
-          targetData.push_back(conv.first._value);
-          mustDestroy.push_back(conv.second);
+          targetData[rpos] = conv.first._value;
+          mustDestroy[rpos] = conv.second;
           ++count;
         }
 
-        if (count != elems.size()) {
+        bool bresult = true;
+        if (count != elems.size())
+        {
           qiLogWarning() << "convert from map to struct failed, some elements do not exist";
-          return std::make_pair(AnyReference(), false);
+          bresult = false;
         }
-
-        void* dst = tdst->initializeStorage();
-        tdst->set(&dst, targetData);
+        else
+        {
+          void* dst = tdst->initializeStorage();
+          tdst->set(&dst, targetData);
+          result._type = targetType;
+          result._value = dst;
+        }
         for (unsigned i = 0; i < mustDestroy.size(); ++i)
         {
           if (mustDestroy[i])
             dstTypes[i]->destroy(targetData[i]);
         }
-        result._type = targetType;
-        result._value = dst;
-        return std::make_pair(result, true);
+        return std::make_pair(result, bresult);
     }
     case TypeKind_VarArgs:
     case TypeKind_List:
@@ -670,6 +726,41 @@ namespace detail
       }
       return std::make_pair(result, true);
     }
+    case TypeKind_Tuple:
+    {
+      result = AnyReference(targetType);
+      auto srcStructType = static_cast<StructTypeInterface*>(_type);
+      MapTypeInterface* targetMapType = targetType;
+
+      // Source fields value
+      std::vector<void*> sourceData = srcStructType->get(_value);
+      // Source fields name
+      std::vector<std::string> srcElementName = srcStructType->elementsName();
+      // Source members type
+      std::vector<TypeInterface*> srcTypes = srcStructType->memberTypes();
+      // Destination members type
+      TypeInterface* dstType = targetMapType->elementType();
+
+      // trying to convert std::pair to std::map
+      if (srcElementName.size() != srcTypes.size())
+        return std::make_pair(AnyReference(), false);
+
+      for (unsigned int i = 0; i < srcElementName.size(); ++i)
+      {
+        std::pair<AnyReference, bool> conv = AnyReference(srcTypes[i], sourceData[i]).convert(dstType);
+        if (!conv.first._type)
+        {
+          qiLogVerbose() << "Conversion failure in tuple member between "
+                         << srcTypes[i]->infoString() << " and " << dstType->infoString();
+          result.destroy();
+          return std::make_pair(AnyReference(), false);
+        }
+        result._insert(AnyReference::from(srcElementName[i]), conv.first);
+        if (conv.second)
+          conv.first.destroy();
+      }
+      return std::make_pair(result, true);
+    }
     default:
       break;
     }
@@ -753,6 +844,8 @@ namespace detail
       return convert(static_cast<StructTypeInterface*>(targetType));
     else if (skind == TypeKind_Tuple && dkind == TypeKind_List)
       return convert(static_cast<ListTypeInterface*>(targetType));
+    else if (skind == TypeKind_Tuple && dkind == TypeKind_Map)
+      return convert(static_cast<MapTypeInterface*>(targetType));
 
     else if (skind == TypeKind_VarArgs && dkind == TypeKind_List)
       return convert(static_cast<ListTypeInterface*>(targetType));
@@ -799,7 +892,18 @@ namespace detail
 
     if (_type->info() == typeOf<AnyObject>()->info()
         && targetType->kind() == TypeKind_Pointer)
-    { // Attempt specialized proxy conversion
+    {
+      // if pointer is the exact pointer, use it
+      PointerTypeInterface* pT = static_cast<PointerTypeInterface*>(targetType);
+      AnyObject* self = static_cast<AnyObject*>(_value);
+      if (self->asGenericObject()->type->info() == pT->pointedType()->info())
+      {
+        AnyReference res(pT);
+        pT->set(&res._value, qi::AnyReference::from(boost::static_pointer_cast<void>(self->asSharedPtr())));
+        return std::make_pair(res, true);
+      }
+
+      // Attempt specialized proxy conversion
       qiLogDebug() << "Attempting specialized proxy conversion";
       detail::ProxyGeneratorMap& map = detail::proxyGeneratorMap();
       detail::ProxyGeneratorMap::iterator it = map.find(
@@ -835,7 +939,7 @@ namespace detail
       qiLogDebug() << "inheritance check "
         << osrc <<" " << (osrc?osrc->inherits(targetType):false);
       int inheritOffset = 0;
-      if (osrc && (inheritOffset =  osrc->inherits(targetType)) != -1)
+      if (osrc && (inheritOffset = osrc->inherits(targetType)) != ObjectTypeInterface::INHERITS_FAILED)
       {
         // We return a Value that point to the same data as this.
         result._type = targetType;
@@ -981,7 +1085,7 @@ namespace detail
 
     ListTypeInterface* t = static_cast<ListTypeInterface*>(_type);
     TypeInterface* te = t->elementType();
-    DynamicTypeInterface* td = 0;
+    DynamicTypeInterface* td = nullptr;
     if (te->kind() == TypeKind_Dynamic)
       td = static_cast<DynamicTypeInterface*>(te);
     if (!homogeneous && !td)

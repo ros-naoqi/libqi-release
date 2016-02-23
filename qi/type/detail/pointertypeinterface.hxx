@@ -4,8 +4,8 @@
 **  See COPYING for the license
 */
 
-#ifndef _QITYPE_DETAILS_TYPEPOINTER_HXX_
-#define _QITYPE_DETAILS_TYPEPOINTER_HXX_
+#ifndef _QITYPE_DETAIL_TYPEPOINTER_HXX_
+#define _QITYPE_DETAIL_TYPEPOINTER_HXX_
 
 #include <boost/shared_ptr.hpp>
 
@@ -25,6 +25,12 @@ namespace qi
       // We are in DirectAccess mode, so storage is a T*.
       void* value = pointedType()->initializeStorage(storage);
       return AnyReference(pointedType(), value);
+    }
+
+    void set(void** storage, AnyReference pointer)
+    {
+      AnyReference obj = *pointer;
+      *storage = obj.rawValue();
     }
 
     void setPointee(void** storage, void* pointer)
@@ -54,10 +60,16 @@ namespace qi
       void *value = pointedType()->initializeStorage(ptr->get());
       return AnyReference(pointedType(), value);
     }
-    void setPointee(void** storage, void* pointer)
+    void set(void** storage, AnyReference pointer)
     {
       T* ptr = (T*)ptrFromStorage(storage);
-      *ptr = T((typename T::element_type*)pointer);
+      T* otherPtr = (T*)pointer.rawValue();
+      *ptr = *otherPtr;
+    }
+    void setPointee(void** storage, void* pointer)
+    {
+      // we can't do that as it means that we would take ownership of pointer
+      throw std::runtime_error("cannot convert to shared_ptr");
     }
     typedef DefaultTypeImplMethods<T, TypeByPointerPOD<T> > Impl;
      _QI_BOUNCE_TYPE_METHODS(Impl);
@@ -66,4 +78,4 @@ namespace qi
   template<typename T> class TypeImpl<boost::shared_ptr<T> >: public TypeSharedPointerImpl<boost::shared_ptr<T> >{};
 }
 
-#endif  // _QITYPE_DETAILS_TYPEPOINTER_HXX_
+#endif  // _QITYPE_DETAIL_TYPEPOINTER_HXX_

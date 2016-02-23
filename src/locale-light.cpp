@@ -9,14 +9,14 @@
 #define BOOST_UTF8_BEGIN_NAMESPACE  namespace qi { namespace detail {
 #define BOOST_UTF8_END_NAMESPACE    }}
 #define BOOST_UTF8_DECL
-#include "utf8_codecvt_facet.hpp"
-#include "utf8_codecvt_facet_impl.hpp"
+#include <boost/detail/utf8_codecvt_facet.hpp>
+#include <boost/detail/utf8_codecvt_facet.ipp>
 
 namespace qi {
 
   //this is initialized once.. and will be reported to leak memory.
   //but that okay for a global to be freed by the program termination
-  static detail::utf8_codecvt_facet *gUtf8CodecvtFacet = 0;
+  static detail::utf8_codecvt_facet *gUtf8CodecvtFacet = nullptr;
 
   codecvt_type &unicodeFacet()
   {

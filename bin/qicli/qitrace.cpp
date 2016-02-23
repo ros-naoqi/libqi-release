@@ -184,7 +184,7 @@ int subCmd_trace(int argc, char **argv, qi::ApplicationSession& app)
     return 1;
 
   qiLogVerbose() << "Connecting to service directory";
-  app.start();
+  app.startSession();
   qi::SessionPtr s = app.session();
 
   qiLogVerbose() << "Resolving services";
@@ -222,7 +222,7 @@ int subCmd_trace(int argc, char **argv, qi::ApplicationSession& app)
     if (printMo)
     {
       std::cout << "\n\n" << services[i] << "\n";
-      qi::details::printMetaObject(std::cout, o.metaObject());
+      qi::detail::printMetaObject(std::cout, o.metaObject());
     }
     if (disableTrace)
     {

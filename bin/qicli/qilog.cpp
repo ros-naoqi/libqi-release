@@ -95,7 +95,7 @@ int subCmd_logView(int argc, char **argv, qi::ApplicationSession& app)
     return 1;
 
   qiLogVerbose() << "Connecting to service directory";
-  app.start();
+  app.startSession();
   qi::SessionPtr s = app.session();
 
   qiLogVerbose() << "Resolving services";
@@ -158,15 +158,14 @@ int subCmd_logSend(int argc, char **argv, qi::ApplicationSession& app)
     return 1;
 
   qiLogVerbose() << "Connecting to service directory";
-  app.start();
+  app.startSession();
   qi::SessionPtr s = app.session();
 
   qiLogVerbose() << "Resolving services";
 
   qi::AnyObject logger = s->service("LogManager");
 
-  qi::os::timeval tv;
-  qi::os::gettimeofday(&tv);
+  qi::os::timeval tv(qi::SystemClock::now());
 
   std::string source(__FILE__);
   source += ':';

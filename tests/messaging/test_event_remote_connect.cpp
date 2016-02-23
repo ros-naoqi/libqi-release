@@ -291,7 +291,7 @@ TEST_F(TestObject, disconnectDeadlock)
   oserver1.post("fire1", 24);
   ready.future().wait();
   // a callback is running, trigger other disconnect
-  qi::Future<void> discDone2 = qi::async<void>(&qi::AnyObject::disconnect, oclient1, *link);
+  qi::Future<void> discDone2 = qi::async(boost::bind(boost::function<void(qi::AnyObject, qi::SignalLink)>(&qi::AnyObject::disconnect), oclient1, *link));
   // wait and disconnect inside the callback
   qi::os::msleep(10);
   doDisc.setValue(0);
@@ -388,7 +388,7 @@ TEST_F(TestObject, serviceDirectoryEvent)
       signal_id = it->second.uid();
     }
   }
-  ASSERT_NE(signal_id, 0);
+  ASSERT_NE(signal_id, 0U);
   sd.connect(signal_id, oserver1, secondCallbackId);
   sd.connect(signal_id, oserver1, secondCallbackId);
   sd.connect(signal_id, oserver1, secondCallbackId);
@@ -404,6 +404,26 @@ TEST_F(TestObject, serviceDirectoryEvent)
   }
   qi::os::msleep(10);
   ASSERT_EQ(*i, 4);
+}
+
+TEST(TestObjectDyn, PropertyConnectOnDynamicObject)
+{
+  qi::Property<int> prop;
+  qi::DynamicObjectBuilder builder;
+  builder.advertiseProperty("prop", &prop);
+
+  TestSessionPair p;
+  p.server()->registerService("Serv", builder.object());
+
+  qi::Promise<int> prom;
+
+  qi::AnyObject obj = p.client()->service("Serv");
+  obj.connect("prop", boost::function<void(int)>([&prom](int i){
+          prom.setValue(i);
+        }));
+
+  prop.set(42);
+  ASSERT_EQ(42, prom.future().value());
 }
 
 int main(int argc, char *argv[])

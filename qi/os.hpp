@@ -15,8 +15,11 @@
 # include <qi/api.hpp>
 # include <qi/types.hpp>
 # include <qi/path.hpp>
+# include <qi/clock.hpp>
 
-#ifdef WIN32
+# include <boost/lexical_cast.hpp>
+
+#ifdef _WIN32
 #ifndef SIGKILL
 #define SIGKILL 9
 #endif
@@ -237,19 +240,26 @@ namespace qi {
     struct QI_API timeval {
       qi::int64_t tv_sec;  ///< seconds
       qi::int64_t tv_usec; ///< microseconds
+
+      timeval() : tv_sec(0), tv_usec(0) {}
+      timeval(int64_t sec, int64_t usec) : tv_sec(sec), tv_usec(usec) {}
+      explicit timeval(int64_t usec);
+      explicit timeval(const qi::Duration &);
+      explicit timeval(const qi::SystemClockTimePoint &);
     };
 
     /**
      * \brief The gettimeofday() function shall obtain the current time.
      * \param tp The timeval structure used to return the current time.
      * \return 0 on success
+     * \deprecated since 2.4. Use qi::SystemClock::now() instead.
      *
      * The gettimeofday() function shall obtain the current time, expressed as
      * seconds and microseconds since the Epoch, and store it in the timeval
      * structure pointed to by tp. The resolution of the system clock is
      * unspecified. This clock is subject to NTP adjustments.
      */
-    QI_API int gettimeofday(qi::os::timeval *tp);
+    QI_API QI_API_DEPRECATED int gettimeofday(qi::os::timeval *tp);
     /**
      * \brief Elapsed time since program started in microseconds.
      * \return Return qi::int64_t in microseconds.
@@ -572,6 +582,25 @@ namespace qi {
      * Otherwise returns a value of 0, meaning that it was impossible to get the memory usage.
      */
     QI_API size_t memoryUsage(unsigned int pid);
+
+
+    /**
+     * \brief Returns the value of the environment variableif set, the defaultVal otherwise.
+     * \param name Name of the environment variable
+     * \param defaultVal DefaultVal to return if the environment variable isn't set.
+     * \return Function obtains the current value of the environment variable, name if set.
+     * Return defaultVal otherwise.
+     * .. versionadded:: 2.4
+     */
+    template <typename T>
+    inline T getEnvParam(const char* name, T defaultVal)
+    {
+      std::string sval = qi::os::getenv(name);
+      if (sval.empty())
+        return defaultVal;
+      else
+        return boost::lexical_cast<T>(sval);
+    }
 
   }
 }
