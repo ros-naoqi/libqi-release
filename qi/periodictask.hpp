@@ -46,19 +46,12 @@ namespace qi
      * If the callback throws, async task will be stopped
      */
     void setCallback(const Callback& cb);
-#ifdef DOXYGEN
-    template <typename T, typename ARG0> PeriodicTask& setCallback(const T& callable, ARG0 tracked, ...);
-#else
-#define genCall(n, ATYPEDECL, ATYPES, ADECL, AUSE, comma)              \
-  template <typename AF, typename ARG0 comma ATYPEDECL>                \
-  inline void setCallback(const AF& fun, const ARG0& arg0 comma ADECL) \
-  {                                                                    \
-    setCallback(boost::bind(fun, arg0 comma AUSE));                    \
-    _connectMaybeActor<ARG0>(arg0);                                    \
-  }
-    QI_GEN(genCall)
-#undef genCall
-#endif
+    template <typename AF, typename ARG0, typename... ARGS>
+    inline void setCallback(AF&& callable, ARG0&& arg0, ARGS&&... args)
+    {
+      _connectMaybeActor(arg0);
+      setCallback(boost::bind(std::forward<AF>(callable), std::forward<ARG0>(arg0), std::forward<ARGS>(args)...));
+    }
 
     /**
      * Set the strand on which to schedule the calls
@@ -75,15 +68,11 @@ namespace qi
 
     /**
      * \brief Set the call interval.
-     * \param usPeriod Period in microsecond.
-     * \verbatim
-     *  This call will wait until next callback invocation to apply the change.
-     *  Use:
-     *  task.stop();
-     *  task.setUsPeriod()
-     *  task.start()
-     *  to apply the change immediately.
-     * \endverbatim
+     * \param period the PeriodicTask period
+     *
+     * This call will wait until next callback invocation to apply the change.
+     * If you call this function from within the callback, it will be taken into
+     * account immediately.
      */
     void setPeriod(qi::Duration period);
 

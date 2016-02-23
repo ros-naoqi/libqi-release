@@ -26,6 +26,12 @@ ObjectHost::ObjectHost(unsigned int service)
    map.clear();
  }
 
+static void async_destroy_attempt(BoundAnyObject obj, Future<void> fut)
+{
+  fut.wait();
+  obj.reset();
+}
+
 void ObjectHost::onMessage(const qi::Message &msg, TransportSocketPtr socket)
 {
   BoundAnyObject obj;
@@ -34,23 +40,42 @@ void ObjectHost::onMessage(const qi::Message &msg, TransportSocketPtr socket)
     ObjectMap::iterator it = _objectMap.find(msg.object());
     if (it == _objectMap.end())
     {
-      qiLogDebug() << "Object id not found " << msg.object();
       return;
     }
-    qiLogDebug() << "ObjectHost forwarding " << msg.address();
     // Keep ptr alive while message is being processed, even if removeObject is called
     obj = it->second;
   }
   obj->onMessage(msg, socket);
+
+  qi::Promise<void> destructPromise;
+  qi::async(boost::bind(&async_destroy_attempt, obj, destructPromise.future()));
+  obj.reset();
+  destructPromise.setValue(0);
 }
 
-unsigned int ObjectHost::addObject(BoundAnyObject obj, unsigned int id)
+unsigned int ObjectHost::addObject(BoundAnyObject obj, StreamContext* remoteRef, unsigned int id)
 {
   boost::recursive_mutex::scoped_lock lock(_mutex);
   if (!id)
-    id = ++_nextId;
+    id = nextId();
+  assert(_objectMap.find(id) == _objectMap.end());
   _objectMap[id] = obj;
+  _remoteReferences[remoteRef].push_back(id);
   return id;
+}
+
+void ObjectHost::removeRemoteReferences(TransportSocketPtr socket)
+{
+  boost::recursive_mutex::scoped_lock lock(_mutex);
+
+  RemoteReferencesMap::iterator it = _remoteReferences.find(socket.get());
+  if (it == _remoteReferences.end())
+    return;
+  for (std::vector<unsigned int>::iterator vit = it->second.begin(), end = it->second.end();
+       vit != end;
+       ++vit)
+    removeObject(*vit);
+  _remoteReferences.erase(it);
 }
 
 void ObjectHost::removeObject(unsigned int id)
@@ -58,9 +83,9 @@ void ObjectHost::removeObject(unsigned int id)
   /* Ensure we are not in the middle of iteration when
   *  removing our ref on BoundAnyObject.
   */
-  boost::recursive_mutex::scoped_lock lock(_mutex);
   BoundAnyObject obj;
   {
+    boost::recursive_mutex::scoped_lock lock(_mutex);
     ObjectMap::iterator it = _objectMap.find(id);
     if (it == _objectMap.end())
     {
@@ -70,8 +95,9 @@ void ObjectHost::removeObject(unsigned int id)
     obj = it->second;
     _objectMap.erase(it);
     qiLogDebug() << this << " count " << obj.use_count();
+    qi::async(boost::bind(&qi::detail::hold<BoundAnyObject>, obj));
   }
-  qiLogDebug() << this << " Object removed";
+  qiLogDebug() << this << " Object " << id << " removed.";
 }
 
 void ObjectHost::clear()
@@ -86,5 +112,4 @@ void ObjectHost::clear()
   _objectMap.clear();
 }
 
-Atomic<int> ObjectHost::_nextId(2);
 }

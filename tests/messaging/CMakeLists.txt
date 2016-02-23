@@ -37,15 +37,26 @@ qimessaging_create_session_test(test_call                 SRC test_call.cpp     
 #broken
 #qimessaging_create_session_test(test_autoservice  SRC test_autoservice.cpp                   DEPENDS QI GTEST TESTSESSION TIMEOUT 30)
 #qi_create_gtest(test_application                  SRC test_application.cpp                   DEPENDS QI GTEST TIMEOUT 2)
-#qi_create_gtest(test_gateway                      SRC test_gateway.cpp                       DEPENDS QI GTEST TIMEOUT 10)
+qi_create_gtest(test_gateway              SRC test_gateway.cpp              DEPENDS QI  GTEST TIMEOUT 10)
 qi_create_gtest(test_testsession                  SRC test_testsession.cpp                   DEPENDS QI GTEST TESTSESSION TIMEOUT 30)
 qi_create_gtest(test_metavalue_argument           SRC test_metavalue_argument.cpp            DEPENDS QI GTEST TIMEOUT 30)
 qi_create_gtest(test_applicationsession           SRC test_applicationsession.cpp            DEPENDS QI GTEST TIMEOUT 30)
 qi_create_gtest(test_applicationsessionnoautoexit SRC test_applicationsession_noautoexit.cpp DEPENDS QI GTEST TIMEOUT 30)
 qi_create_gtest(test_authentication               SRC test_authentication.cpp                DEPENDS QI GTEST TIMEOUT 30)
 
-qi_create_bin(test_call_on_close_session SRC test_call_on_close_session.cpp              NO_INSTALL DEPENDS TESTSESSION QI BOOST BOOST_THREAD)
-qi_create_bin(test_signaturegen SRC sig_generator.cpp sig_generator.h test_signature.cpp NO_INSTALL DEPENDS TESTSESSION QI BOOST)
+qi_create_gtest(
+  test_call_on_close_session
+  SRC test_call_on_close_session.cpp
+  DEPENDS TESTSESSION QI BOOST BOOST_THREAD
+  TIMEOUT 60
+)
+
+qi_create_test_helper(test_appsession_opts                                    SRC test_applicationsession_opts.cpp DEPENDS QI GTEST GTEST_MAIN)
+qi_add_test(test_appsession_options_low test_appsession_opts            ARGUMENTS low    TIMEOUT 30)
+qi_add_test(test_appsession_options_med test_appsession_opts            ARGUMENTS medium TIMEOUT 30)
+qi_add_test(test_appsession_options_high test_appsession_opts           ARGUMENTS high   TIMEOUT 30)
+
+qi_create_gtest(test_signaturegen SRC sig_generator.cpp sig_generator.h test_signature.cpp DEPENDS TESTSESSION QI BOOST)
 
 qimessaging_create_session_test(test_service     SRC test_service.cpp     DEPENDS QI GTEST TESTSESSION TIMEOUT 30)
 qimessaging_create_session_test(test_send_object SRC test_send_object.cpp DEPENDS QI GTEST TESTSESSION TIMEOUT 30)

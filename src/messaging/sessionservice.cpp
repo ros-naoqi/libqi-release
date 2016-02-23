@@ -24,8 +24,7 @@ namespace qi {
 
   Session_Service::Session_Service(TransportSocketCache* socketCache,
                                    ServiceDirectoryClient* sdClient, ObjectRegistrar* server, bool enforceAuth)
-    : qi::Trackable<Session_Service>(this)
-    , _socketCache(socketCache)
+    : _socketCache(socketCache)
     , _sdClient(sdClient)
     , _server(server)
     , _self(this, sessionServiceWaitBarrier) // create a shared_ptr so that shared_from_this works
@@ -105,8 +104,8 @@ namespace qi {
   void Session_Service::removeRequest(long requestId)
   {
     boost::recursive_mutex::scoped_lock sl(_requestsMutex);
-    qi::RemoteObject *remote = 0;
-    ServiceRequest   *sr     = 0;
+    qi::RemoteObject *remote = nullptr;
+    ServiceRequest   *sr     = nullptr;
     {
       std::map<int, ServiceRequest*>::iterator it;
 

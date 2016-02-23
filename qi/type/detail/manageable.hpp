@@ -123,7 +123,7 @@ namespace qi {
     Manageable();
     ~Manageable();
     Manageable(const Manageable& b);
-    void operator = (const Manageable& b);
+    Manageable& operator=(const Manageable& b);
 
     boost::mutex& initMutex();
 
@@ -190,5 +190,5 @@ namespace qi {
 #  pragma warning( pop )
 #endif
 
-QI_TYPE_ENUM_REGISTER(qi::EventTrace::EventKind);
+QI_TYPE_ENUM(qi::EventTrace::EventKind);
 #endif  // _QITYPE_MANAGEABLE_HPP_

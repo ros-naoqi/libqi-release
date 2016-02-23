@@ -4,11 +4,11 @@
  * found in the COPYING file.
  */
 
-#include <fstream>
 #include <cstdlib>
 
 #include <qi/application.hpp>
 #include <qi/os.hpp>
+#include <qi/atomic.hpp>
 #include <qi/log.hpp>
 #include <qi/path.hpp>
 #include <src/sdklayout.hpp>
@@ -17,8 +17,9 @@
 #include <boost/filesystem.hpp>
 #include <boost/thread.hpp>
 #include <boost/asio.hpp>
+#include <boost/algorithm/string/classification.hpp>
+#include <boost/algorithm/string/split.hpp>
 
-#include "filesystem.hpp"
 #include "utils.hpp"
 #include "path_conf.hpp"
 
@@ -29,11 +30,18 @@
 #include <windows.h>
 #endif
 
+#ifndef _WIN32
+static const char SEPARATOR = ':';
+#else
+static const char SEPARATOR = ';';
+#endif
+
 qiLogCategory("qi.Application");
 
 namespace bfs = boost::filesystem;
 
 static std::string _sdkPath;
+static std::vector<std::string> _sdkPaths;
 
 static void parseArguments(int argc, char* argv[])
 {
@@ -52,9 +60,10 @@ static void parseArguments(int argc, char* argv[])
 
 namespace qi {
   static int         globalArgc = -1;
-  static char**      globalArgv = 0;
+  static char**      globalArgv = nullptr;
   static bool        globalInitialized = false;
   static bool        globalTerminated = false;
+  static bool        globalIsStop = false;
 
   static std::string globalName;
   static std::vector<std::string>* globalArguments;
@@ -62,25 +71,27 @@ namespace qi {
   static std::string globalProgram;
   static std::string globalRealProgram;
 
-  typedef std::vector<boost::function<void()> > FunctionList;
-  static FunctionList* globalAtExit = 0;
-  static FunctionList* globalAtEnter = 0;
-  static FunctionList* globalAtStop = 0;
+  typedef std::vector<std::function<void()> > FunctionList;
+  static FunctionList* globalAtExit = nullptr;
+  static FunctionList* globalAtEnter = nullptr;
+  static FunctionList* globalAtRun = nullptr;
+  static FunctionList* globalAtStop = nullptr;
 
 
+  static boost::mutex globalMutex;
   static boost::condition_variable globalCond;
 
-  static boost::asio::io_service*             globalIoService = 0;
-  static boost::thread*                       globalIoThread = 0;
-  static boost::asio::io_service::work*       globalIoWork = 0;
-  static std::list<boost::asio::signal_set*>* globalSignalSet = 0;
+  static boost::asio::io_service*             globalIoService = nullptr;
+  static boost::thread*                       globalIoThread = nullptr;
+  static boost::asio::io_service::work*       globalIoWork = nullptr;
+  static std::list<boost::asio::signal_set*>* globalSignalSet = nullptr;
 
 
   static void readPathConf()
   {
     std::string prefix = ::qi::path::sdkPrefix();
-    std::set<std::string> toAdd =  ::qi::path::detail::parseQiPathConf(prefix);
-    std::set<std::string>::const_iterator it;
+    std::vector<std::string> toAdd =  ::qi::path::detail::parseQiPathConf(prefix);
+    std::vector<std::string>::const_iterator it;
     for (it = toAdd.begin(); it != toAdd.end(); ++it) {
       ::qi::path::detail::addOptionalSdkPrefix(it->c_str());
     }
@@ -152,7 +163,7 @@ namespace qi {
     }
   }
 
-  static void signal_handler(const boost::system::error_code& error, int signal_number, boost::function<void (int)> fun)
+  static void signal_handler(const boost::system::error_code& error, int signal_number, std::function<void (int)> fun)
   {
     //when cancel is called the signal handler is raised with an error. catch it!
     if (!error) {
@@ -160,7 +171,7 @@ namespace qi {
     }
   }
 
-  bool Application::atSignal(boost::function<void (int)> func, int signal)
+  bool Application::atSignal(std::function<void (int)> func, int signal)
   {
     if (!globalIoService)
     {
@@ -203,11 +214,6 @@ namespace qi {
     {
       std::string envPath = qi::os::getenv("PATH");
       size_t begin = 0;
-#ifndef _WIN32
-      static const char SEPARATOR = ':';
-#else
-      static const char SEPARATOR = ';';
-#endif
       for (size_t end = envPath.find(SEPARATOR, begin);
           end != std::string::npos;
           begin = end + 1, end = envPath.find(SEPARATOR, begin))
@@ -249,12 +255,19 @@ namespace qi {
       globalProgram = guess_app_from_path(argv[0]);
       qiLogVerbose() << "Program path guessed as " << globalProgram;
     }
-    globalProgram = detail::normalizePath(globalProgram);
+    globalProgram = path::detail::normalize(globalProgram);
 
     parseArguments(argc, argv);
 
     if (_sdkPath.empty())
       _sdkPath = qi::os::getenv("QI_SDK_PREFIX");
+
+    if (_sdkPaths.empty())
+    {
+      std::string prefixes = qi::os::getenv("QI_ADDITIONAL_SDK_PREFIXES");
+      if (!prefixes.empty())
+        boost::algorithm::split(_sdkPaths, prefixes, boost::algorithm::is_from_range(SEPARATOR, SEPARATOR));
+    }
 
     readPathConf();
     if (globalInitialized)
@@ -270,7 +283,17 @@ namespace qi {
     FunctionList& fl = lazyGet(globalAtEnter);
     qiLogDebug() << "Executing " << fl.size() << " atEnter handlers";
     for (FunctionList::iterator i = fl.begin(); i!= fl.end(); ++i)
-      (*i)();
+    {
+      try
+      {
+        (*i)();
+      }
+      catch (std::exception& e)
+      {
+        qiLogError() << "Application atEnter callback throw the following error: " << e.what();
+      }
+    }
+
     fl.clear();
     argc = Application::argc();
     argv = globalArgv;
@@ -318,7 +341,17 @@ namespace qi {
   {
     FunctionList& fl = lazyGet(globalAtExit);
     for (FunctionList::iterator i = fl.begin(); i!= fl.end(); ++i)
-      (*i)();
+    {
+      try
+      {
+        (*i)();
+      }
+      catch (std::exception& e)
+      {
+        qiLogError() << "Application atExit callback throw the following error: " << e.what();
+      }
+    }
+
     globalCond.notify_all();
     globalTerminated = true;
   }
@@ -335,25 +368,48 @@ namespace qi {
     }
   }
 
+  static bool isStop()
+  {
+    return globalIsStop;
+  }
+
   void Application::run()
   {
     //run is called, so we catch sigint/sigterm, the default implementation call Application::stop that
     //will make this loop exit.
     initSigIntSigTermCatcher();
 
-    // We just need a barrier, so no need to share the mutex
-    boost::mutex m;
-    boost::unique_lock<boost::mutex> l(m);
-    globalCond.wait(l);
+    // call every function registered as "atRun"
+    for(auto& function: lazyGet(globalAtRun))
+      function();
+
+    boost::unique_lock<boost::mutex> l(globalMutex);
+    globalCond.wait(l, &isStop);
   }
 
   void Application::stop()
   {
-    FunctionList& fl = lazyGet(globalAtStop);
-    qiLogDebug() << "Executing " << fl.size() << " atStop handlers";
-    for (FunctionList::iterator i = fl.begin(); i!= fl.end(); ++i)
-      (*i)();
-    globalCond.notify_all();
+
+    static qi::Atomic<bool> atStopHandlerCall = false;
+    if (atStopHandlerCall.setIfEquals(false, true))
+    {
+      FunctionList& fl = lazyGet(globalAtStop);
+      qiLogDebug() << "Executing " << fl.size() << " atStop handlers";
+      for (FunctionList::iterator i = fl.begin(); i!= fl.end(); ++i)
+      {
+        try
+        {
+          (*i)();
+        }
+        catch (std::exception& e)
+        {
+          qiLogError() << "Application atStop callback throw the following error: " << e.what();
+        }
+      }
+      boost::unique_lock<boost::mutex> l(globalMutex);
+      globalIsStop = true;
+      globalCond.notify_all();
+    }
   }
 
   void Application::setName(const std::string &name)
@@ -372,7 +428,7 @@ namespace qi {
     lazyGet(globalArguments) = args;
     globalArgv = new char*[args.size() + 1];
     for (unsigned i=0; i<args.size(); ++i)
-      globalArgv[i] = strdup(args[i].c_str());
+      globalArgv[i] = qi::os::strdup(args[i].c_str());
     globalArgv[args.size()] = 0;
   }
 
@@ -406,20 +462,26 @@ namespace qi {
     return (const char**)globalArgv;
   }
 
-  bool Application::atEnter(boost::function<void()> func)
+  bool Application::atEnter(std::function<void()> func)
   {
     qiLogDebug() << "atEnter";
     lazyGet(globalAtEnter).push_back(func);
     return true;
   }
 
-  bool Application::atExit(boost::function<void()> func)
+  bool Application::atExit(std::function<void()> func)
   {
     lazyGet(globalAtExit).push_back(func);
     return true;
   }
 
-  bool Application::atStop(boost::function<void()> func)
+  bool Application::atRun(std::function<void ()> func)
+  {
+    lazyGet(globalAtRun).push_back(func);
+    return true;
+  }
+
+  bool Application::atStop(std::function<void()> func)
   {
     //If the client call atStop, it mean it will handle the proper destruction
     //of the program by itself. So here we catch SigInt/SigTerm to call Application::stop
@@ -477,7 +539,7 @@ namespace qi {
         if (ret == 0)
         {
           globalRealProgram = fname;
-          globalRealProgram = detail::normalizePath(globalRealProgram);
+          globalRealProgram = path::detail::normalize(globalRealProgram);
         }
         else
         {
@@ -518,8 +580,13 @@ namespace qi {
     }
   }
 
-  const char* Application::suggestedSdkPath()
+  const char* Application::_suggestedSdkPath()
   {
     return _sdkPath.c_str();
+  }
+
+  const std::vector<std::string>& Application::_suggestedSdkPaths()
+  {
+    return _sdkPaths;
   }
 }

@@ -10,7 +10,6 @@
 #include <boost/filesystem.hpp>
 #include <boost/thread/tss.hpp>
 
-#include <iostream>
 #include <cstring>
 
 # ifdef _WIN32
@@ -20,8 +19,6 @@
 # endif
 
 #include <qi/path.hpp>
-
-#include "filesystem.hpp"
 
 qiLogCategory("qi.dlfcn");
 
@@ -50,11 +47,11 @@ namespace qi {
       boost::filesystem::path fname(fullName, qi::unicodeFacet());
       qiLogDebug() << "opening " << fname;
 #ifdef _WIN32
-      handle = LoadLibraryW(fname.wstring(qi::unicodeFacet()).c_str());
+      handle = LoadLibraryW(fname.wstring().c_str());
 #else
       if (flag == -1)
         flag = RTLD_NOW;
-      handle = ::dlopen(fname.string(qi::unicodeFacet()).c_str(), flag);
+      handle = ::dlopen(fname.string().c_str(), flag);
 #endif
       return handle;
     }
@@ -62,7 +59,7 @@ namespace qi {
     int   dlclose(void *handle) {
       g_LastError.reset();
       if (!handle)
-        return 0;
+        return  0;
 #ifdef _WIN32
       // Mimic unix dlclose (0 on success)
       return FreeLibrary((HINSTANCE) handle) != 0 ? 0 : -1;
@@ -78,7 +75,7 @@ namespace qi {
       if(!handle)
       {
         g_LastError.reset(const_cast<char*>("null handle"));
-        return 0;
+        return  nullptr;
       }
 #ifdef _WIN32
       function = (void *)GetProcAddress((HINSTANCE) handle, symbol);

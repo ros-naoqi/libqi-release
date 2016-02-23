@@ -20,18 +20,18 @@ namespace qi {
   class MessagePrivate
   {
   public:
-    typedef struct
+    struct MessageHeader
     {
-      qi::uint32_t magic;
-      qi::uint32_t id;
-      qi::uint32_t size;
-      qi::uint16_t version;
-      qi::uint8_t  type;
-      qi::uint8_t  flags;
-      qi::uint32_t service;
-      qi::uint32_t object;
-      qi::uint32_t action;
-    } MessageHeader;
+      qi::uint32_t magic = 0;
+      qi::uint32_t id = 0;
+      qi::uint32_t size = 0;
+      qi::uint16_t version = 0;
+      qi::uint8_t  type = 0;
+      qi::uint8_t  flags = 0;
+      qi::uint32_t service = 0;
+      qi::uint32_t object = 0;
+      qi::uint32_t action = 0;
+    };
 
     MessagePrivate();
     MessagePrivate(const MessagePrivate& b);
@@ -145,6 +145,10 @@ namespace qi {
       Type_Event = 5,
       // Advertise capabilities, Server<->Client
       Type_Capability = 6,
+      // Cancel request for ongoing call
+      Type_Cancel = 7,
+      // Method call was cancelled
+      Type_Canceled = 8,
     };
     // If flag set, payload is of type m instead of expected type
     static const unsigned int TypeFlag_DynamicPayload = 1;

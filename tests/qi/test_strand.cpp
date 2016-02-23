@@ -51,7 +51,7 @@ TEST(TestStrand, StrandCancel)
 {
   qi::Strand strand(*qi::getEventLoop());
   // cancel before scheduling
-  qi::Future<void> f1 = strand.async(fail, qi::MilliSeconds(100));
+  qi::Future<void> f1 = strand.asyncDelay(fail, qi::Seconds(1000));
   f1.cancel();
   ASSERT_EQ(qi::FutureState_Canceled, f1.wait());
 }
@@ -64,7 +64,7 @@ TEST(TestStrand, StrandCancelScheduled)
   qi::Future<void> f2 = strand.async(fail);
   qi::os::msleep(30);
   f2.cancel();
-  ASSERT_EQ(qi::FutureState_FinishedWithValue, f1.wait());
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, f1.wait()) << f1.error();
   ASSERT_EQ(qi::FutureState_Canceled, f2.wait());
 }
 
@@ -116,16 +116,48 @@ TEST(TestStrand, StrandDestruction)
   boost::mutex mutex;
   boost::atomic<unsigned int> i(0);
 
+  std::vector<qi::Future<void>> futures;
   {
     qi::Strand strand(*qi::getEventLoop());
+    futures.reserve(STRAND_NB_TRIES);
     for (unsigned int j = 0; j < STRAND_NB_TRIES; ++j)
     {
-      qi::Future<void> f1 = strand.async(boost::bind<void>(&increment,
-            boost::ref(mutex), 1, boost::ref(i)));
+      futures.push_back(strand.async(boost::bind<void>(&increment,
+              boost::ref(mutex), 1, boost::ref(i))));
     }
   }
+  for (auto& future : futures)
+    ASSERT_TRUE(future.isFinished());
+}
 
-  ASSERT_EQ(STRAND_NB_TRIES, i);
+TEST(TestStrand, StrandDestructionWithMethodAndConcurrency)
+{
+  // ASSERT_NOSEGFAULT_NOCRASH_NOBADTHINGS();
+  boost::mutex mutex;
+  boost::atomic<unsigned int> i(0);
+
+  std::vector<qi::Future<void>> futures;
+  qi::Strand strand(*qi::getEventLoop());
+  futures.reserve(STRAND_NB_TRIES);
+  for (unsigned int j = 0; j < STRAND_NB_TRIES/4; ++j)
+    futures.push_back(qi::getEventLoop()->async([&]{
+            strand.async(boost::bind<void>(&increment,
+                boost::ref(mutex), 1, boost::ref(i)));
+          }));
+  for (unsigned int j = 0; j < STRAND_NB_TRIES/4; ++j)
+    strand.async(boost::bind<void>(&increment,
+            boost::ref(mutex), 1, boost::ref(i)));
+  strand.join();
+  for (unsigned int j = 0; j < STRAND_NB_TRIES/4; ++j)
+    futures.push_back(qi::getEventLoop()->async([&]{
+            strand.async(boost::bind<void>(&increment,
+                boost::ref(mutex), 1, boost::ref(i)));
+          }));
+  for (unsigned int j = 0; j < STRAND_NB_TRIES/4; ++j)
+    strand.async(boost::bind<void>(&increment,
+            boost::ref(mutex), 1, boost::ref(i)));
+  for (auto& future : futures)
+    ASSERT_TRUE(future.wait());
 }
 
 TEST(TestStrand, StrandDestructionWithCancel)
@@ -179,6 +211,7 @@ struct MyActor : qi::Actor
 {
   boost::atomic<bool> calling;
   MyActor() : calling(0) {}
+  ~MyActor() { strand()->join(); }
   int f(int end, qi::Promise<void> finished)
   {
     int startval = prop.get();
@@ -192,10 +225,36 @@ struct MyActor : qi::Actor
       finished.setValue(0);
     return 42;
   }
+  qi::Future<int> val()
+  {
+    return qi::Future<int>(42);
+  }
+  qi::Future<int> thrw()
+  {
+    throw std::runtime_error("throw");
+  }
+  qi::Future<int> fail()
+  {
+    return qi::makeFutureError<int>("fail");
+  }
   qi::Signal<int> sig;
   qi::Property<int> prop;
 };
-QI_REGISTER_OBJECT(MyActor, f, sig, prop);
+QI_REGISTER_OBJECT(MyActor, f, val, thrw, fail, sig, prop);
+
+TEST(TestStrand, TypeErasedCall)
+{
+  boost::shared_ptr<MyActor> obj(new MyActor);
+  qi::AnyObject aobj(obj);
+
+  EXPECT_EQ(42, aobj.async<int>("val").value());
+  EXPECT_TRUE(aobj.async<int>("thrw").hasError());
+  EXPECT_TRUE(aobj.async<int>("fail").hasError());
+
+  EXPECT_EQ(42, aobj.call<int>("val"));
+  EXPECT_ANY_THROW(aobj.call<int>("thrw"));
+  EXPECT_ANY_THROW(aobj.call<int>("fail"));
+}
 
 TEST(TestStrand, AllFutureSignalPropertyPeriodicTaskAsyncTypeErasedDynamic)
 {
@@ -254,67 +313,62 @@ TEST(TestStrand, AllFutureSignalPropertyPeriodicTaskAsyncCallTypeErased)
     per.setCallback(&MyActor::f, obj.get(), TOTAL, finished);
 
     qi::Promise<void> prom;
-    qi::Signal<void> signal;
-    for (int i = 0; i < 50; ++i)
+    qi::Signal<int> signal;
+
+    static_assert(std::is_same<decltype(prom.future().andThen(qi::bind(&MyActor::f, obj.get(), TOTAL, finished))), qi::Future<int>>::value, "andThen future type incorrect");
+    static_assert(std::is_same<decltype(prom.future().then(qi::bind(&MyActor::f, obj.get(), TOTAL, finished))), qi::Future<int>>::value, "then future type incorrect");
+
+    for (int i = 0; i < 25; ++i)
       prom.future().connect(&MyActor::f, obj.get(), TOTAL, finished);
+    for (int i = 0; i < 10; ++i)
+      prom.future().thenR<int>(&MyActor::f, obj.get(), TOTAL, finished);
+    for (int i = 0; i < 10; ++i)
+      prom.future().andThen(qi::bind(&MyActor::f, obj.get(), TOTAL, finished));
+    for (int i = 0; i < 5; ++i)
+      prom.future().then(qi::bind(&MyActor::f, obj.get(), TOTAL, finished));
     for (int i = 0; i < 50; ++i)
-      signal.connect(&MyActor::f, obj.get(), TOTAL, finished);
+      signal.connect(&MyActor::f, obj.get(), _1, finished);
     for (int i = 0; i < 50; ++i)
-      aobj.connect("sig", obj->strand()->schedulerFor<void(int)>(&MyActor::f, obj, _1, finished));
+      aobj.connect("sig", boost::function<void(int)>(obj->strand()->schedulerFor(boost::bind(&MyActor::f, obj, _1, finished))));
 
     per.start();
     for (int i = 0; i < 25; ++i)
       aobj.async<void>("f", TOTAL, finished);
     for (int i = 0; i < 25; ++i)
-      qi::async<void>(&MyActor::f, obj, TOTAL, finished);
+      qi::async(qi::bind(&MyActor::f, obj, TOTAL, finished));
     for (int i = 0; i < 50; ++i)
       aobj.setProperty("prop", rand());
-    qi::Future<void> f = qi::async<void>(boost::bind(chaincall, aobj, finished, TOTAL));
+    qi::Future<void> f = qi::async(boost::bind(chaincall, aobj, finished, TOTAL));
     prom.setValue(0);
-    QI_EMIT signal();
+    QI_EMIT signal(TOTAL);
     QI_EMIT obj->sig(TOTAL);
     for (int i = 0; i < 25; ++i)
       aobj.async<void>("f", TOTAL, finished);
     for (int i = 0; i < 25; ++i)
-      qi::async<void>(&MyActor::f, obj, TOTAL, finished);
+      qi::async(qi::bind(&MyActor::f, obj, TOTAL, finished));
     f.wait();
     finished.future().wait();
   }
   ASSERT_LT(TOTAL, callcount);
 }
 
-struct MyActorTrackable : MyActor, qi::Trackable<MyActorTrackable>
-{
-  MyActorTrackable() : Trackable(this) {}
-  ~MyActorTrackable() { destroy(); }
-};
-
-TEST(TestStrand, FutureWithTrackable)
+TEST(TestStrand, FutureThenActorCancel)
 {
   callcount = 0;
-  qi::Promise<void> prom;
   {
-    qi::Promise<void> stub;
-    MyActorTrackable obj;
-    for (int i = 0; i < 10; ++i)
-      prom.future().connect(&MyActorTrackable::f, &obj, 0, stub);
-  }
-  prom.setValue(0);
-  ASSERT_EQ(0, callcount);
-}
+    boost::shared_ptr<MyActor> obj(new MyActor);
+    qi::AnyObject aobj(obj);
 
-TEST(TestStrand, SignalWithTrackable)
-{
-  callcount = 0;
-  qi::Signal<void> signal;
-  {
-    qi::Promise<void> stub;
-    MyActorTrackable obj;
-    for (int i = 0; i < 10; ++i)
-      signal.connect(&MyActorTrackable::f, &obj, 0, stub);
+    qi::Promise<void> finished;
+
+    qi::Promise<int> prom(qi::PromiseNoop<int>);
+    qi::Future<int> masterFut = prom.future().thenR<int>(&MyActor::f, obj, _1, finished);
+    masterFut.cancel();
+    ASSERT_TRUE(prom.isCancelRequested());
+    prom.setValue(0);
+    ASSERT_EQ(42, masterFut.value());
+    ASSERT_NO_THROW(finished.future().value());
   }
-  signal();
-  ASSERT_EQ(0, callcount);
 }
 
 int main(int argc, char* argv[])

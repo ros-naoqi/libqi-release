@@ -1,6 +1,7 @@
 #include <boost/program_options.hpp>
 
 #include "qicli.hpp"
+#include <qi/jsoncodec.hpp>
 
 namespace po = boost::program_options;
 
@@ -25,7 +26,7 @@ int                 main(int argc, char **argv)
 {
   qi::ApplicationSession app(argc, argv);
   int                    subCmdArgc = 0;
-  char                   **subCmdArgv = 0;
+  char                   **subCmdArgv = nullptr;
   SubCmd                 subCmd = 0;
 
   init();
@@ -44,7 +45,8 @@ int                 main(int argc, char **argv)
   po::options_description desc("Usage: qicli [OPTIONS] SUBCMD [-h] [OPTIONS] [ARGS]");
 
   desc.add_options()
-      ("help,h", "Print this help message and exit");
+      ("help,h", "Print this help message and exit")
+      ;
 
   po::positional_options_description positionalOptions;
   positionalOptions.add("", 1);

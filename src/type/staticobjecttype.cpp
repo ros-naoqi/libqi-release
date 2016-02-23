@@ -123,15 +123,12 @@ static PropertyBase* property(ObjectTypeData& data, void* instance, unsigned int
   ObjectTypeData::PropertyGetterMap::iterator i;
   i = data.propertyGetterMap.find(signal);
   if (i == data.propertyGetterMap.end())
-  {
-    qiLogError() << "No such property " << signal;
-    return 0;
-  }
+    return  nullptr;
   PropertyBase* sig = i->second(instance);
   if (!sig)
   {
     qiLogError() << "Property getter returned NULL";
-    return 0;
+    return  nullptr;
   }
   return sig;
 }
@@ -145,21 +142,20 @@ static SignalBase* getSignal(ObjectTypeData& data, void* instance, unsigned int 
     PropertyBase* prop = property(data, instance, signal);
     if (prop)
       return prop->signal();
-    qiLogError() << "No such signal " << signal;
-    return 0;
+    return  nullptr;
   }
   SignalBase* sig = i->second(instance);
   if (!sig)
   {
     qiLogError() << "Signal getter returned NULL";
-    return 0;
+    return  nullptr;
   }
   return sig;
 }
 
 static void reportError(qi::Future<AnyReference> fut) {
   if (fut.hasError()) {
-    qiLogError() << fut.error();
+    qiLogWarning() << "metaPost failed: " << fut.error();
     return;
   }
   qi::AnyReference ref = fut.value();
@@ -169,15 +165,19 @@ static void reportError(qi::Future<AnyReference> fut) {
 void StaticObjectTypeBase::metaPost(void* instance, AnyObject context, unsigned int signal,
                                     const GenericFunctionParameters& params)
 {
-  SignalBase* sb = getSignal(_data, instance, signal);
-  if (sb)
+  if (SignalBase* sb = getSignal(_data, instance, signal))
   {
     sb->trigger(params);
   }
-  else
+  else if (_data.methodMap.find(signal) != _data.methodMap.end())
   { // try method
     qi::Future<AnyReference> fut = metaCall(instance, context, signal, params, MetaCallType_Queued, Signature());
     fut.connect(&reportError);
+  }
+  else
+  {
+    qiLogWarning() << "post: no such signal or method " << signal;
+    return;
   }
 }
 
@@ -188,6 +188,7 @@ qi::Future<SignalLink> StaticObjectTypeBase::connect(void* instance, AnyObject c
     instance = static_cast<Manageable*>(context.asGenericObject());
   SignalBase* sb = getSignal(_data, instance, event);
   if (!sb) {
+    qiLogWarning() << "connect: no such signal: " << event;
     return qi::makeFutureError<SignalLink>("Cant find signal");
   }
   SignalLink id = sb->connect(subscriber);
@@ -209,7 +210,10 @@ qi::Future<void> StaticObjectTypeBase::disconnect(void* instance, AnyObject cont
     instance = static_cast<Manageable*>(context.asGenericObject());
   SignalBase* sb = getSignal(_data, instance, event);
   if (!sb)
+  {
+    qiLogWarning() << "disconnect: no such signal: " << event;
     return qi::makeFutureError<void>("Cant find signal");
+  }
   bool b = sb->disconnect(link);
   if (!b)
     return qi::makeFutureError<void>("Cant unregister signal");
@@ -220,10 +224,16 @@ qi::Future<AnyValue> StaticObjectTypeBase::property(void* instance, AnyObject co
 {
   PropertyBase* p = ::qi::detail::property(_data, instance, id);
   if (!p)
+  {
+    qiLogWarning() << "property: no such property: " << id;
     return qi::makeFutureError<AnyValue>("Cant find property");
+  }
   ExecutionContext* ec = getExecutionContext(instance, context);
   if (ec)
-    return ec->async<AnyValue>(boost::bind(&PropertyBase::value, p));
+    return ec->async([p]{
+          // TODO make this async when setValue returns a futuresync
+          return p->value();
+        });
   else
     return qi::Future<AnyValue>(p->value());
 }
@@ -237,7 +247,10 @@ qi::Future<void> StaticObjectTypeBase::setProperty(void* instance, AnyObject con
 {
   PropertyBase* p = ::qi::detail::property(_data, instance, id);
   if (!p)
+  {
+    qiLogWarning() << "setProperty: no such property: " << id;
     return qi::makeFutureError<void>("Cant find property");
+  }
   qiLogDebug() << "SetProperty " << id << " " << encodeJSON(value);
   ExecutionContext* ec = getExecutionContext(instance, context);
   if (ec)

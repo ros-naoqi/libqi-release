@@ -42,6 +42,9 @@ namespace detail {
     typedef boost::function<SignalBase* (void*)> SignalMemberGetter;
     typedef boost::function<PropertyBase* (void*)> PropertyMemberGetter;
 
+    /// Sets a description for the type to build.
+    void setDescription(const std::string& description);
+
     // input: template-based
 
     /// Declare the class type for which this StaticBuilder is.
@@ -68,14 +71,11 @@ namespace detail {
     /** create a T, wrap in a AnyObject
      *  All template parameters are given to the T constructor except the first one
      */
-    #define genCall(n, ATYPEDECL, ATYPES, ADECL, AUSE, comma)                 \
-    template<typename T comma ATYPEDECL>                                      \
-    inline unsigned int advertiseFactory(const std::string& name)             \
-    {                                                                         \
-      return advertiseMethod(name, &constructObject<T comma ATYPES>);         \
+    template<typename T, typename... Args>
+    inline unsigned int advertiseFactory(const std::string& name)
+    {
+      return advertiseMethod(name, &constructObject<T, Args...>);
     }
-    QI_GEN(genCall)
-    #undef genCall
 
     template<typename P>
     void inherits(int offset);
@@ -206,17 +206,22 @@ namespace detail {
  * If that doesn't fit your need, you can always re-register
  * everything from the interface on your class.
  */
-#define QI_REGISTER_IMPLEMENTATION(parent, name)                             \
-  static bool _qiregister##name() {                                          \
-    qi::registerType(typeid(name), qi::typeOf<parent>());                    \
-    name* ptr = (name*)(void*)0x10000;                                       \
-    parent* pptr = ptr;                                                      \
-    int offset = (intptr_t)(void*)pptr - (intptr_t)(void*) ptr;              \
-    if (offset)                                                              \
-      qiLogError("qitype.register") << "non-zero offset for implementation " \
-        << #name <<" of " << #parent << ", call will fail at runtime";       \
-    return true;                                                             \
-  }                                                                          \
+#define QI_REGISTER_IMPLEMENTATION(parent, name)                                                           \
+  static bool _qiregister##name()                                                                          \
+  {                                                                                                        \
+    qi::detail::ForceProxyInclusion<parent>().dummyCall();                                                 \
+    qi::registerType(typeid(name), qi::typeOf<parent>());                                                  \
+    name* ptr = static_cast<name*>(reinterpret_cast<void*>(0x10000));                                      \
+    parent* pptr = ptr;                                                                                    \
+    intptr_t offset = reinterpret_cast<intptr_t>(pptr) - reinterpret_cast<intptr_t>(ptr);                  \
+    if (offset)                                                                                            \
+    {                                                                                                      \
+      qiLogError("qitype.register") << "non-zero offset for implementation " << #name << " of " << #parent \
+                                    << ", call will fail at runtime";                                      \
+      throw std::runtime_error("non-zero offset between implementation and interface");                    \
+    }                                                                                                      \
+    return true;                                                                                           \
+  }                                                                                                        \
   static bool BOOST_PP_CAT(__qi_registration, __LINE__) = _qiregister##name();
 
 #define _QI_REGISTER_TEMPLATE_OBJECT(name, model, ...)                    \
@@ -267,9 +272,70 @@ namespace detail {
   _QI_REGISTER_TEMPLATE_OBJECT(name, ObjectThreadingModel_MultiThread, \
                                __VA_ARGS__)
 
-QI_MT_TEMPLATE_OBJECT(qi::Future, _connect, isFinished, value, waitFor, waitUntil, isRunning, isCanceled, hasError, error, cancel);
-QI_MT_TEMPLATE_OBJECT(qi::FutureSync, _connect, isFinished, value, waitFor, waitUntil, isRunning, isCanceled, hasError, error, async, cancel);
-QI_MT_TEMPLATE_OBJECT(qi::Promise, setValue, setError, setCanceled, reset, future, value, trigger);
+// sometimes we need to use type-erased futures, but only those two methods are needed, so register our futures as
+// normal objects with these methods
+namespace qi
+{
+template <>
+class QI_API TypeOfTemplate<qi::Future> : public detail::StaticObjectTypeBase
+{
+public:
+  virtual TypeInterface* templateArgument() = 0;
+};
+template <>
+class QI_API TypeOfTemplate<qi::FutureSync> : public detail::StaticObjectTypeBase
+{
+public:
+  virtual TypeInterface* templateArgument() = 0;
+};
+template <template<typename> class FutT, typename T>
+class TypeOfTemplateFutImpl : public TypeOfTemplate<FutT>
+{
+public:
+  TypeOfTemplateFutImpl()
+  {
+    /* early self registering to avoid recursive init */
+    ::qi::registerType(typeid(FutT<T>), this);
+    ObjectTypeBuilder<FutT<T> > b(false);
+    b.setThreadingModel(qi::ObjectThreadingModel_MultiThread);
+#define ADVERTISE(meth) \
+    b.advertiseMethod(#meth, &FutT<T>::meth)
+    ADVERTISE(_connect);
+    ADVERTISE(error);
+    ADVERTISE(hasError);
+    ADVERTISE(isCanceled);
+    ADVERTISE(cancel);
+    ADVERTISE(value);
+    ADVERTISE(waitUntil);
+    ADVERTISE(waitFor);
+    ADVERTISE(isRunning);
+    ADVERTISE(isFinished);
+#undef ADVERTISE
+    // this method is useful to get a future<anyvalue> through a simple async call
+    // it is used in libqi-python
+    b.advertiseMethod("_getSelf",
+                      static_cast<qi::Future<T>(*)(FutT<T>*)>(
+                          [](FutT<T>* fut) -> qi::Future<T> {
+                            return *fut;
+                          }));
+    this->initialize(b.metaObject(), b.typeData());
+  }
+  virtual TypeInterface* templateArgument()
+  {
+    return typeOf<T>();
+  }
+  typedef DefaultTypeImplMethods<FutT<T>> Methods;
+  _QI_BOUNCE_TYPE_METHODS(Methods);
+};
+template <typename T>
+class TypeOfTemplateImpl<qi::Future, T> : public TypeOfTemplateFutImpl<qi::Future, T> {};
+template <typename T>
+class TypeOfTemplateImpl<qi::FutureSync, T> : public TypeOfTemplateFutImpl<qi::FutureSync, T> {};
+}
+QI_TEMPLATE_TYPE_DECLARE(qi::Future)
+QI_TEMPLATE_TYPE_DECLARE(qi::FutureSync)
+
+QI_MT_TEMPLATE_OBJECT(qi::Promise, setValue, setError, setCanceled, future, value, trigger);
 
 namespace qi { namespace detail {
   template<typename T> struct TypeManager<Future<T> >: public TypeManagerDefaultStruct<Future<T> > {};

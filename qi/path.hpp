@@ -29,15 +29,15 @@ namespace qi
   /**
    * \brief The Path class allow handling path in a cross-platform maner.
    * \includename{qi/path.hpp}
-   * The class assume that all string are encoded in UTF-8.
+   * The class assume that all string are encoded in UTF-8 if not specified otherwise.
    */
   class QI_API Path {
   public:
     /// Default Constructor
-    /// \param unicodePath Path
+    /// \param unicodePath Path value as UTF-8 string.
     Path(const std::string& unicodePath = std::string());
 
-    /// \param unicodePath Path
+    /// \param unicodePath Path value as UTF-8 string.
     Path(const char* unicodePath);
 
     /// Copy Constructor
@@ -64,35 +64,50 @@ namespace qi
     /// is the path a symlink?
     bool isSymlink() const;
 
-    /// get the name of the current file of folder
+    /// @return the name of the current file of folder as an UTF-8 string
     std::string filename() const;
 
-    /// get the extension of the current file
+    /// @return the extension of the current file as an UTF-8 string
     std::string extension() const;
 
-    /// return a Path to the parent
+    /// @return a Path to the parent
     Path parent() const;
 
-    /// return an absolute Path of the current path
+    /// @return an absolute Path of the current path
     Path absolute() const;
 
-    /// return a vector of files contained in the current path
+    /// @return a vector of files contained in the current path
     PathVector files() const;
 
-    /// return a vector of absolute path to files contained recursively in the current path
+    /// @return a vector of absolute path to files contained recursively in the current path
     PathVector recursiveFiles() const;
 
-    /// return a vector of dirs contained in the current path
+    /// @return a vector of dirs contained in the current path
     PathVector dirs() const;
 
-    /// return the path as a string
+    /// @return the path as an UTF-8 string
     operator std::string() const;
 
-    /// return the path as a string
+    /// @return the path as an UTF-8 string
     std::string str() const;
 
-    /// return the path as a boost path representation
+    /// @return the path as a boost path representation
+    operator boost::filesystem::path() const;
+
+    /// @return the path as a boost path representation
     const boost::filesystem::path& bfsPath() const;
+
+    /// @return A unicode-safe path from a string containing a native encoding path instead of UTF-8.
+    static Path fromNative(const char* nativeCharsPath);
+
+    /// @return A unicode-safe path from a string containing a native encoding path instead of UTF-8.
+    static Path fromNative(const wchar_t* nativeCharsPath);
+
+    /// @return A unicode-safe path from a string containing a native encoding path instead of UTF-8.
+    static Path fromNative(const std::string& nativeCharsPath);
+
+    /// @return A unicode-safe path from a string containing a native encoding path instead of UTF-8.
+    static Path fromNative(const std::wstring& nativeCharsPath);
 
     /// concat two paths adding a directory separator between them
     Path operator/(const qi::Path& rhs) const;
@@ -103,6 +118,9 @@ namespace qi
     /// copy operator
     const Path& operator=(const qi::Path& rhs) const;
 
+    bool operator==(const qi::Path& rhs) const;
+    bool operator!=(const qi::Path& rhs) const;
+
     /// Standard output stream operator for logging.
     friend std::ostream& operator<<(std::ostream& output, const qi::Path& path)
     {
@@ -111,7 +129,6 @@ namespace qi
     }
 
   private:
-    Path(PrivatePath* p);
     boost::scoped_ptr<PrivatePath> _p;
   };
 
@@ -131,6 +148,9 @@ namespace qi
       ScopedDir(qi::Path path = qi::Path());
       /// Remove the directory
       ~ScopedDir();
+
+      /// Implicit conversion operator to qi::Path
+      operator qi::Path() const;
 
       /// Get the full path to the directory created
       const qi::Path& path() const;
@@ -173,7 +193,7 @@ namespace qi
      */
     QI_API std::string sdkPrefix();
 
-    /// \brief Implementation details
+    /// \brief Implementation detail
     ///
     /// not thread-safe, must be kept internal
     namespace detail {
@@ -208,13 +228,22 @@ namespace qi
       /**
        * \brief Set the writable files path for users.
        * \param path Path to the new writable data path
+       * \warning This method is only meant to be used in tests.
        */
       QI_API void setWritablePath(const std::string &path);
+
+      /** Normalize a path by deducing ".." and '.' and replacing '\\' by '/'.
+          @param path Path to normalize.
+          @return A normalized copy of the path passed in arguments.
+      */
+      QI_API Path normalize(const Path& path);
     }
 
     /**
      * \brief Look for a binary.
      * \param name The full name of the binary, or just the name.
+     * \param searchInPath if true, also search for the binary in the $PATH
+     * directories.
      * \return The complete, native path to the file found,
      * an empty string otherwise.
      *
@@ -275,9 +304,13 @@ namespace qi
      * return the first match.
      * \param applicationName Name of the application.
      * \param filename Name of the file to look for.
+     * \param excludeUserWritablePath If true, findData() won't search into userWritableDataPath.
      * You can specify subdirectories using "/" as directory separator.
      * \return The complete, native path of the file if it was found,
      * an empty string otherwise.
+     * \remark For automatic tests, you can modify the user data path
+     * to find data in (e.g. ~/.local/share/ on Unix systems)
+     * with :cpp:func:`qi::path::detail::setWritablePath`
      *
      * \verbatim
      * The file is searched in a list of possible directories, provided by the
@@ -295,7 +328,8 @@ namespace qi
      * \endverbatim
      */
     QI_API std::string findData(const std::string& applicationName,
-                                const std::string& filename);
+                                const std::string& filename,
+                                bool excludeUserWritablePath = false);
 
 
     /**
@@ -304,6 +338,7 @@ namespace qi
      * Directories are discarded.
      * \param applicationName Name of the application.
      * \param pattern wilcard pattern of the files to look for.
+     * \param excludeUserWritablePath If true, listData() won't search into userWritableDataPath.
      * You can specify subdirectories using "/" as directory separator.
      * \return An std::vector of the complete, native paths of the files that matched.
      *
@@ -330,7 +365,8 @@ namespace qi
      * \endverbatim
      */
     QI_API std::vector<std::string> listData(const std::string& applicationName,
-                                             const std::string& pattern="*");
+                                             const std::string& pattern="*",
+                                             bool excludeUserWritablePath = false);
 
     /** same as listData but for libraries
      */
@@ -354,7 +390,10 @@ namespace qi
     /**
      * \brief Get the list of directories used when searching for data files for the given application name.
      * \param applicationName Name of the application.
+     * \param excludeUserWritablePath If true, dataPaths() won't include userWritableDataPath.
      * \return A list of directories.
+     * \remark For automatic tests, you can modify the user data path
+     * (e.g ~/.local/share/ on Unix systems) with :cpp:func:`qi::path::detail::setWritablePath`
      *
      * \verbatim
      * This is used by the :cpp:func:`qi::path::findData(const std::string&, const std::string&)`
@@ -371,7 +410,8 @@ namespace qi
      *    nor that they are writeable.
      * \endverbatim
      */
-    QI_API std::vector<std::string> dataPaths(const std::string& applicationName="");
+    QI_API std::vector<std::string> dataPaths(const std::string& applicationName="",
+                                              bool excludeUserWritablePath = false);
 
     /**
      * \brief Get the list of directories used when searching for binaries.
@@ -459,6 +499,7 @@ namespace qi
      * \brief Set the writable files path for users.
      * \param path Path to the new writable data path
      * \deprecated since 2.2 Use qi::path::detail::setWritablePath instead
+     * \warning This method is only meant to be used in tests.
      */
     QI_API QI_API_DEPRECATED void setWritablePath(const std::string &path);
   }

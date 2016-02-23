@@ -8,7 +8,6 @@
 #include <qi/type/objecttypebuilder.hpp>
 #include "server.hpp"
 #include "objectregistrar.hpp"
-#include "serverresult.hpp"
 #include <qi/os.hpp>
 #include <boost/thread/mutex.hpp>
 #include "servicedirectoryclient.hpp"
@@ -24,7 +23,7 @@ namespace qi {
     // last reference to Session which leads to a deadlock (Session can't be
     // destroyed because it is calling us)
     if (object.unique())
-      qi::async<void>(boost::bind(&qi::detail::hold<qi::AnyObject>, object));
+      qi::async(boost::bind(&qi::detail::hold<qi::AnyObject>, object));
   }
 
   ObjectRegistrar::ObjectRegistrar(ServiceDirectoryClient *sdClient, bool enforceAuth)
@@ -49,8 +48,8 @@ namespace qi {
       boost::mutex::scoped_lock sl(_servicesMutex);
       services = _services;
     }
-    for (BoundServiceMap::iterator iter = services.begin();
-        iter != services.end();
+    for (BoundServiceMap::reverse_iterator iter = services.rbegin();
+        iter != services.rend();
         ++iter)
       unregisterService(iter->first);
     Server::close();
@@ -73,15 +72,12 @@ namespace qi {
     si.setSessionId(_id);
 
     boost::mutex::scoped_lock sl(_servicesMutex);
-    for (std::map<unsigned int, BoundService>::iterator it = _services.begin();
-         it != _services.end();
-         it++)
-    {
+    std::map<unsigned, BoundService>::iterator it = _services.begin();
+    if (it != _services.end()) {
       BoundService& bs = it->second;
       si.setServiceId(bs.id);
       si.setName(bs.name);
       _sdClient->updateServiceInfo(si);
-      return;
     }
   }
 

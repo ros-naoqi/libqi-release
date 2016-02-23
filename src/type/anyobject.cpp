@@ -2,7 +2,6 @@
 **  Copyright (C) 2012, 2013 Aldebaran Robotics
 **  See COPYING for the license
 */
-#include <iostream>
 
 #include <qi/anyobject.hpp>
 
@@ -35,7 +34,7 @@ int ObjectTypeInterface::inherits(TypeInterface* other)
     if (op)
     {
       int offset = op->inherits(other);
-      if (offset != -1)
+      if (offset != INHERITS_FAILED)
       {
         qiLogDebug() << "Inheritance offsets " << parents[i].second
          << " " << offset;
@@ -45,14 +44,14 @@ int ObjectTypeInterface::inherits(TypeInterface* other)
     qiLogDebug() << parents[i].first->infoString() << " does not match " << other->infoString()
     <<" " << ((op != 0) == (dynamic_cast<ObjectTypeInterface*>(other) != 0));
   }
-  return -1;
+  return INHERITS_FAILED;
 }
 
 namespace detail
 {
   ProxyGeneratorMap& proxyGeneratorMap()
   {
-    static ProxyGeneratorMap* map = 0;
+    static ProxyGeneratorMap* map = nullptr;
     if (!map)
       map = new ProxyGeneratorMap();
     return *map;
@@ -101,8 +100,7 @@ inline void call(qi::Promise<AnyReference>& out,
   if (trace)
   {
     tid = context.asGenericObject()->_nextTraceId();
-    qi::os::timeval tv;
-    qi::os::gettimeofday(&tv);
+    qi::os::timeval tv(qi::SystemClock::now().time_since_epoch());
     AnyValueVector args;
     args.resize(params.size()-1);
     for (unsigned i=0; i<params.size()-1; ++i)
@@ -177,8 +175,7 @@ inline void call(qi::Promise<AnyReference>& out,
 
   if (trace)
   {
-    qi::os::timeval tv;
-    qi::os::gettimeofday(&tv);
+    qi::os::timeval tv(qi::SystemClock::now().time_since_epoch());
     AnyValue val;
     if (success)
       val = AnyValue(retref, false, true);
@@ -269,7 +266,7 @@ qi::Future<AnyReference> metaCall(ExecutionContext* el,
 
   if (sync)
   {
-    qi::Promise<AnyReference> out(FutureCallbackType_Sync);
+    qi::Promise<AnyReference> out(&PromiseNoop<AnyReference>, FutureCallbackType_Sync);
     call(out, context, params, methodId, func,
          callerId ? callerId : qi::os::gettid(), postTimestamp);
     return out.future();
@@ -278,11 +275,10 @@ qi::Future<AnyReference> metaCall(ExecutionContext* el,
   {
     // If call is handled by our thread pool, we can safely switch the promise
     // to synchronous mode.
-    qi::Promise<AnyReference>* out = new qi::Promise<AnyReference>();
+    qi::Promise<AnyReference>* out = new qi::Promise<AnyReference>(&PromiseNoop<AnyReference>);
     GenericFunctionParameters pCopy = params.copy(noCloneFirst);
     qi::Future<AnyReference> result = out->future();
-    qi::os::timeval t;
-    qi::os::gettimeofday(&t);
+    qi::os::timeval t(qi::SystemClock::now().time_since_epoch());
     el->post(MFunctorCall(func, pCopy, out, noCloneFirst, context, methodId,
                           callerId ? callerId : qi::os::gettid(), t));
     return result;

@@ -9,7 +9,6 @@
 # pragma warning(disable: 4355)
 #endif
 
-#include <iostream>
 #include <string>
 #include <cstring>
 #include <cstdlib>
@@ -44,7 +43,7 @@ namespace qi
 
   qi::Future<void> TransportServer::listen(const qi::Url &url, qi::EventLoop* ctx)
   {
-    TransportServerImpl* impl = 0;
+    TransportServerImpl* impl = nullptr;
 
     if (url.protocol() == "tcp")
     {

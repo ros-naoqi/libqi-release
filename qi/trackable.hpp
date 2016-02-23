@@ -14,6 +14,7 @@
 # include <boost/thread/condition_variable.hpp>
 # include <boost/function.hpp>
 
+# include <qi/macro.hpp>
 # include <qi/log.hpp>
 
 namespace qi
@@ -43,15 +44,10 @@ namespace qi
   {
   public:
     /// Default constructor
-    Trackable(T* ptr);
-    /// Default destructor
+    Trackable();
+    /// @deprecated Not required anymore, use the default constructor instead.
+    QI_API_DEPRECATED Trackable(T* ptr);
     ~Trackable();
-
-    /**
-     * \return A shared_ptr that will block destruction (call to destroy() until
-     *         it is released, or an empty shared_ptr if destroy was already called.
-     */
-    boost::shared_ptr<T> lock();
 
     /**
      * \return A weak_ptr from this. While a shared_ptr exists from this weak_ptr,
@@ -106,7 +102,7 @@ namespace qi
    *   - Else throws qi::PointerLockException
    */
   template<typename F, typename ARG0>
-  boost::function<F> track(const boost::function<F>& f, const ARG0& arg0);
+  boost::function<F> track(boost::function<F> f, const ARG0& arg0);
   /**
    * \brief Wrap given function f with a tracking check on arg0, which must
    *        be a weak pointer or a Trackable instance.
@@ -115,8 +111,7 @@ namespace qi
    *   - Else calls onFail
    */
   template<typename F, typename ARG0>
-  boost::function<F> trackWithFallback(boost::function<void()> onFail,
-      const boost::function<F>& f, const ARG0& arg0);
+  boost::function<F> trackWithFallback(boost::function<void()> onFail, boost::function<F> f, const ARG0& arg0);
 }
 
 # include <qi/detail/trackable.hxx>

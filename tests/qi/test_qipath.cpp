@@ -4,22 +4,20 @@
  * found in the COPYING file.
  */
 
-#include <fstream>
+#include <boost/filesystem/fstream.hpp>
 #include <numeric>
 
 #include <gtest/gtest.h>
-#define BOOST_FILESYSTEM_VERSION 3
 #include <boost/algorithm/string.hpp>
 #include <boost/filesystem.hpp>
 #include <locale>
 
-#include "../src/sdklayout.hpp"
+#include "../../src/sdklayout.hpp"
 #include <qi/application.hpp>
 #include <qi/os.hpp>
 #include <qi/path.hpp>
 #include <qi/log.hpp>
-#include "../src/utils.hpp"
-#include <iostream>
+#include "../../src/utils.hpp"
 #include <sstream>
 #include <boost/scoped_ptr.hpp>
 
@@ -30,34 +28,13 @@
 
 qiLogCategory("test.qi.path");
 
-std::string argpath;
+qi::Path argpath;
 
 namespace bfs = boost::filesystem;
 
-bfs::path absPath(const std::string& pPath)
+bfs::path absPath(const bfs::path& pPath)
 {
   return bfs::absolute(bfs::system_complete(pPath)).make_preferred();
-}
-
-boost::filesystem::path normalize(boost::filesystem::path path1,
-                                  boost::filesystem::path path2)
-{
-  if (*path2.begin() == ".")
-    return path1;
-  if (*path2.begin() == "..")
-    return path1.parent_path();
-  else
-    return path1 /= path2;
-}
-
-
-std::string normalizePath(const std::string& path)
-{
-  boost::filesystem::path p(path, qi::unicodeFacet());
-
-  p = std::accumulate(p.begin(), p.end(), boost::filesystem::path(), normalize);
-
-  return p.make_preferred().string(qi::unicodeFacet());
 }
 
 boost::filesystem::path getHomePath()
@@ -69,11 +46,10 @@ boost::filesystem::path getHomePath()
 
 TEST(qiPath, callingInit)
 {
-  bfs::path expected(normalizePath(absPath(argpath).string(qi::unicodeFacet())), qi::unicodeFacet());
-  expected = expected.parent_path().parent_path();
-
+  const qi::Path expected = qi::path::detail::normalize(absPath(argpath)).parent().parent();
+  
   std::string actual = qi::path::sdkPrefix();
-  std::string expect = expected.string(qi::unicodeFacet());
+  std::string expect = expected.str();
   boost::to_lower(expect);
   boost::to_lower(actual);
 
@@ -110,7 +86,7 @@ TEST(qiPath, callingInit3)
 
 TEST(qiPath, AddPrefixesPath)
 {
-  qi::SDKLayout sdkl = qi::SDKLayout();
+  qi::SDKLayout sdkl;
 
   sdkl.addOptionalSdkPrefix("build/sdk");
   sdkl.addOptionalSdkPrefix("debug");
@@ -128,12 +104,12 @@ TEST(qiPath, AddPrefixesPath)
   for (unsigned int i = 0; i < prefixes.size(); ++i)
     boost::to_lower(prefixes[i]);
 
-  ASSERT_TRUE(expected == prefixes);
+  ASSERT_EQ(expected, prefixes);
 }
 
 TEST(qiPath, ClearPrefixesPath)
 {
-  qi::SDKLayout sdkl = qi::SDKLayout();
+  qi::SDKLayout sdkl;
 
   sdkl.addOptionalSdkPrefix("build/sdk");
   sdkl.addOptionalSdkPrefix("debug");
@@ -176,7 +152,7 @@ TEST(qiPath, FindLib)
 #ifndef _WIN32
 TEST(qiPath, FindBin)
 {
-  qi::SDKLayout sdkl = qi::SDKLayout();
+  qi::SDKLayout sdkl;
 
   bfs::path expected(sdkl.sdkPrefix(), qi::unicodeFacet());
   std::string exp;
@@ -200,7 +176,7 @@ TEST(qiPath, FindBin)
 #ifndef _MSC_VER
 TEST(qiPath, GetLinuxBinPaths)
 {
-  qi::SDKLayout sdkl = qi::SDKLayout();
+  qi::SDKLayout sdkl;
   bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
 
   std::vector<std::string> expected;
@@ -219,7 +195,7 @@ TEST(qiPath, GetLinuxBinPaths)
 
 TEST(qiPath, GetLinuxlibPaths)
 {
-  qi::SDKLayout sdkl = qi::SDKLayout();
+  qi::SDKLayout sdkl;
   bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
 
   std::vector<std::string> expected;
@@ -269,10 +245,10 @@ TEST(qiPath, callingGetUserDataPath)
 #ifndef _WIN32
 TEST(qiPath, LinuxConfigPaths)
 {
-  qi::SDKLayout* sdkl = new qi::SDKLayout();
+  qi::SDKLayout sdkl;
 
-  bfs::path expected(sdkl->sdkPrefix(), qi::unicodeFacet());
-  std::vector<std::string> actualPrefsPaths = sdkl->confPaths("foo");
+  bfs::path expected(sdkl.sdkPrefix(), qi::unicodeFacet());
+  std::vector<std::string> actualPrefsPaths = sdkl.confPaths("foo");
 
   bfs::path writeablePath(getHomePath() / ".config" / "foo") ;
 
@@ -292,20 +268,18 @@ TEST(qiPath, LinuxConfigPaths)
 
   ASSERT_TRUE(expectedPrefPaths == actualPrefsPaths);
 
-  std::string actual = sdkl->userWritableConfPath("foo", "");
+  std::string actual = sdkl.userWritableConfPath("foo", "");
   std::string expect = writeablePath.string(qi::unicodeFacet());
   boost::to_lower(expect);
   boost::to_lower(actual);
 
   ASSERT_EQ(expect, actual);
-
-  delete sdkl;
 }
 #endif
 
 TEST(qiPath, dataPaths)
 {
-  qi::SDKLayout* sdkl = new qi::SDKLayout();
+  qi::SDKLayout sdkl;
 
   std::vector<std::string> expectedPrefPaths;
 
@@ -317,11 +291,11 @@ TEST(qiPath, dataPaths)
   writeablePath = writeablePath / "foo";
  #endif
 
-  bfs::path expected(sdkl->sdkPrefix(), qi::unicodeFacet());
+  bfs::path expected(sdkl.sdkPrefix(), qi::unicodeFacet());
   expectedPrefPaths.push_back(writeablePath.string(qi::unicodeFacet()));
   expectedPrefPaths.push_back((expected / "share/foo").make_preferred().string(qi::unicodeFacet()));
 
-  std::vector<std::string> actualPrefsPaths = sdkl->dataPaths("foo");
+  std::vector<std::string> actualPrefsPaths = sdkl.dataPaths("foo");
 
   for (unsigned int i = 0; i < actualPrefsPaths.size(); ++i)
     boost::to_lower(actualPrefsPaths[i]);
@@ -330,39 +304,37 @@ TEST(qiPath, dataPaths)
     boost::to_lower(expectedPrefPaths[i]);
 
   ASSERT_TRUE(expectedPrefPaths == actualPrefsPaths);
-  std::string actual = sdkl->userWritableDataPath("foo", "");
+  std::string actual = sdkl.userWritableDataPath("foo", "");
   std::string expect = writeablePath.string(qi::unicodeFacet());
   boost::to_lower(expect);
   boost::to_lower(actual);
 
   ASSERT_EQ(expect, actual);
-
-  delete sdkl;
 }
 
 TEST(qiPath, customWritablePath)
 {
   const char* args = { "build/sdk/bin/foo" };
-  qi::SDKLayout* sdkl = new qi::SDKLayout(args);
+  qi::SDKLayout sdkl(args);
 
   std::string p, r, e;
 
   p = "/tmp/chiche/";
   qi::os::setenv("QI_WRITABLE_PATH", p.c_str());
-  r = sdkl->userWritableConfPath("foo", "foo");
+  r = sdkl.userWritableConfPath("foo", "foo");
   e = fsconcat(p, "config", "foo", "foo");
   ASSERT_EQ(r, e);
-  r = sdkl->userWritableDataPath("foo", "foo");
+  r = sdkl.userWritableDataPath("foo", "foo");
   e = fsconcat(p, "data", "foo", "foo");
   ASSERT_EQ(r, e);
   qi::os::setenv("QI_WRITABLE_PATH", "");
 
   p = "/tmp/42/";
-  sdkl->setWritablePath(p);
-  r = sdkl->userWritableConfPath("foo", "foo");
+  sdkl.setWritablePath(p);
+  r = sdkl.userWritableConfPath("foo", "foo");
   e = fsconcat(p, "config", "foo", "foo");
   ASSERT_EQ(r, e);
-  r = sdkl->userWritableDataPath("foo", "foo");
+  r = sdkl.userWritableDataPath("foo", "foo");
   e = fsconcat(p, "data", "foo", "foo");
   ASSERT_EQ(r, e);
 }
@@ -370,7 +342,7 @@ TEST(qiPath, customWritablePath)
 TEST(qiPath, readingWritingfindConfigs)
 {
   const char* args = { (char *) "build/sdk/bin/foo" };
-  qi::SDKLayout* sdkl = new qi::SDKLayout(args);
+  qi::SDKLayout sdkl(args);
 
  #ifndef _WIN32
   bfs::path writeablePath(bfs::absolute(qi::os::home()) / ".config" / "foo" / "foo.cfg");
@@ -379,14 +351,14 @@ TEST(qiPath, readingWritingfindConfigs)
   bfs::path writeablePath(bfs::absolute(userAppData) / "foo" / "foo.cfg");
  #endif
 
-  std::string fooCfg = sdkl->userWritableConfPath("foo", "foo.cfg");
-  std::ofstream ofs;
-  ofs.open(fooCfg.c_str(), std::fstream::out | std::fstream::trunc);
-  ASSERT_FALSE (ofs.bad()) << "could not open" << fooCfg;
+  qi::Path fooCfgPath = sdkl.userWritableConfPath("foo", "foo.cfg");
+  bfs::ofstream ofs;
+  ofs.open(fooCfgPath, std::fstream::out | std::fstream::trunc);
+  ASSERT_FALSE(ofs.bad()) << "could not open" << fooCfgPath;
   ofs << "Hi, this is foo" << std::endl;
   ofs.close();
 
-  fooCfg = sdkl->findConf("foo", "foo.cfg");
+  std::string fooCfg = sdkl.findConf("foo", "foo.cfg");
   std::string expect = writeablePath.string(qi::unicodeFacet());
   boost::to_lower(expect);
   boost::to_lower(fooCfg);
@@ -395,17 +367,15 @@ TEST(qiPath, readingWritingfindConfigs)
   std::cout << "removing: " << fooCfg << std::endl;
   remove(fooCfg.c_str());
 
-  std::string noCfgExisting = sdkl->findConf("foo", "bar.cfg");
+  std::string noCfgExisting = sdkl.findConf("foo", "bar.cfg");
   ASSERT_EQ(std::string(), noCfgExisting);
-
-  delete sdkl;
 }
 
 
 TEST(qiPath, readingWritingFindData)
 {
   const char* args = { (char *) "build/sdk/bin/foo" };
-  qi::SDKLayout* sdkl = new qi::SDKLayout(args);
+  qi::SDKLayout sdkl(args);
 
  #ifndef _WIN32
   bfs::path writeablePath(bfs::absolute(qi::os::home()) / ".local" / "share" / "foo" / "foo.dat");
@@ -414,14 +384,14 @@ TEST(qiPath, readingWritingFindData)
   bfs::path writeablePath(bfs::absolute(userAppData) / "foo" / "foo.dat");
  #endif
 
-  std::string fooDat = sdkl->userWritableDataPath("foo", "foo.dat");
-  std::ofstream ofs;
+  std::string fooDat = sdkl.userWritableDataPath("foo", "foo.dat");
+  bfs::ofstream ofs;
   ofs.open(fooDat.c_str(), std::fstream::out | std::fstream::trunc);
   ASSERT_FALSE (ofs.bad()) << "could not open" << fooDat;
   ofs << "Hi, this is foo" << std::endl;
   ofs.close();
 
-  fooDat = sdkl->findData("foo", "foo.dat");
+  fooDat = sdkl.findData("foo", "foo.dat");
   std::string expect = writeablePath.string(qi::unicodeFacet());
   boost::to_lower(expect);
   boost::to_lower(fooDat);
@@ -430,17 +400,15 @@ TEST(qiPath, readingWritingFindData)
   std::cout << "removing: " << fooDat << std::endl;
   remove(fooDat.c_str());
 
-  std::string noDataExisting = sdkl->findData("foo", "bar.dat");
+  std::string noDataExisting = sdkl.findData("foo", "bar.dat");
   ASSERT_EQ(std::string(), noDataExisting);
-
-  delete sdkl;
 }
 
-void writeData(std::string path)
+void writeData(const qi::Path& path)
 {
   std::cout << "creating: " << path << std::endl;
-  std::ofstream ofs;
-  ofs.open(path.c_str(), std::fstream::out | std::fstream::trunc);
+  bfs::ofstream ofs;
+  ofs.open(path, std::fstream::out | std::fstream::trunc);
   ofs << path;
   ofs.close();
 }
@@ -454,7 +422,7 @@ void createData(std::string root, std::string listing)
   while(std::getline(stream, line))
   {
     std::string file_string(fsconcat(root, line));
-    bfs::path file_path(file_string, qi::unicodeFacet());
+    const bfs::path file_path(file_string, qi::unicodeFacet());
     bfs::create_directories(file_path.parent_path());
     writeData(file_string);
   }
@@ -491,10 +459,10 @@ bfs::path qiPathData::userShareFooUserDat;
 
 void qiPathData::SetUpTestCase()
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
+  qi::SDKLayout sdkl;
 
   // the sdk dir of the program that is currently running
-  bfs::path prefix(sdkl->sdkPrefix(), qi::unicodeFacet());
+  bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
   qiPathData::sdkShareFoo = prefix / "share" / "foo";
   bfs::remove_all(sdkShareFoo);
   std::string listing = "bar.dat\n"
@@ -523,11 +491,11 @@ void qiPathData::SetUpTestCase()
   createData(optSdkShareFuu, listing);
 
   // the user dir
-  userShareFooBazDat = sdkl->userWritableDataPath("foo", "baz.dat");
+  userShareFooBazDat = sdkl.userWritableDataPath("foo", "baz.dat");
   writeData(userShareFooBazDat.string(qi::unicodeFacet()));
-  userShareFooFooDat = sdkl->userWritableDataPath("foo", "foo.dat");
+  userShareFooFooDat = sdkl.userWritableDataPath("foo", "foo.dat");
   writeData(userShareFooFooDat.string(qi::unicodeFacet()));
-  userShareFooUserDat = sdkl->userWritableDataPath("foo", "user.dat");
+  userShareFooUserDat = sdkl.userWritableDataPath("foo", "user.dat");
   writeData(userShareFooUserDat.string(qi::unicodeFacet()));
 }
 
@@ -563,18 +531,18 @@ bool isInVector(boost::filesystem::path path,
 
 TEST_F(qiPathData, findDataInSubfolder)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
-  std::string actual = sdkl->findData("foo", "bar/baz.dat");
+  qi::SDKLayout sdkl;
+  std::string actual = sdkl.findData("foo", "bar/baz.dat");
   std::string expected = (sdkShareFoo / "bar/baz.dat").make_preferred().string(qi::unicodeFacet());
   ASSERT_EQ(expected, actual);
 }
 
 TEST_F(qiPathData, listDataWithOptSdk)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
-  sdkl->addOptionalSdkPrefix(optSdkPrefix.string(qi::unicodeFacet()).c_str());
+  qi::SDKLayout sdkl;
+  sdkl.addOptionalSdkPrefix(optSdkPrefix.string(qi::unicodeFacet()).c_str());
 
-  std::vector<std::string> actual = sdkl->listData("foo", "*.dat");
+  std::vector<std::string> actual = sdkl.listData("foo", "*.dat");
   EXPECT_EQ(6u, actual.size());
 
   // user.dat is only available in user.
@@ -595,7 +563,7 @@ TEST_F(qiPathData, listDataWithOptSdk)
   // opt.dat is only available in sdk
   EXPECT_TRUE(isInVector(optSdkShareFoo / "opt.dat", actual));
 
-  actual = sdkl->listData("fuu", "*.dat");
+  actual = sdkl.listData("fuu", "*.dat");
   EXPECT_EQ(1u, actual.size());
 
   // fuu.dat is only available in sdk
@@ -604,32 +572,32 @@ TEST_F(qiPathData, listDataWithOptSdk)
 
 TEST_F(qiPathData, listDataInSubFolder)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
+  qi::SDKLayout sdkl;
   std::string expected = (sdkShareFoo / "bar/baz.dat").make_preferred().string(qi::unicodeFacet());
   std::vector<std::string> actual;
 
-  actual = sdkl->listData("foo", "bar/baz.dat");
+  actual = sdkl.listData("foo", "bar/baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 
 #ifdef _WIN32
-  actual = sdkl->listData("foo", "bar\\baz.dat");
+  actual = sdkl.listData("foo", "bar\\baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 #endif
 
-  actual = sdkl->listData("foo", "*bar/baz.dat");
+  actual = sdkl.listData("foo", "*bar/baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 
-  actual = sdkl->listData("foo", "/bar/baz.dat");
+  actual = sdkl.listData("foo", "/bar/baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 
   // Application names ending with "/" are not really supported.
   // However, that would work with findData, so let support it with listData
   // too.
-  actual = sdkl->listData("foo/", "bar/baz.dat");
+  actual = sdkl.listData("foo/", "bar/baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 
@@ -637,24 +605,24 @@ TEST_F(qiPathData, listDataInSubFolder)
   // because the string "foo//bar/baz.dat" does not match "foo/bar/baz.dat".
   // A solution would be to normalize paths in fsconcat, but that would have
   // consequences on all qi::path.
-  //actual = sdkl->listData("foo/", "/bar/baz.dat");
+  //actual = sdkl.listData("foo/", "/bar/baz.dat");
   //ASSERT_EQ(1, actual.size());
   //EXPECT_EQ(actual[0], expected);
 
-  actual = sdkl->listData("foo", "/*bar/baz.dat");
+  actual = sdkl.listData("foo", "/*bar/baz.dat");
   ASSERT_EQ(1u, actual.size());
   EXPECT_EQ(actual[0], expected);
 
-  actual = sdkl->listData("foo", "*/bar/baz.dat");
+  actual = sdkl.listData("foo", "*/bar/baz.dat");
   EXPECT_EQ(0u, actual.size());
 }
 
 TEST_F(qiPathData, listDataInSubFolderWithOptSdk)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
-  sdkl->addOptionalSdkPrefix(optSdkPrefix.string(qi::unicodeFacet()).c_str());
+  qi::SDKLayout sdkl;
+  sdkl.addOptionalSdkPrefix(optSdkPrefix.string(qi::unicodeFacet()).c_str());
 
-  std::vector<std::string> actual = sdkl->listData("foo", "ba?/*.dat");
+  std::vector<std::string> actual = sdkl.listData("foo", "ba?/*.dat");
   EXPECT_EQ(3u, actual.size());
 
   EXPECT_TRUE(isInVector(sdkShareFoo / "bar/baz.dat", actual));
@@ -662,24 +630,25 @@ TEST_F(qiPathData, listDataInSubFolderWithOptSdk)
   EXPECT_TRUE(isInVector(optSdkShareFoo / "bam/baz.dat", actual));
 }
 
-TEST_F(qiPathData, findDataDir)
+TEST_F(qiPathData, findDataExcludingUserDataPath)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
-  std::string expected = (sdkShareFoo / "bar").make_preferred().string(qi::unicodeFacet());
-
-  std::string barDir = sdkl->findData("foo", "bar");
-  EXPECT_EQ(barDir, expected);
-
-  std::vector<std::string> barDirMatches = sdkl->listData("foo", "bar");
-  EXPECT_TRUE(barDirMatches.empty()); // listData discards directories
+  qi::SDKLayout sdkl;
+  std::string actual = sdkl.findData("foo", "baz.dat", true);
+  std::string expected = (sdkShareFoo / "baz.dat").make_preferred().string(qi::unicodeFacet());
+  ASSERT_EQ(expected, actual);
 }
 
-int main(int argc, char* argv[])
+
+TEST_F(qiPathData, findDataDir)
 {
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  argpath = argv[0];
-  return RUN_ALL_TESTS();
+  qi::SDKLayout sdkl;
+  std::string expected = (sdkShareFoo / "bar").make_preferred().string(qi::unicodeFacet());
+
+  std::string barDir = sdkl.findData("foo", "bar");
+  EXPECT_EQ(barDir, expected);
+
+  std::vector<std::string> barDirMatches = sdkl.listData("foo", "bar");
+  EXPECT_TRUE(barDirMatches.empty()); // listData discards directories
 }
 
 TEST(qiPath, filesystemConcat)
@@ -792,11 +761,11 @@ void qiPathFrench::TearDownTestCase()
 TEST_F(qiPathFrench, convertFromASCII)
 {
   bfs::path path = _folderPathASCII / bfs::path(_fileNameASCII);
-  std::string pathStr = qi::path::convertToDosPath(path.string());
+  const qi::Path pathStr = qi::path::convertToDosPath(path.string());
 
-  std::cout << "path: " << pathStr.c_str() << std::endl;
+  std::cout << "path: " << pathStr << std::endl;
 
-  std::ifstream ifs(pathStr.c_str());
+  bfs::ifstream ifs(pathStr);
   ASSERT_TRUE(ifs.is_open());
 
   std::string line;
@@ -975,10 +944,10 @@ bfs::path qiPathLib::sdkLibPath;
 
 void qiPathLib::SetUpTestCase()
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
+  qi::SDKLayout sdkl;
 
   // the sdk dir of the program that is currently running
-  bfs::path prefix(sdkl->sdkPrefix(), qi::unicodeFacet());
+  bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
   qiPathLib::sdkLibPath = prefix / "lib";
   std::string listing = "test.so\n"
                         "test.dll\n"
@@ -990,10 +959,10 @@ void qiPathLib::SetUpTestCase()
 
 void qiPathLib::TearDownTestCase()
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
+  qi::SDKLayout sdkl;
 
   // the sdk dir of the program that is currently running
-  bfs::path prefix(sdkl->sdkPrefix(), qi::unicodeFacet());
+  bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
   qiPathLib::sdkLibPath = prefix / "lib";
 
   std::vector<std::string> files;
@@ -1013,8 +982,8 @@ void qiPathLib::TearDownTestCase()
 
 TEST_F(qiPathLib, listLib)
 {
-  boost::scoped_ptr<qi::SDKLayout> sdkl(new qi::SDKLayout());
-  bfs::path prefix(sdkl->sdkPrefix(), qi::unicodeFacet());
+  qi::SDKLayout sdkl;
+  bfs::path prefix(sdkl.sdkPrefix(), qi::unicodeFacet());
 
   std::vector<std::string> expected;
 
@@ -1028,6 +997,36 @@ TEST_F(qiPathLib, listLib)
   expected.push_back((prefix / "lib" / "test.dll").make_preferred().string(qi::unicodeFacet()));
 #endif
 
-  std::vector<std::string> actual = sdkl->listLib("", "test.*");
+  std::vector<std::string> actual = sdkl.listLib("", "test.*");
   ASSERT_EQ(expected, actual);
+}
+
+TEST(qipath, ScopedDir)
+{
+  qi::Path tmpPath;
+  {
+    qi::path::ScopedDir tmpdir;
+    tmpPath = tmpdir.path();
+    ASSERT_TRUE(tmpPath.exists());
+  }
+  ASSERT_FALSE(tmpPath.exists());
+}
+
+int main(int argc, char* argv[])
+{
+  // qibuild sets this variable, but it's easier to test qipath without it
+  qi::os::setenv("QI_ADDITIONAL_SDK_PREFIXES", "");
+  qi::Application app(argc, argv);
+  ::testing::InitGoogleTest(&argc, argv);
+#ifdef _WIN32
+  {
+    std::vector<WCHAR> filename(2048, 0);
+    GetModuleFileNameW(NULL, filename.data(), filename.size());
+    argpath = bfs::path(filename);
+  }
+#else
+  argpath = bfs::path(argv[0]);
+#endif
+
+  return RUN_ALL_TESTS();
 }

@@ -71,7 +71,7 @@ namespace qi
   {
     _eventLoop = eventLoop;
     _err = 0;
-    _status = qi::TransportSocket::Status_Disconnected;
+    _status = qi::TransportSocket::Status::Disconnected;
 
     if (s != 0)
     {
@@ -80,7 +80,7 @@ namespace qi
 #else
       _socket = SocketPtr((boost::asio::ip::tcp::socket*) s);
 #endif
-      _status = qi::TransportSocket::Status_Connected;
+      _status = qi::TransportSocket::Status::Connected;
       // Transmit each Message without delay
       setSocketOptions();
     }
@@ -251,9 +251,10 @@ namespace qi
       // This one is for us
       if (_msg->type() != Message::Type_Error)
       {
-        AnyReference cmRef = _msg->value(typeOf<CapabilityMap>()->signature(), shared_from_this());
+        AnyReference cmRef;
         try
         {
+          cmRef = _msg->value(typeOf<CapabilityMap>()->signature(), shared_from_this());
           CapabilityMap cm = cmRef.to<CapabilityMap>();
           cmRef.destroy();
           boost::mutex::scoped_lock lock(_contextMutex);
@@ -270,6 +271,7 @@ namespace qi
       {
         messageReady(*_msg);
         socketEvent(SocketEventData(*_msg));
+        _dispatcher.dispatch(*_msg);
       }
     }
     else
@@ -292,35 +294,46 @@ namespace qi
   void TcpTransportSocket::error(const std::string& erc)
   {
     qiLogVerbose() << "Socket error: " << erc;
-    boost::recursive_mutex::scoped_lock lock(_closingMutex);
-    _abort = true;
-    _status = qi::TransportSocket::Status_Disconnected;
+    {
+      boost::recursive_mutex::scoped_lock lock(_closingMutex);
+      if (_abort)
+      {
+        // Return straight away if error has already been called.
+        // Otherwise, `disconnected` callbacks could be called
+        // multiple times.
+        return;
+      }
+      _abort = true;
+      _status = qi::TransportSocket::Status::Disconnected;
+
+      if (_connecting)
+      {
+        _connecting = false;
+      }
+
+      {
+        boost::mutex::scoped_lock l(_sendQueueMutex);
+        boost::system::error_code er;
+        if (_socket)
+        {
+          // Unconditionally try to shutdown if socket is present, it might be in connecting state.
+          _socket->lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, er);
+          _socket->lowest_layer().close(er);
+        }
+      }
+      _socket.reset();
+    }
+
+    // synchronous signals, do not keep the mutex while we trigger
     disconnected(erc);
     socketEvent(SocketEventData(erc));
-
-    if (_connecting)
-    {
-      _connecting = false;
-    }
-
-    {
-      boost::mutex::scoped_lock l(_sendQueueMutex);
-      boost::system::error_code er;
-      if (_socket)
-      {
-        // Unconditionally try to shutdown if socket is present, it might be in connecting state.
-        _socket->lowest_layer().shutdown(boost::asio::ip::tcp::socket::shutdown_both, er);
-        _socket->lowest_layer().close(er);
-      }
-    }
-    _socket.reset();
   }
 
   qi::FutureSync<void> TcpTransportSocket::connect(const qi::Url &url)
   {
     boost::recursive_mutex::scoped_lock l(_closingMutex);
 
-    if (_status == qi::TransportSocket::Status_Connected || _connecting)
+    if (_status == qi::TransportSocket::Status::Connected || _connecting)
     {
       const char* s = "connection already in progress";
       qiLogError() << s;
@@ -336,13 +349,13 @@ namespace qi
     _socket = SocketPtr(new boost::asio::ip::tcp::socket(*(boost::asio::io_service*)_eventLoop->nativeHandle()));
 #endif
     _url = url;
-    _status = qi::TransportSocket::Status_Connecting;
+    _status = qi::TransportSocket::Status::Connecting;
     _connecting = true;
     _err = 0;
     if (_url.port() == 0) {
       qiLogError() << "Error try to connect to a bad address: " << _url.str();
 
-      _status = qi::TransportSocket::Status_Disconnected;
+      _status = qi::TransportSocket::Status::Disconnected;
       _connecting = false;
       return qi::makeFutureError<void>(std::string("Bad address ") + _url.str());
     }
@@ -370,49 +383,49 @@ namespace qi
                                       boost::asio::ip::tcp::resolver::iterator it,
                                       qi::Promise<void> connectPromise)
   {
-    try
+    boost::recursive_mutex::scoped_lock l(_closingMutex);
+    if (!_socket)
     {
-      boost::recursive_mutex::scoped_lock l(_closingMutex);
-      if (!_socket)
-      {
-        // Disconnection was requested, so error() was already called.
-        pSetError(connectPromise, "Disconnection requested");
-      }
-      else if (erc)
-      {
-        std::string message = "System error: " + erc.message();
-        qiLogWarning() << "resolve: " << message;
-        _status = qi::TransportSocket::Status_Disconnected;
-        error(message);
-        pSetError(connectPromise, message);
-      }
-      else
-      {
-        static bool disableIPV6 = qi::os::getenv("QIMESSAGING_ENABLE_IPV6").empty();
-        if (disableIPV6)
-        {
-          while (it != boost::asio::ip::tcp::resolver::iterator() &&
-                 it->endpoint().address().is_v6())
-            ++it;
-        }
-        // asynchronous connect
-        _socket->lowest_layer().async_connect(*it,
-                                              boost::bind(&TcpTransportSocket::onConnected,
-                                                          shared_from_this(),
-                                                          boost::asio::placeholders::error,
-                                                          _socket,
-                                                          connectPromise));
-        _r.reset();
-      }
+      // Disconnection was requested, so error() was already called.
+      pSetError(connectPromise, "Disconnection requested");
+      return;
     }
-    catch (const std::exception& e)
+    else if (erc)
     {
-      const char* s = e.what();
-      qiLogError() << s
-                   << " only IPv6 were resolved on " << url().str();
-      error(s);
-      pSetError(connectPromise, s);
+      std::string message = "System error: " + erc.message();
+      qiLogWarning() << "resolve: " << message;
+      _status = qi::TransportSocket::Status::Disconnected;
+      error(message);
+      pSetError(connectPromise, message);
+      return;
     }
+
+    static bool disableIPV6 = qi::os::getenv("QIMESSAGING_ENABLE_IPV6").empty();
+    if (disableIPV6)
+    {
+      while (it != boost::asio::ip::tcp::resolver::iterator() &&
+             it->endpoint().address().is_v6())
+        ++it;
+    }
+    if (it == boost::asio::ip::tcp::resolver::iterator())
+    {
+      std::stringstream s;
+      s << "Only IPv6 were resolved on " << url().str();
+      qiLogError() << s.str();
+      error(s.str());
+      pSetError(connectPromise, s.str());
+      return;
+    }
+
+
+    // asynchronous connect
+    _socket->lowest_layer().async_connect(*it,
+                                          boost::bind(&TcpTransportSocket::onConnected,
+                                                      shared_from_this(),
+                                                      boost::asio::placeholders::error,
+                                                      _socket,
+                                                      connectPromise));
+    _r.reset();
   }
 
   void TcpTransportSocket::handshake(const boost::system::error_code& erc,
@@ -421,13 +434,13 @@ namespace qi
     if (erc)
     {
       qiLogWarning() << "connect: " << erc.message();
-      _status = qi::TransportSocket::Status_Disconnected;
+      _status = qi::TransportSocket::Status::Disconnected;
       error("System error: " + erc.message());
       pSetError(connectPromise, "System error: " + erc.message());
     }
     else
     {
-      _status = qi::TransportSocket::Status_Connected;
+      _status = qi::TransportSocket::Status::Connected;
       pSetValue(connectPromise);
       connected();
       _sslHandshake = true;
@@ -441,7 +454,12 @@ namespace qi
         }
         // Transmit each Message without delay
         const boost::asio::ip::tcp::no_delay option( true );
-        _socket->lowest_layer().set_option(option);
+        try {
+          _socket->lowest_layer().set_option(option);
+        } catch (std::exception& e)
+        {
+          qiLogWarning() << "can't set no_delay option: " << e.what();
+        }
       }
 
       startReading();
@@ -455,7 +473,7 @@ namespace qi
     if (erc)
     {
       qiLogWarning() << "connect: " << erc.message();
-      _status = qi::TransportSocket::Status_Disconnected;
+      _status = qi::TransportSocket::Status::Disconnected;
       error("System error: " + erc.message());
       pSetError(connectPromise, "System error: " + erc.message());
     }
@@ -474,7 +492,7 @@ namespace qi
       }
       else
       {
-        _status = qi::TransportSocket::Status_Connected;
+        _status = qi::TransportSocket::Status::Connected;
         pSetValue(connectPromise);
         connected();
 
@@ -497,7 +515,12 @@ namespace qi
   {
     // Transmit each Message without delay
     const boost::asio::ip::tcp::no_delay option( true );
-    _socket->lowest_layer().set_option(option);
+    try {
+      _socket->lowest_layer().set_option(option);
+    } catch (std::exception& e)
+    {
+      qiLogWarning() << "can't set no_delay option: " << e.what();
+    }
 
     // Enable TCP keepalive for faster timeout detection.
     static const char* envTimeout = getenv("QI_TCP_PING_TIMEOUT");
@@ -521,7 +544,7 @@ namespace qi
     */
     tcp_keepalive params;
     params.onoff = 1;
-    params.keepalivetime = 5000; // entry is in milliseconds
+    params.keepalivetime = 30000; // entry is in milliseconds
     // set interval to target timeout divided by probe count
     params.keepaliveinterval = timeout * 1000 / 10;
     DWORD bytesReturned;
@@ -552,7 +575,7 @@ namespace qi
       optval = timeout / 10;
       if (setsockopt(handle, SOL_TCP, TCP_KEEPINTVL, &optval, optlen) < 0)
         qiLogWarning() << "Failed to set TCP_KEEPINTVL: " << strerror(errno);
-      optval = 5;
+      optval = 30;
       if (setsockopt(handle, SOL_TCP, TCP_KEEPIDLE , &optval, optlen) < 0)
         qiLogWarning() << "Failed to set TCP_KEEPIDLE : " << strerror(errno);
       optval = 10;
@@ -577,7 +600,7 @@ namespace qi
       // Macos only have TCP_KEEPALIVE wich is linux's TCP_KEEPIDLE
       // So best we can do is lower that, which will reduce delay from
       // hours to tens of minutes.
-      optval = 5;
+      optval = 30;
       if (setsockopt(handle, IPPROTO_TCP, TCP_KEEPALIVE , &optval, optlen) < 0)
         qiLogWarning() << "Failed to set TCP_KEEPALIVE : " << strerror(errno);
 # endif
@@ -587,7 +610,7 @@ namespace qi
 
   qi::FutureSync<void> TcpTransportSocket::disconnect()
   {
-    if (_status == qi::TransportSocket::Status_Disconnected)
+    if (_status == qi::TransportSocket::Status::Disconnected)
       return qi::Future<void>(0);
 
     return _eventLoop->async(boost::bind(&TcpTransportSocket::error,
@@ -599,11 +622,11 @@ namespace qi
   {
     // Check that once before locking in case some idiot tries to send
     // from a disconnect notification.
-    if (_status != qi::TransportSocket::Status_Connected)
+    if (_status != qi::TransportSocket::Status::Connected)
       return false;
     boost::recursive_mutex::scoped_lock lockc(_closingMutex);
 
-    if (!_socket || _status != qi::TransportSocket::Status_Connected)
+    if (!_socket || _status != qi::TransportSocket::Status::Connected)
     {
       qiLogDebug() << this << "Send on closed socket";
       return false;
