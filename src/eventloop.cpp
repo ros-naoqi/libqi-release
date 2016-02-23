@@ -346,7 +346,7 @@ namespace qi {
 
 
       ++_totalTask;
-      _io.post(boost::bind<void>(&EventLoopAsio::invoke_maybe, this, cb, id, p, erc));
+      _io.post(boost::bind(&EventLoopAsio::invoke_maybe, this, cb, id, p, erc));
     }
     else
       asyncCall(delay, cb);
@@ -373,7 +373,7 @@ namespace qi {
       return prom.future();
     }
     Promise<void> prom(PromiseNoop<void>);
-    _io.post(boost::bind<void>(&EventLoopAsio::invoke_maybe, this, cb, id, prom,erc));
+    _io.post(boost::bind(&EventLoopAsio::invoke_maybe, this, cb, id, prom,erc));
     return prom.future();
   }
 

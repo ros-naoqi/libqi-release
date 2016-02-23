@@ -106,7 +106,7 @@ namespace qi {
       return;
     }
 
-    const Message& msg = boost::get<const Message&>(data);
+    const Message& msg = boost::get<const Message>(data);
     unsigned int function = msg.function();
     bool failure = msg.type() == Message::Type_Error
         || msg.service() != Message::Service_Server
