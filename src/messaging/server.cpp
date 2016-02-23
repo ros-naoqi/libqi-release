@@ -7,7 +7,6 @@
 #include <qi/messaging/serviceinfo.hpp>
 #include <qi/type/objecttypebuilder.hpp>
 #include "objectregistrar.hpp"
-#include "serverresult.hpp"
 #include <qi/os.hpp>
 #include <boost/thread/mutex.hpp>
 #include <exception>
@@ -20,8 +19,7 @@ namespace qi {
 
   //Server
   Server::Server(bool enforceAuth)
-    : qi::Trackable<Server>(this)
-    , _enforceAuth(enforceAuth)
+    : _enforceAuth(enforceAuth)
     , _dying(false)
     , _defaultCallType(qi::MetaCallType_Queued)
   {
@@ -113,17 +111,17 @@ namespace qi {
       SignalSubscriberPtr sub(new SignalSubscriber);
       boost::shared_ptr<bool> first = boost::make_shared<bool>(true);
       // We are reading on the socket for the first time : the first message has to be the capabilities
-      *sub = socket->messageReady.connect(&Server::onMessageReadyNotAuthenticated, this, _1, socket, _authProviderFactory->newProvider(), first, sub);
+      *sub = socket->messageReady.connect(&Server::onMessageReadyNotAuthenticated, this, _1, socket, _authProviderFactory->newProvider(), first, sub).setCallType(MetaCallType_Direct);
       socket->startReading();
     }
     else
-      socket->messageReady.connect(&Server::onMessageReady, this, _1, socket);
+      socket->messageReady.connect(&Server::onMessageReady, this, _1, socket).setCallType(MetaCallType_Direct);
   }
 
   void Server::onMessageReadyNotAuthenticated(const Message &msg, TransportSocketPtr socket, AuthProviderPtr auth,
                                               boost::shared_ptr<bool> first, SignalSubscriberPtr oldSignal)
   {
-    qiLogVerbose() << "Starting auth message";
+    qiLogVerbose() << "Starting auth message" << msg.address();
     int id = msg.id();
     int service = msg.service();
     int function = msg.action();
@@ -155,7 +153,7 @@ namespace qi {
       {
         sendCapabilities(socket);
         qiLogVerbose() << "Authentication is not enforced. Skipping...";
-        socket->messageReady.connect(&Server::onMessageReady, this, _1, socket);
+        socket->messageReady.connect(&Server::onMessageReady, this, _1, socket).setCallType(MetaCallType_Direct);
         onMessageReady(msg, socket);
       }
       return;
@@ -175,7 +173,7 @@ namespace qi {
     case AuthProvider::State_Done:
       qiLogVerbose() << "Client " << socket->remoteEndpoint().str() << " successfully authenticated.";
       socket->messageReady.disconnect(*oldSignal);
-      socket->messageReady.connect(&Server::onMessageReady, this, _1, socket);
+      socket->messageReady.connect(&Server::onMessageReady, this, _1, socket).setCallType(MetaCallType_Direct);
     case AuthProvider::State_Cont:
       if (*first)
       {

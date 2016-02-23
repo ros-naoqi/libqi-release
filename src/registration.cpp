@@ -6,6 +6,7 @@
 #include <qi/type/typeinterface.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/session.hpp>
+#include <qi/path.hpp>
 
 #include "type/metaobject_p.hpp"
 #include "type/metamethod_p.hpp"
@@ -112,6 +113,7 @@ public:
 
 
 QI_EQUIVALENT_STRING_REGISTER(qi::Signature, &qi::Signature::toString);
+QI_EQUIVALENT_STRING_REGISTER(qi::Path, &qi::Path::str);
 
 QI_TYPE_REGISTER_CUSTOM(qi::Duration, DurationTypeInterface<qi::Duration>);
 QI_TYPE_REGISTER_CUSTOM(qi::NanoSeconds, DurationTypeInterface<qi::NanoSeconds>);
@@ -122,7 +124,8 @@ QI_TYPE_REGISTER_CUSTOM(qi::Minutes, DurationTypeInterface<qi::Minutes>);
 QI_TYPE_REGISTER_CUSTOM(qi::Hours, DurationTypeInterface<qi::Hours>);
 
 
-QI_TYPE_REGISTER_CUSTOM(qi::WallClockTimePoint, TimePointTypeInterface<qi::WallClockTimePoint>);
+QI_TYPE_REGISTER_CUSTOM(qi::SystemClockTimePoint, TimePointTypeInterface<qi::SystemClockTimePoint>);
+QI_TYPE_REGISTER_CUSTOM(qi::ClockTimePoint, TimePointTypeInterface<qi::ClockTimePoint>);
 QI_TYPE_REGISTER_CUSTOM(qi::SteadyClockTimePoint, TimePointTypeInterface<qi::SteadyClockTimePoint>);
 
 #define PBOUNCE(cls, field, type) \
@@ -198,6 +201,17 @@ static qi::AnyReference sessionLoadService(qi::AnyReferenceVector args)
   return qi::AnyReference(qi::typeOf<void>());
 }
 
+static qi::AnyReference sessionCallModule(qi::AnyReferenceVector args)
+{
+  if (args.size() < 2)
+    throw std::runtime_error("Not enough arguments");
+  qi::Session& session = args[0].as<qi::Session>();
+  std::string module = args[1].toString();
+  args.erase(args.begin(), args.begin()+2);
+  auto fut = new qi::Future<qi::AnyValue>(session.callModule<qi::AnyValue>(module, args).async());
+  return qi::AnyReference(qi::typeOf<decltype(*fut)>(), fut);
+}
+
 static qi::Future<std::vector<qi::ServiceInfo> > servicesBouncer(qi::Session& session)
 {
   return session.services();
@@ -219,7 +233,9 @@ static bool _qiregisterSession() {
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, listenStandalone);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, registerService);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, unregisterService);
-  builder.advertiseMethod("loadService", qi::AnyFunction::fromDynamicFunction(&sessionLoadService));
+  // these two methods are variadic, make a dynamic bouncer
+  builder.advertiseMethod("loadServiceRename", qi::AnyFunction::fromDynamicFunction(&sessionLoadService));
+  builder.advertiseMethod("callModule", qi::AnyFunction::fromDynamicFunction(&sessionCallModule));
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, waitForService);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, serviceRegistered);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, serviceUnregistered);

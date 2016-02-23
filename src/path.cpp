@@ -5,7 +5,8 @@
  */
 
 #include "sdklayout.hpp"
-#include "filesystem.hpp"
+
+#include <numeric>
 
 #include <qi/application.hpp>
 #include <qi/path.hpp>
@@ -39,10 +40,6 @@ namespace qi
 
     bfs::path path;
   };
-
-  Path::Path(PrivatePath* p)
-    : _p(p)
-  {}
 
   Path::Path(const std::string& unicodePath)
     : _p(new PrivatePath(unicodePath))
@@ -101,7 +98,7 @@ namespace qi
 
   Path Path::parent() const
   {
-    return Path(new PrivatePath(_p->path.parent_path()));
+    return _p->path.parent_path();
   }
 
   std::string Path::filename() const
@@ -111,7 +108,7 @@ namespace qi
 
   Path Path::absolute() const
   {
-    return Path(new PrivatePath(bfs::absolute(_p->path)));
+    return bfs::absolute(_p->path);
   }
 
   PathVector Path::files() const
@@ -121,7 +118,7 @@ namespace qi
 
     for (; dit != bfs::directory_iterator(); ++dit) {
       if (bfs::is_regular_file(*dit))
-        ret.push_back(Path(new PrivatePath(*dit)));
+        ret.push_back(Path(*dit));
     }
     return ret;
   }
@@ -133,7 +130,7 @@ namespace qi
 
     for (; dit != bfs::recursive_directory_iterator(); ++dit) {
       if (bfs::is_regular_file(*dit))
-        ret.push_back(Path(new PrivatePath(*dit)));
+        ret.push_back(Path(*dit));
     }
     return ret;
   }
@@ -145,14 +142,14 @@ namespace qi
 
     for (; dit != bfs::directory_iterator(); ++dit) {
       if (bfs::is_directory(*dit))
-        ret.push_back(Path(new PrivatePath(*dit)));
+        ret.push_back(Path(*dit));
     }
     return ret;
   }
 
   Path Path::operator/(const Path &rhs) const
   {
-    return Path(new PrivatePath(_p->path / rhs._p->path));
+    return _p->path / rhs._p->path;
   }
 
   const Path& Path::operator/=(const Path &rhs) const
@@ -167,9 +164,24 @@ namespace qi
     return *this;
   }
 
+  bool Path::operator==(const qi::Path& rhs) const
+  {
+    return _p->path == rhs._p->path;
+  }
+
+  bool Path::operator!=(const qi::Path& rhs) const
+  {
+    return _p->path != rhs._p->path;
+  }
+
   Path::operator std::string() const
   {
     return _p->path.string(qi::unicodeFacet());
+  }
+
+  Path::operator boost::filesystem::path() const
+  {
+    return _p->path;
   }
 
   std::string Path::str() const
@@ -181,6 +193,27 @@ namespace qi
   {
     return _p->path;
   }
+
+  Path Path::fromNative(const char* nativeCharsPath)
+  {
+    return bfs::path(nativeCharsPath);
+  }
+
+  Path Path::fromNative(const wchar_t* nativeCharsPath)
+  {
+    return bfs::path(nativeCharsPath);
+  }
+
+  Path Path::fromNative(const std::string& nativeCharsPath)
+  {
+    return bfs::path(nativeCharsPath);
+  }
+
+  Path Path::fromNative(const std::wstring& nativeCharsPath)
+  {
+    return bfs::path(nativeCharsPath);
+  }
+
 
 
   SDKLayout* gInstance = NULL;
@@ -210,6 +243,11 @@ namespace qi
     ScopedDir::~ScopedDir()
     {
       removeAll(10);
+    }
+
+    ScopedDir::operator qi::Path() const
+    {
+      return _path;
     }
 
     const Path& ScopedDir::path() const
@@ -331,6 +369,25 @@ namespace qi
         return shortPath.string(qi::unicodeFacet());
       }
 #endif
+      namespace {
+        static boost::filesystem::path normalizeCombined(boost::filesystem::path path1,
+                                                        boost::filesystem::path path2)
+        {
+          if (*path2.begin() == ".")
+            return path1;
+          if (*path2.begin() == "..")
+            return path1.parent_path();
+          else
+            return path1 /= path2;
+        }
+      }
+      Path normalize(const Path& path)
+      {
+        boost::filesystem::path p = std::accumulate(path.bfsPath().begin(), path.bfsPath().end(),
+                                                    boost::filesystem::path(), normalizeCombined);
+        return p.make_preferred();
+      }
+
     }
 
     std::string sdkPrefix()
@@ -359,13 +416,15 @@ namespace qi
     }
 
     std::string findData(const std::string &applicationName,
-                         const std::string &filename)
+                         const std::string &filename,
+                         bool excludeUserWritablePath)
     {
-      if(filename == "") {
+      if (filename == "") {
         qiLogError() << "Filename cannot be empty!";
         return std::string();
       }
-      return getInstance()->findData(applicationName, filename);
+
+      return getInstance()->findData(applicationName, filename, excludeUserWritablePath);
     }
 
     std::vector<std::string> listLib(const std::string &subfolder,
@@ -375,9 +434,10 @@ namespace qi
     }
 
     std::vector<std::string> listData(const std::string &applicationName,
-                                      const std::string &pattern)
+                                      const std::string &pattern,
+                                      bool excludeUserWritablePath)
     {
-      return getInstance()->listData(applicationName, pattern);
+      return getInstance()->listData(applicationName, pattern, excludeUserWritablePath);
     }
 
     std::vector<std::string> confPaths(const std::string &applicationName)
@@ -385,9 +445,10 @@ namespace qi
       return getInstance()->confPaths(applicationName);
     }
 
-    std::vector<std::string> dataPaths(const std::string &applicationName)
+    std::vector<std::string> dataPaths(const std::string &applicationName,
+                                       bool excludeUserWritablePath)
     {
-      return getInstance()->dataPaths(applicationName);
+      return getInstance()->dataPaths(applicationName, excludeUserWritablePath);
     }
 
     std::vector<std::string> binPaths()

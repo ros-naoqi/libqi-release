@@ -18,12 +18,21 @@ qiLogCategory("qitype.signal");
 
 namespace qi {
 
+  SignalSubscriber::SignalSubscriber()
+    : source(0)
+    , linkId(SignalBase::invalidSignalLink)
+    , target(0)
+    , method(0)
+    , enabled(true)
+  {
+  }
+
   SignalSubscriber::SignalSubscriber(const AnyObject& target, unsigned int method)
-  : threadingModel(MetaCallType_Direct)
-  , target(new AnyWeakObject(target))
-  , method(method)
-  , enabled(true)
-  , executionContext(0)
+    : threadingModel(MetaCallType_Direct)
+    , target(new AnyWeakObject(target))
+    , method(method)
+    , enabled(true)
+    , executionContext(0)
   { // The slot has its own threading model: be synchronous
   }
 
@@ -39,7 +48,6 @@ namespace qi {
 
   SignalSubscriber::~SignalSubscriber()
   {
-    delete target;
   }
 
   SignalSubscriber::SignalSubscriber(const SignalSubscriber& b)
@@ -51,11 +59,14 @@ namespace qi {
 
   void SignalSubscriber::operator=(const SignalSubscriber& b)
   {
+    if (this == &b)
+      return;
+
     source = b.source;
     linkId = b.linkId;
     handler = b.handler;
     threadingModel = b.threadingModel;
-    target = b.target?new AnyWeakObject(*b.target):0;
+    target.reset(b.target ? new AnyWeakObject(*b.target) : 0);
     method = b.method;
     enabled = b.enabled;
     executionContext = b.executionContext;
@@ -136,11 +147,10 @@ namespace qi {
       copy = _p->subscriberMap;
     }
     qiLogDebug() << (void*)this << " Invoking signal subscribers: " << copy.size();
-    SignalSubscriberMap::iterator i;
-    for (i = copy.begin(); i != copy.end(); ++i)
+    for (auto& i: copy)
     {
       qiLogDebug() << (void*)this << " Invoking signal subscriber";
-      SignalSubscriberPtr s = i->second; // hold s alive
+      SignalSubscriberPtr s = i.second; // hold s alive
       s->call(params, mct);
     }
     qiLogDebug() << (void*)this << " done invoking signal subscribers";
@@ -267,8 +277,21 @@ namespace qi {
           qiLogWarning() << "Unknown exception caught from signal subscriber";
         }
         removeActive(true);
+
         if (mustDisconnect)
-          source->disconnect(linkId);
+        {
+          boost::mutex::scoped_lock sl(mutex);
+          // if enabled is false, we are already disconnected
+          if (enabled)
+          {
+            // asyncDisconnect tries to lock us, so we need to get a shared_ptr
+            // of signalbase (to be sure it won't be deleted) and release
+            // our lock before calling asyncDisconnect
+            boost::shared_ptr<SignalBasePrivate> sbp = source->_p;
+            sl.unlock();
+            sbp->disconnect(linkId, false);
+          }
+        }
       }
     }
     else if (target)
@@ -276,7 +299,14 @@ namespace qi {
       AnyObject lockedTarget = target->lock();
       if (!lockedTarget)
       {
-        source->disconnect(linkId);
+        boost::mutex::scoped_lock sl(mutex);
+        if (enabled)
+        {
+          // see above
+          boost::shared_ptr<SignalBasePrivate> sbp = source->_p;
+          sl.unlock();
+          sbp->disconnect(linkId, false);
+        }
       }
       else // no need to keep anything locked, whatever happens this is not used
         lockedTarget.metaPost(method, args);
@@ -491,9 +521,9 @@ namespace qi {
       s->enabled = false;
       if (subscriberMap.empty() && onSubscribers)
         onSubscribers(false);
-      if ( s->activeThreads.empty()
-           || (s->activeThreads.size() == 1
-               && *s->activeThreads.begin() == boost::this_thread::get_id()))
+      if (s->activeThreads.empty()
+          || (s->activeThreads.size() == 1
+            && *s->activeThreads.begin() == boost::this_thread::get_id()))
       { // One active callback in this thread, means above us in call stack
         // So we cannot trash s right now
         return true;
@@ -528,7 +558,7 @@ namespace qi {
   SignalBasePrivate::~SignalBasePrivate()
   {
     onSubscribers = SignalBase::OnSubscribers();
-    disconnectAll();
+    disconnectAll(false);
   }
 
   std::vector<SignalSubscriber> SignalBase::subscribers()
@@ -537,9 +567,8 @@ namespace qi {
     if (!_p)
       return res;
     boost::recursive_mutex::scoped_lock sl(_p->mutex);
-    SignalSubscriberMap::iterator i;
-    for (i = _p->subscriberMap.begin(); i!= _p->subscriberMap.end(); ++i)
-      res.push_back(*i->second);
+    for (const auto& i: _p->subscriberMap)
+      res.push_back(*i.second);
     return res;
   }
 

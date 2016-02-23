@@ -14,8 +14,12 @@
 #include <qi/session.hpp>
 #include "transportserver.hpp"
 #include <qi/atomic.hpp>
+#include <qi/strand.hpp>
 
 #include "objecthost.hpp"
+
+typedef boost::shared_ptr<qi::Atomic<bool> > AtomicBoolptr;
+typedef boost::shared_ptr<qi::Atomic<int> > AtomicIntPtr;
 
 namespace qi {
 
@@ -49,6 +53,7 @@ namespace qi {
   //Bound Object, represent an object bound on a server
   // this is not an object..
   class ServiceBoundObject : public BoundObject, public ObjectHost, boost::noncopyable {
+
   public:
     ServiceBoundObject(unsigned int serviceId, unsigned int objectId,
                        qi::AnyObject obj,
@@ -56,6 +61,8 @@ namespace qi {
                        bool bindTerminate = false,
                        ObjectHost* owner = 0);
     virtual ~ServiceBoundObject();
+
+    unsigned int nextId() { return ++_nextId; }
 
   public:
     //PUBLIC BOUND METHODS
@@ -65,7 +72,7 @@ namespace qi {
     qi::MetaObject metaObject(unsigned int serviceId);
     void           terminate(unsigned int serviceId); //bound only in special cases
     qi::AnyValue   property(const AnyValue& name);
-    void           setProperty(const AnyValue& name, AnyValue value);
+    Future<void>   setProperty(const AnyValue& name, AnyValue value);
     std::vector<std::string> properties();
   public:
     /*
@@ -91,9 +98,30 @@ namespace qi {
     virtual void onMessage(const qi::Message &msg, TransportSocketPtr socket);
     virtual void onSocketDisconnected(qi::TransportSocketPtr socket, std::string error);
 
+    typedef unsigned int MessageId;
+    void cancelCall(TransportSocketPtr origSocket, const Message& cancelMessage, MessageId origMsgId);
+
     qi::Signal<ServiceBoundObject*> onDestroy;
   private:
+    typedef std::map<MessageId, std::pair<Future<AnyReference>, AtomicIntPtr> > FutureMap;
+    typedef std::map<TransportSocketPtr, FutureMap> CancelableMap;
+    struct CancelableKit;
+    typedef boost::shared_ptr<CancelableKit> CancelableKitPtr;
+    CancelableKitPtr _cancelables;
+    typedef boost::weak_ptr<CancelableKit> CancelableKitWeak;
+
     qi::AnyObject createServiceBoundObjectType(ServiceBoundObject *self, bool bindTerminate = false);
+
+
+    inline ObjectHost* _gethost() { return _owner ? _owner : this; }
+    static void _removeCachedFuture(CancelableKitWeak kit, TransportSocketPtr sock, MessageId id);
+    static void serverResultAdapterNext(AnyReference val, Signature targetSignature, ObjectHost* host,
+                                 TransportSocketPtr sock, const MessageAddress& replyAddr,
+                                 const Signature& forcedReturnSignature, CancelableKitWeak kit);
+    static void serverResultAdapter(Future<AnyReference> future, const Signature& targetSignature, ObjectHost* host,
+                                    TransportSocketPtr sock, const MessageAddress& replyAddr,
+                                    const Signature& forcedReturnSignature, CancelableKitWeak kit,
+                                    AtomicIntPtr cancelRequested = AtomicIntPtr());
 
   private:
     // remote link id -> local link id
@@ -103,6 +131,7 @@ namespace qi {
     //Event handling (no lock needed)
     BySocketServiceSignalLinks  _links;
 
+    boost::mutex _callMutex;
   private:
     qi::TransportSocketPtr _currentSocket;
     unsigned int           _serviceId;
@@ -114,6 +143,9 @@ namespace qi {
     // prevents parallel onMessage on self execution and protects the current socket
     mutable boost::recursive_mutex           _mutex;
     boost::function<void (TransportSocketPtr, std::string)> _onSocketDisconnectedCallback;
+
+    static qi::Atomic<unsigned int> _nextId;
+
     friend class ::qi::ObjectHost;
     friend class ::qi::ServiceDirectory;
   };

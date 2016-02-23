@@ -2,7 +2,6 @@
  * Copyright (c) 2012 Aldebaran Robotics. All rights reserved.
 */
 
-#include <iostream>
 #include "sig_generator.h"
 #include <qi/application.hpp>
 #include <boost/shared_ptr.hpp>
@@ -35,7 +34,8 @@ int main(int argc, char* argv[])
 
   p.server()->registerService("serviceTest", obj);
 
-  while(1)
+  // We just check that the code below does not crash
+  for(int i = 0 ; i < 100; i++)
   {
     qi::AnyObject obj = p.server()->service("serviceTest");
     finalSig = MyGenerator.signature(); //generate a signature

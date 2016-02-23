@@ -7,6 +7,7 @@
 #ifndef _SRC_EVENTLOOP_P_HPP_
 #define _SRC_EVENTLOOP_P_HPP_
 
+#include <atomic>
 #include <boost/thread.hpp>
 #include <boost/thread/recursive_mutex.hpp>
 
@@ -53,49 +54,52 @@ namespace qi {
     std::string             _name;
 
   protected:
-    virtual ~EventLoopPrivate() {}
+    virtual ~EventLoopPrivate() = default;
   };
 
-  class EventLoopAsio: public EventLoopPrivate
+  class EventLoopAsio final: public EventLoopPrivate
   {
   public:
     EventLoopAsio();
-    virtual bool isInThisContext();
-    virtual void start(int nthreads);
-    virtual void join();
-    virtual void stop();
-    virtual qi::Future<void> asyncCall(qi::Duration delay,
-      boost::function<void ()> callback);
-    virtual void post(qi::Duration delay,
-      const boost::function<void ()>& callback);
-    virtual qi::Future<void> asyncCall(qi::SteadyClockTimePoint timepoint,
-        boost::function<void ()> callback);
-    virtual void post(qi::SteadyClockTimePoint timepoint,
-        const boost::function<void ()>& callback);
-    virtual void destroy();
-    virtual void* nativeHandle();
-    virtual void setMaxThreads(unsigned int max);
+    bool isInThisContext() override;
+    void start(int nthreads) override;
+    void join() override;
+    void stop() override;
+    qi::Future<void> asyncCall(qi::Duration delay,
+      boost::function<void ()> callback) override;
+    void post(qi::Duration delay,
+      const boost::function<void ()>& callback) override;
+    qi::Future<void> asyncCall(qi::SteadyClockTimePoint timepoint,
+        boost::function<void ()> callback) override;
+    void post(qi::SteadyClockTimePoint timepoint,
+        const boost::function<void ()>& callback) override;
+    void destroy() override;
+    void* nativeHandle() override;
+    void setMaxThreads(unsigned int max) override;
   private:
     void invoke_maybe(boost::function<void()> f, qi::uint32_t id, qi::Promise<void> p, const boost::system::error_code& erc);
     void _runPool();
     void _pingThread();
-    virtual ~EventLoopAsio();
+    ~EventLoopAsio() override;
 
-    enum Mode
+    enum class Mode
     {
-      Mode_Unset = 0,
-      Mode_Threaded = 1,
-      Mode_Pooled = 2
+      Unset = 0,
+      Threaded = 1,
+      Pooled = 2
     };
     Mode _mode;
     qi::Atomic<unsigned int> _nThreads;
     boost::asio::io_service _io;
-    boost::asio::io_service::work* _work; // keep io.run() alive
+    std::atomic<boost::asio::io_service::work*> _work; // keep io.run() alive
     boost::thread      _thd;
     qi::Atomic<int>    _running;
     boost::recursive_mutex _mutex;
     boost::thread::id  _id;
     unsigned int _maxThreads;
+
+    class WorkerThreadPool;
+    boost::scoped_ptr<WorkerThreadPool> _workerThreads;
 
     qi::Atomic<uint32_t> _totalTask;
     qi::Atomic<uint32_t> _activeTask;

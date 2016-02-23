@@ -16,7 +16,6 @@
 # define _QI_LOG_HPP_
 
 # include <string>
-# include <iostream>
 # include <sstream>
 # include <cstdarg>
 # include <cstdio>
@@ -156,12 +155,13 @@ namespace qi {
     LogContextAttr_None           = 0,      ///< No context
     LogContextAttr_Verbosity      = 1 << 0, ///< Show logs level
     LogContextAttr_ShortVerbosity = 1 << 1, ///< Show short logs level
-    LogContextAttr_Date           = 1 << 2, ///< Show dates
+    LogContextAttr_SystemDate     = 1 << 2, ///< Show qi::SystemClock dates
     LogContextAttr_Tid            = 1 << 3, ///< Show threads id
     LogContextAttr_Category       = 1 << 4, ///< Show categories
     LogContextAttr_File           = 1 << 5, ///< Show logs files
     LogContextAttr_Function       = 1 << 6, ///< Show functions name
-    LogContextAttr_Return         = 1 << 7  ///< Print an end line between contexts and logs
+    LogContextAttr_Return         = 1 << 7, ///< Print an end line between contexts and logs
+    LogContextAttr_Date           = 1 << 8, ///< Show qi::Clock dates
   };
 
   /**
@@ -210,6 +210,7 @@ namespace qi {
     /**
      * \brief Boost delegate to log function (verbosity lv, date of log,
      *        category, message, file, function, line).
+     *  \deprecated 1.24 use qi::log::Handler
      */
     typedef boost::function7<void,
                              const qi::LogLevel,
@@ -219,6 +220,19 @@ namespace qi {
                              const char*,
                              const char*,
                              int> logFuncHandler;
+    /**
+     * \brief Boost delegate to log function (verbosity lv, dates of log,
+     *        category, message, file, function, line).
+     */
+    typedef boost::function8<void,
+                             const qi::LogLevel,
+                             const qi::Clock::time_point,
+                             const qi::SystemClock::time_point,
+                             const char*,
+                             const char*,
+                             const char*,
+                             const char*,
+                             int> Handler;
 
     /**
      * \brief Initialization of the logging system (could be avoided)
@@ -296,7 +310,7 @@ namespace qi {
      * \param sub Log subscriber id.
      *
      * Levels set by this function is a default value, overriden by
-     * all setCategory() calls.
+     * all addFilter() and addFilters() calls.
      *
      * Change the log minimum level: [0-6] (default:4):
      *   - 0: silent
@@ -351,7 +365,7 @@ namespace qi {
      * \param level Level associate to category.
      * \return true if given combination of category and level is enabled.
      */
-    QI_API bool isVisible(CategoryType category, qi::LogLevel level);
+    inline bool isVisible(CategoryType category, qi::LogLevel level);
 
     /**
      * \copydoc isVisible()
@@ -367,8 +381,9 @@ namespace qi {
      *    - CAT=level  : set category CAT to level
      *
      * Each category can include a '*' for globbing.
-     * Can be set with env var QI_LOG_FILTERS
-     * \example  'qi.*=debug:-qi.foo:+qi.foo.bar' (all qi.* logs in info, remove all qi.foo logs except qi.foo.bar)
+     * Can be set with env var QI_LOG_FILTERS. For instance
+     * 'qi.*=debug:-qi.foo:+qi.foo.bar' stands for
+     * "all qi.* logs in debug, remove all qi.foo logs except qi.foo.bar".
      * \param sub Log subscriber id.
      */
     QI_API void addFilters(const std::string& rules, SubscriberId sub = 0);
@@ -382,7 +397,7 @@ namespace qi {
      * \verbatim
      * .. code-block:: cpp
      *
-     *   setCategory("internal.*", silent);
+     *   addFilter("internal.*", silent);
      *
      * One can also set a filtering rule in QI_LOG_FILTERS environment variable.
      * syntax is colon-separated list of rules of the form (+|-)CAT or CAT=level.
@@ -446,12 +461,25 @@ namespace qi {
     QI_API void setSynchronousLog(bool sync);
 
     /**
-     * \brief Add a log handler.
+     * \brief Add a log handler for this process' logs.
+     * \warning Handlers are usually called synchronously, they must not block.
      * \param name Name of the handler, useful to remove handler (prefer lowercase).
      * \param fct Boost delegate to log handler function.
      * \param defaultLevel default log verbosity.
      * \return New log subscriber id added.
      */
+    QI_API SubscriberId addHandler(const std::string& name,
+                                   qi::log::Handler fct,
+                                   qi::LogLevel defaultLevel = LogLevel_Info);
+    /**
+     * \brief Add a log handler.
+     * \param name Name of the handler, useful to remove handler (prefer lowercase).
+     * \param fct Boost delegate to log handler function.
+     * \param defaultLevel default log verbosity.
+     * \return New log subscriber id added.
+     * \deprecated 1.24 use qi::log::addHandler
+     */
+    QI_API_DEPRECATED
     QI_API SubscriberId addLogHandler(const std::string& name,
                                       qi::log::logFuncHandler fct,
                                       qi::LogLevel defaultLevel = LogLevel_Info);
@@ -460,8 +488,15 @@ namespace qi {
      * \brief Remove a log handler.
      * \param name Name of the handler.
      */
-    QI_API void removeLogHandler(const std::string& name);
+    QI_API void removeHandler(const std::string& name);
 
+    /**
+     * \brief Remove a log handler.
+     * \param name Name of the handler.
+     * \deprecated 1.24 use qi::log::removeHandler
+     */
+    QI_API_DEPRECATED
+    QI_API void removeLogHandler(const std::string& name);
 
     /**
      * \brief Flush asynchronous logs.

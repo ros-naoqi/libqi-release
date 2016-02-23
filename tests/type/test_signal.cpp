@@ -8,9 +8,11 @@
 #include <gtest/gtest.h>
 #include <qi/signal.hpp>
 #include <qi/future.hpp>
-#include <qi/application.hpp>
+#include <qi/signalspy.hpp>
 #include <qi/anyobject.hpp>
+#include <qi/application.hpp>
 #include <qi/type/objecttypebuilder.hpp>
+#include <qi/type/dynamicobjectbuilder.hpp>
 
 qiLogCategory("test");
 
@@ -97,6 +99,39 @@ TEST(TestSignal, AutoDisconnect)
   ASSERT_EQ(1, *r);
 }
 
+void waitFuture(qi::Atomic<int>& cnt, qi::Promise<void> start, qi::Future<void> f)
+{
+  if (++cnt == 2)
+    start.setValue(0);
+  f.wait();
+
+  // force disconnection, may trigger a segfault
+  throw qi::PointerLockException();
+}
+
+TEST(TestSignal, NonBlockingDestroy)
+{
+  // disconnect is blocking, but signal destruction should not be
+
+  qi::Promise<void> start;
+  qi::Promise<void> finish;
+  qi::Atomic<int> cnt = 0;
+
+  {
+    qi::Signal<void> sig;
+    sig.connect(boost::bind(waitFuture, boost::ref(cnt), start, finish.future()));
+
+    sig();
+    sig();
+
+    start.future().wait();
+    // now that the callback is running, destroy the signal
+  }
+
+  // all went well, unblock the callback
+  finish.setValue(0);
+}
+
 TEST(TestSignal, BadArity)
 {
   // Test runtime detection of arity errors
@@ -173,14 +208,14 @@ public:
   void fire2(int i, int j) { s2(i, j);}
 };
 
-QI_REGISTER_OBJECT(SigHolder, s0, s1, s2, fire0, fire1, fire2);
+QI_REGISTER_OBJECT(SigHolder, s0, s1, s2, fire0, fire1, fire2)
 
 TEST(TestSignal, SignalNBind)
 {
   int res = 0;
   boost::shared_ptr<SigHolder> so(new SigHolder);
   qi::AnyObject op = qi::AnyReference::from(so).to<qi::AnyObject>();
-  qi::details::printMetaObject(std::cerr, op.metaObject());
+  qi::detail::printMetaObject(std::cerr, op.metaObject());
   op.connect("s1", (boost::function<void(int)>)boost::bind<void>(&lol, _1, boost::ref(res)));
   op.post("s1", 2);
   for (unsigned i=0; i<30 && res!=2; ++i) qi::os::msleep(10);
@@ -266,6 +301,52 @@ TEST(TestSignal, OnSubscriber)
   ASSERT_FALSE(subscribers);
 }
 
+void store2(qi::Promise<int> variable1, qi::Promise<int> variable2, int value1, int value2)
+{
+  variable1.setValue(value1);
+  variable2.setValue(value2);
+}
+
+TEST(TestSignal, SignalToSignalWithExtraArgument)
+{
+  qi::Promise<int> target1, target2;
+  qi::Signal<int> signal1;
+  qi::Signal<int, int> signal2;
+  signal1.connect(boost::bind(boost::ref(signal2), _1, 42));
+  signal2.connect(store2, target1, target2, _1, _2);
+  signal1(12);
+  EXPECT_EQ(12, target1.future().value());
+  EXPECT_EQ(42, target2.future().value());
+}
+
+TEST(TestSignalSpy, Counter)
+{
+  qi::Signal<int> sig;
+  qi::SignalSpy sp(sig);
+  QI_EMIT sig(1);
+  QI_EMIT sig(1);
+  qi::os::sleep(1);
+  ASSERT_EQ(sp.getCounter(), 2u);
+
+  qi::DynamicObjectBuilder ob;
+  ob.advertiseSignal("signal", &sig);
+  qi::AnyObject obj(ob.object());
+  qi::SignalSpy sp2(obj, "signal");
+  QI_EMIT sig(1);
+  QI_EMIT sig(1);
+  qi::os::sleep(1);
+  ASSERT_EQ(sp2.getCounter(), 2u);
+}
+
+TEST(TestSignalSpy, Async)
+{
+  qi::Signal<int> sig;
+  qi::SignalSpy sp(sig);
+  qi::async(boost::bind(boost::ref(sig), 1));
+  qi::async(boost::bind(boost::ref(sig), 1));
+  ASSERT_TRUE(sp.waitUntil(2, qi::Seconds(1)));
+  ASSERT_EQ(sp.getCounter(), 2u);
+}
 
 int main(int argc, char **argv) {
   qi::Application app(argc, argv);

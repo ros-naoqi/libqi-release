@@ -2,7 +2,6 @@
 **  Copyright (C) 2012 Aldebaran Robotics
 **  See COPYING for the license
 */
-#include <iostream>
 #include <cassert>
 #include <cstring>
 
@@ -51,6 +50,10 @@ namespace qi {
       return "Event";
     case Type_Capability:
       return "Capability";
+    case Type_Cancel:
+      return "Cancel";
+    case Type_Canceled:
+      return "Canceled";
     default:
       return "Unknown";
     }
@@ -78,7 +81,7 @@ namespace qi {
 
     if (service != qi::Message::Service_ServiceDirectory)
     {
-      return 0;
+      return  nullptr;
     }
 
     switch (action)
@@ -100,13 +103,12 @@ namespace qi {
     case ServiceDirectoryAction_ServiceRemoved:
       return "ServiceRemoved";
     default:
-      return 0;
+      return  nullptr;
     }
   }
 
   MessagePrivate::MessagePrivate()
   {
-    memset(&header, 0, sizeof(MessagePrivate::MessageHeader));
     header.version = qi::Message::currentVersion();
     header.id = newMessageId();
     header.magic = qi::MessagePrivate::magic;
@@ -141,6 +143,9 @@ namespace qi {
 
   Message& Message::operator=(const Message& msg)
   {
+    if (this == &msg)
+      return *this;
+
     _p->buffer = msg._p->buffer;
     memcpy(&(_p->header), &(msg._p->header), sizeof(MessagePrivate::MessageHeader));
     return *this;
@@ -341,15 +346,16 @@ namespace qi {
   namespace {
     ObjectSerializationInfo serializeObject(
       AnyObject object,
-      ObjectHost* context)
+      ObjectHost* context,
+      StreamContext* strCtxt)
     {
-      if (!context)
-        throw std::runtime_error("Unable to serialize object without a valid ObajectHost");
+      if (!context || !strCtxt)
+        throw std::runtime_error("Unable to serialize object without a valid ObjectHost and StreamContext");
       unsigned int sid = context->service();
       unsigned int oid = context->nextId();
       ServiceBoundObject* sbo = new ServiceBoundObject(sid, oid, object, MetaCallType_Queued, true, context);
       boost::shared_ptr<BoundObject> bo(sbo);
-      context->addObject(bo, oid);
+      context->addObject(bo, strCtxt, oid);
       qiLogDebug() << "Hooking " << oid <<" on " << context;
       qiLogDebug() << "sbo " << sbo << "obj " << object.asGenericObject();
       // Transmit the metaObject augmented by ServiceBoundObject.
@@ -432,20 +438,20 @@ namespace qi {
         setError(ss.str());
       }
       else
-        encodeBinary(&_p->buffer, conv.first, boost::bind(serializeObject, _1, context), streamContext);
+        encodeBinary(&_p->buffer, conv.first, boost::bind(serializeObject, _1, context, streamContext), streamContext);
       if (conv.second)
         conv.first.destroy();
     }
     else if (value.type()->kind() != qi::TypeKind_Void)
     {
-      encodeBinary(&_p->buffer, value, boost::bind(serializeObject, _1, context), streamContext);
+      encodeBinary(&_p->buffer, value, boost::bind(serializeObject, _1, context, streamContext), streamContext);
     }
   }
 
   void Message::setValues(const std::vector<qi::AnyReference>& values, ObjectHost* context, StreamContext* streamContext)
   {
     cow();
-    SerializeObjectCallback scb = boost::bind(serializeObject, _1, context);
+    SerializeObjectCallback scb = boost::bind(serializeObject, _1, context, streamContext);
     for (unsigned i = 0; i < values.size(); ++i)
       encodeBinary(&_p->buffer, values[i], scb, streamContext);
   }
@@ -473,7 +479,7 @@ namespace qi {
       }
       AnyReference tuple = makeGenericTuplePtr(types, values);
       AnyValue val(tuple, false, false);
-      encodeBinary(&_p->buffer, AnyReference::from(val), boost::bind(serializeObject, _1, context), streamContext);
+      encodeBinary(&_p->buffer, AnyReference::from(val), boost::bind(serializeObject, _1, context, streamContext), streamContext);
       return;
     }
     /* This check does not makes sense for this transport layer who does not care,

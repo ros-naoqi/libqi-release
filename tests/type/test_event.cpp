@@ -46,11 +46,11 @@ TEST_F(TestObject, Simple)
   obj.post("fire", 42);
   EXPECT_TRUE(pPayload.future().wait() != qi::FutureState_Running);
   EXPECT_EQ(42, lastPayload);
-  pPayload.reset();
+  pPayload = qi::Promise<int>();
   obj.post("fire", 51);
   EXPECT_TRUE(pPayload.future().wait() != qi::FutureState_Running);
   EXPECT_EQ(51, lastPayload);
-  pPayload.reset();
+  pPayload = qi::Promise<int>();
   obj.disconnect(linkId);
   obj.post("fire", 42);
   EXPECT_FALSE(pPayload.future().wait(0) != qi::FutureState_Running);
@@ -82,7 +82,7 @@ TEST_F(TestObject, ConnectBind)
   );
   link = obj.connect("fire2", qi::bind<void(int, int)>(&TestObject::onFire, this, _2));
   EXPECT_TRUE(link != 0);
-  pPayload.reset();
+  pPayload = qi::Promise<int>();
   obj.post("fire2", 40, 41);
   EXPECT_TRUE(pPayload.future().wait() != qi::FutureState_Running);
   EXPECT_EQ(41, lastPayload);
@@ -95,7 +95,7 @@ TEST_F(TestObject, EmitMethod)
   qi::DynamicObjectBuilder ob;
   ob.advertiseMethod("fire", qi::bind<void(int)>(&TestObject::onFire, this, _1));
   qi::AnyObject obj(ob.object());
-  pPayload.reset();
+  pPayload = qi::Promise<int>();
   obj.post("fire", 23);
   EXPECT_TRUE(pPayload.future().wait() != qi::FutureState_Running);
   EXPECT_EQ(23, pPayload.future().value());
@@ -125,20 +125,20 @@ TEST(TestTraceAnalyzer, Basic)
 {
   qi::TraceAnalyzer ta;
   qi::AnyValue noargs;
-  EXPECT_EQ(ta.dumpTraces(), "");
+  EXPECT_EQ("", ta.dumpTraces());
   ta.addTrace(qi::EventTrace(10, EventTrace::Event_Call,   100, noargs, ts(10), 0, 0, 50, 50), 1);
   ta.addTrace(qi::EventTrace(10, EventTrace::Event_Result, 100, noargs, ts(11), 0, 0, 50, 50), 1);
-  EXPECT_EQ(ta.dumpTraces(), "50 10:1.100\n");
+  EXPECT_EQ("50 10:1.100\n", ta.dumpTraces());
   ta.clear();
   ta.addTrace(qi::EventTrace(10, EventTrace::Event_Result, 100, noargs, ts(11), 0, 0, 50, 50), 1);
   ta.addTrace(qi::EventTrace(10, EventTrace::Event_Call,   100, noargs, ts(10), 0, 0, 50, 50), 1);
-  EXPECT_EQ(ta.dumpTraces(), "50 10:1.100\n");
+  EXPECT_EQ("50 10:1.100\n", ta.dumpTraces());
   ta.addTrace(qi::EventTrace(11, EventTrace::Event_Result, 100, noargs, ts(13), 0, 0, 50, 50), 1);
   ta.addTrace(qi::EventTrace(11, EventTrace::Event_Call,   100, noargs, ts(12), 0, 0, 50, 50), 1);
-  EXPECT_EQ(ta.dumpTraces(), "50 10:1.100 11:1.100\n");
+  EXPECT_EQ("50 10:1.100 11:1.100\n", ta.dumpTraces());
   ta.addTrace(qi::EventTrace(12, EventTrace::Event_Result, 100, noargs, ts(11), 0, 0, 51, 51), 1);
   ta.addTrace(qi::EventTrace(12, EventTrace::Event_Call,   100, noargs, ts(10), 0, 0, 51, 51), 1);
-  EXPECT_EQ(ta.dumpTraces(), "51 12:1.100\n50 10:1.100 11:1.100\n");
+  EXPECT_EQ("51 12:1.100\n50 10:1.100 11:1.100\n", ta.dumpTraces());
   ta.clear();
 }
 

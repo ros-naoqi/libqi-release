@@ -21,7 +21,6 @@
 #include <qi/session.hpp>
 #include <qi/messaging/serviceinfo.hpp>
 #include <qi/type/objecttypebuilder.hpp>
-#include "serverresult.hpp"
 #include "session_p.hpp"
 #include <qi/os.hpp>
 #include <qi/log.hpp>
@@ -36,8 +35,8 @@ namespace qi
 {
 
   qi::AnyObject createSDP(ServiceDirectory* self) {
-    static qi::ObjectTypeBuilder<ServiceDirectory>* ob = 0;
-    static boost::mutex* mutex = 0;
+    static qi::ObjectTypeBuilder<ServiceDirectory>* ob = nullptr;
+    static boost::mutex* mutex = nullptr;
     QI_THREADSAFE_NEW(mutex);
     boost::mutex::scoped_lock lock(*mutex);
 
@@ -66,6 +65,8 @@ namespace qi
       assert(id == qi::Message::ServiceDirectoryAction_MachineId);
       ob->advertiseMethod("_socketOfService", &ServiceDirectory::_socketOfService);
       // used locally only, we do not export its id
+      // Silence compile warning unused id
+      (void)id;
     }
     return ob->object(self);
   }
@@ -272,8 +273,8 @@ namespace qi
         }
       }
     }
-    if (!boost::algorithm::starts_with(serviceName, "_"))
-      serviceRemoved(idx, serviceName);
+
+    serviceRemoved(idx, serviceName);
   }
 
   void ServiceDirectory::updateServiceInfo(const ServiceInfo &svcinfo)
@@ -331,8 +332,7 @@ namespace qi
     connectedServices[idx] = itService->second;
     pendingServices.erase(itService);
 
-    if (!boost::algorithm::starts_with(serviceName, "_"))
-      serviceAdded(idx, serviceName);
+    serviceAdded(idx, serviceName);
   }
 
 

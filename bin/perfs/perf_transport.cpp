@@ -128,12 +128,9 @@ int run_client(qi::AnyObject obj)
     unsigned long long latencySum = 0;
     for (int j = 0; j < gLoopCount; ++j)
     {
-      qi::os::timeval tstart, tstop;
-      qi::os::gettimeofday(&tstart);
+      qi::SteadyClock::time_point tstart = qi::SteadyClock::now();
       obj.call<qi::Buffer>("replyBuf", buf);
-      qi::os::gettimeofday(&tstop);
-      latencySum += (tstop.tv_sec - tstart.tv_sec)* 1000000LL
-        + (tstop.tv_usec - tstart.tv_usec);
+      latencySum += qi::durationSince<qi::MicroSeconds>(tstart).count();
 
     }
 
@@ -238,7 +235,7 @@ int main(int argc, char **argv)
     ("msdelay", po::value<int>()->default_value(0, "0"), "Delay in milliseconds to simulate long call")
     ;
 
-  desc.add(qi::details::getPerfOptions());
+  desc.add(qi::detail::getPerfOptions());
 
   po::variables_map vm;
   po::store(po::command_line_parser(argc, argv)

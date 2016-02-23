@@ -6,7 +6,6 @@
  */
 
 #include <vector>
-#include <iostream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -230,9 +229,9 @@ TEST(QiService, ClassProperty)
   p.server()->registerService("foo", obj);
 
   qi::AnyObject client = p.client()->service("foo");
-  qi::details::printMetaObject(std::cerr, obj.metaObject());
+  qi::detail::printMetaObject(std::cerr, obj.metaObject());
   std::cerr <<"--" << std::endl;
-  qi::details::printMetaObject(std::cerr, client.metaObject());
+  qi::detail::printMetaObject(std::cerr, client.metaObject());
   qiLogDebug() << "setProp";
   client.setProperty<int>("offset", 1).value();
   qiLogDebug() << "setProp done";
@@ -352,6 +351,54 @@ TEST(QiService, RemoteServiceRegistrationAfterDisconnection)
   barAsRemoteService = f.value();
 
   ASSERT_TRUE(barAsRemoteService);
+}
+
+class DummyObject
+{
+public:
+  DummyObject(qi::Promise<void> prom) : p(prom), a(0) { }
+  ~DummyObject()
+  {
+      p.setValue(0);
+  }
+  qi::Promise<void> p;
+  int a;
+};
+
+QI_REGISTER_OBJECT(DummyObject, a);
+
+class ServiceThatServesObjects
+{
+public:
+
+  qi::AnyObject getObject()
+  {
+      return qi::Object<DummyObject>(new DummyObject(prom));
+  }
+
+  qi::Promise<void> prom;
+};
+
+QI_REGISTER_OBJECT(ServiceThatServesObjects, getObject);
+
+TEST(QiService, NetworkObjectsAreClosedWithTheSession)
+{
+  qi::Session server;
+  qi::Session client;
+  ServiceThatServesObjects *concreteService = new ServiceThatServesObjects;
+  qi::Future<void> fut = concreteService->prom.future();
+
+  server.listenStandalone(qi::Url("tcp://127.0.0.1:0"));
+  server.registerService("service", qi::Object<ServiceThatServesObjects>(concreteService));
+  client.connect(server.endpoints()[0]);
+
+  ASSERT_TRUE(client.isConnected());
+  qi::AnyObject service = client.service("service");
+  qi::AnyObject obj = service.call<qi::AnyObject>("getObject");
+  client.close();
+  fut.wait();
+  // if we reach here, the test is a success: the remote reference "client"
+  // is gone so our object has been deleted.
 }
 
 int main(int argc, char **argv)

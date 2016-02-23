@@ -3,6 +3,7 @@
 
 # include <qi/applicationsession.hpp>
 # include <boost/program_options.hpp>
+# include <qi/jsoncodec.hpp>
 
 # include "sessionhelper.hpp"
 

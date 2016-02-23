@@ -6,7 +6,6 @@
  */
 
 #include <vector>
-#include <iostream>
 #include <string>
 
 #include <gtest/gtest.h>
@@ -509,7 +508,7 @@ TEST(QiSession, WaitForService)
   EXPECT_TRUE(future.hasValue());
 }
 
-TEST(QiSession, WaitForServiceCancelled)
+TEST(QiSession, WaitForServiceCanceled)
 {
   TestSessionPair pair;
 

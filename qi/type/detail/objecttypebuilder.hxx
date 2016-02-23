@@ -4,8 +4,8 @@
 **  See COPYING for the license
 */
 
-#ifndef _QITYPE_DETAILS_OBJECTTYPEBUILDER_HXX_
-#define _QITYPE_DETAILS_OBJECTTYPEBUILDER_HXX_
+#ifndef _QITYPE_DETAIL_OBJECTTYPEBUILDER_HXX_
+#define _QITYPE_DETAIL_OBJECTTYPEBUILDER_HXX_
 
 #include <boost/function_types/is_member_function_pointer.hpp>
 #include <boost/mpl/front.hpp>
@@ -46,6 +46,11 @@ namespace qi {
     // => wee need all TypeInterface* methods, but we do not want another TypeInterface*
     // to anwser to typeOf<T>
     xBuildFor(new DefaultTypeImpl<T>(), autoRegister, detail::getStrandAccessor<T>());
+
+    if (std::is_base_of<Actor, T>::value)
+      setThreadingModel(ObjectThreadingModel_SingleThread);
+    else
+      setThreadingModel(ObjectThreadingModel_MultiThread);
   }
 
   template <typename FUNCTION_TYPE>
@@ -89,9 +94,9 @@ namespace qi {
   {
     qiLogCategory("qitype.objectbuilder");
     // Compute the offset between T and U
-    T* ptr = (T*)(void*)0x10000;
+    T* ptr = reinterpret_cast<T*>(0x10000);
     U* pptr = ptr;
-    int offset = (intptr_t)(void*)pptr - (intptr_t)(void*) ptr;
+    intptr_t offset = reinterpret_cast<intptr_t>(pptr) - reinterpret_cast<intptr_t>(ptr);
     qiLogDebug() << "Offset check T(" << typeid(ptr).name() << ")= " << pptr << ", U(" << typeid(ptr).name() << ")= " << ptr << ", T-U= " << offset;
     return ObjectTypeBuilderBase::inherits<U>(offset);
   }
@@ -277,4 +282,4 @@ namespace qi {
 }
 
 
-#endif  // _QITYPE_DETAILS_OBJECTTYPEBUILDER_HXX_
+#endif  // _QITYPE_DETAIL_OBJECTTYPEBUILDER_HXX_

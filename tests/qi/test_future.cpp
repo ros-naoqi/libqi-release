@@ -73,6 +73,10 @@ TEST(TestBind, Simple)
   EXPECT_EQ(15, v);
   qi::bind<void(void)>(&exchange, boost::ref(v), 16)();
   EXPECT_EQ(16, v);
+  qi::bind(&exchange, boost::ref(v), _1)(15);
+  EXPECT_EQ(15, v);
+  qi::bind(&exchange, boost::ref(v), 16)();
+  EXPECT_EQ(16, v);
 }
 
 TEST(TestBind, MemFun)
@@ -125,7 +129,6 @@ class SetValue2: public SetValue, public qi::Trackable<SetValue2>
 public:
   SetValue2(int& target)
   :SetValue(target)
-  , qi::Trackable<SetValue2>(this)
   {}
   ~SetValue2()
   {
@@ -176,6 +179,18 @@ TEST(TestBind, Trackable)
     qi::bind<void(void)>(&SetValue2::exchange, boost::ref(s1), 4)();
     EXPECT_EQ(4, v);
   }
+  v = 0;
+  {
+    SetValue2 s1(v);
+    qi::bind(&SetValue2::exchange, &s1, _1)(1);
+    EXPECT_EQ(1, v);
+    qi::bind(&SetValue2::exchange, &s1, 2)();
+    EXPECT_EQ(2, v);
+    qi::bind(&SetValue2::exchange, boost::ref(s1), _1)(3);
+    EXPECT_EQ(3, v);
+    qi::bind(&SetValue2::exchange, boost::ref(s1), 4)();
+    EXPECT_EQ(4, v);
+  }
 
   boost::function<void(void)> f;
   {
@@ -218,6 +233,12 @@ TEST(TestBind, Trackable)
   while (notify != 3)
     qi::os::msleep(10);
   EXPECT_EQ(10, v); //call not made
+}
+
+TEST(TestBind, BindLambda)
+{
+  auto f = qi::bind<int>([](int i){ return i; }, 18);
+  ASSERT_EQ(18, f());
 }
 
 void _delayValue(int msDelay, qi::Promise<void> p)
@@ -385,6 +406,40 @@ public:
   std::string &gGlobalE;
 };
 
+TEST_F(TestFuture, Validity) {
+  qi::Future<void> a;
+  EXPECT_FALSE(a.isValid());
+
+  qi::Promise<void> p;
+  EXPECT_TRUE(p.future().isValid());
+
+  qi::Future<void> b = p.future();
+  EXPECT_TRUE(b.isValid());
+
+  a = b;
+  EXPECT_TRUE(a.isValid());
+
+  a = qi::Future<void>();
+  EXPECT_FALSE(a.isValid());
+}
+
+static void donothingcb()
+{}
+
+TEST_F(TestFuture, Invalid) {
+  qi::Future<void> a;
+  EXPECT_EQ(a.wait(), qi::FutureState_None);
+  EXPECT_THROW(a.connect(boost::bind(donothingcb)), qi::FutureException);
+  EXPECT_THROW(a.value(), qi::FutureException);
+  EXPECT_THROW(a.error(), qi::FutureException);
+  EXPECT_FALSE(a.isValid());
+  EXPECT_FALSE(a.hasValue());
+  EXPECT_FALSE(a.hasError());
+  EXPECT_FALSE(a.isCanceled());
+  EXPECT_FALSE(a.isFinished());
+  EXPECT_FALSE(a.isRunning());
+}
+
 TEST_F(TestFuture, SimpleType) {
   TestFutureI tf(gGlobalI, gGlobalE);
 
@@ -468,7 +523,7 @@ TEST_F(TestFuture, TestTimeout) {
   EXPECT_GT(qi::SteadyClock::now(), start + qi::MilliSeconds(10));
 
   start = qi::SteadyClock::now();
-  qi::async(boost::function<void()>(boost::bind(&qi::Promise<int>::setValue, pro, 42)), 20000);
+  qi::asyncDelay(boost::function<void()>(boost::bind(&qi::Promise<int>::setValue, pro, 42)), qi::MicroSeconds(20000));
   EXPECT_EQ(qi::FutureState_FinishedWithValue, fut.wait(qi::SteadyClock::now() + qi::MilliSeconds(40)));
   EXPECT_TRUE(fut.isFinished());
   EXPECT_GT(qi::SteadyClock::now(), start + qi::MilliSeconds(20));
@@ -516,6 +571,19 @@ TEST_F(TestFuture, TestStateNone)
   ASSERT_TRUE(f.wait(qi::FutureTimeout_None) == qi::FutureState_Running);
 }
 
+TEST(TestFuture2, TestBroken)
+{
+  qi::Future<int> f;
+  {
+    qi::Promise<int> p;
+    f = p.future();
+  }
+  EXPECT_TRUE(f.isFinished());
+  EXPECT_TRUE(f.hasError());
+  EXPECT_FALSE(f.isCanceled());
+  EXPECT_THROW(f.value(), qi::FutureException);
+}
+
 struct DelCheck {
   void foo() {}
 };
@@ -553,7 +621,7 @@ void justThrow()
 
 TEST(AsyncAndFuture, errorOnTaskThrow)
 {
-  qi::Future<void> f = qi::async<void>(&justThrow);
+  qi::Future<void> f = qi::async(&justThrow);
   EXPECT_TRUE(f.hasError());
 }
 
@@ -578,7 +646,7 @@ TEST(TestFutureSync, Basic)
     qi::FutureSync<int> fs;
     qi::Promise<int> p;
     fs = p.future();
-    eventLoop->async(boost::bind(unlock, p, &tag), 50000);
+    eventLoop->asyncDelay(boost::bind(unlock, p, &tag), qi::MicroSeconds(50000));
   }
   ASSERT_TRUE(tag); // fs should block at end of scope, so we reach here after unlock
 
@@ -590,7 +658,7 @@ TEST(TestFutureSync, Basic)
       qi::FutureSync<int> fs;
       fs = p.future();
       fs.async();
-      eventLoop->async(boost::bind(unlock, p, &tag), 50000);
+      eventLoop->asyncDelay(boost::bind(unlock, p, &tag), qi::MicroSeconds(50000));
     }
     ASSERT_FALSE(tag); // fs is async: we exit immediately
   }
@@ -604,7 +672,7 @@ TEST(TestFutureSync, Basic)
       qi::FutureSync<int> fs;
       fs = p.future();
       qi::Future<int> fa = fs;
-      eventLoop->async(boost::bind(unlock, p, &tag), 50000);
+      eventLoop->asyncDelay(boost::bind(unlock, p, &tag), qi::MicroSeconds(50000));
     }
     ASSERT_FALSE(tag); // fs was copied: blocking disabled
   }
@@ -617,7 +685,7 @@ qi::FutureSync<int> getSync(bool* tag)
 {
   qi::EventLoop* el = qi::getEventLoop();
   qi::Promise<int> promise;
-  el->async(boost::bind(unlock, promise, tag), 50000);
+  el->asyncDelay(boost::bind(unlock, promise, tag), qi::MicroSeconds(50000));
   return promise.future();
 }
 
@@ -625,7 +693,7 @@ qi::FutureSync<int> getSync2(bool* tag)
 {
   qi::EventLoop* el = qi::getEventLoop();
   qi::Promise<int> promise;
-  el->async(boost::bind(unlock, promise, tag), 50000);
+  el->asyncDelay(boost::bind(unlock, promise, tag), qi::MicroSeconds(50000));
   return promise.future().sync();
 }
 
@@ -704,7 +772,6 @@ TEST(TestFutureSync, NoThrow) {
   EXPECT_NO_THROW(qi::FutureSync<int>(prom.future()).isFinished());
   EXPECT_NO_THROW(qi::FutureSync<int>(prom.future()).error());
   EXPECT_NO_THROW(qi::FutureSync<int>(prom.future()).cancel());
-  EXPECT_NO_THROW(qi::FutureSync<int>(prom.future()).isCancelable());
 }
 
 void do_nothing(TestFutureI*) {}
@@ -714,9 +781,9 @@ TEST(TestFutureError, MultipleSetValue)
   qi::Promise<int> p;
   qi::Future<int> f = p.future();
   p.setValue(0);
-  p.reset();
+  p = qi::Promise<int>();
   p.setError("");
-  p.reset();
+  p = qi::Promise<int>();
   p.setValue(1);
   EXPECT_ANY_THROW({ p.setValue(0);});
 }
@@ -730,13 +797,6 @@ TEST(TestFutureError, ValueOnError)
 }
 
 
-TEST(TestFutureCancel, NotCanceleable)
-{
-  qi::Promise<int> p;
-  qi::Future<int> f = p.future();
-  EXPECT_ANY_THROW({f.cancel();});
-}
-
 static void setTrue(bool* b)
 {
   *b = true;
@@ -745,10 +805,10 @@ static void setTrue(bool* b)
 TEST(TestFutureCancel, AsyncCallCanceleable)
 {
   bool b = false;
-  qi::Future<void> f = qi::getEventLoop()->async(
-    boost::bind(&setTrue, &b), 200);
+  qi::Future<void> f = qi::getEventLoop()->asyncDelay(
+    boost::bind(&setTrue, &b), qi::MicroSeconds(200));
   f.cancel();
-  // f is going to cancel asynchronously, so it can already be cancelled, or not
+  // f is going to cancel asynchronously, so it can already be canceled, or not
   qi::os::msleep(400);
   ASSERT_TRUE(!b);
   ASSERT_TRUE(f.isFinished());
@@ -770,7 +830,6 @@ TEST(TestFutureCancel, CancelRequest)
   qi::Future<int> future = promise.future();
 
   ASSERT_TRUE(future.isRunning());
-  ASSERT_TRUE(future.isCancelable());
 
   ASSERT_NO_THROW(future.cancel());
 
@@ -788,11 +847,9 @@ TEST(TestFutureCancel, Canceleable)
 
   ASSERT_FALSE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   f.cancel();
   ASSERT_TRUE(f.isFinished());
   ASSERT_TRUE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   ASSERT_FALSE(f.hasError(qi::FutureTimeout_None));
   ASSERT_FALSE(f.hasValue(qi::FutureTimeout_None));
 
@@ -802,11 +859,9 @@ TEST(TestFutureCancel, Canceleable)
 
   ASSERT_FALSE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   f.cancel();
   ASSERT_TRUE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   ASSERT_TRUE(f.hasError(qi::FutureTimeout_None));
   ASSERT_FALSE(f.hasValue(qi::FutureTimeout_None));
 
@@ -815,11 +870,9 @@ TEST(TestFutureCancel, Canceleable)
 
   ASSERT_FALSE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   f.cancel();
   ASSERT_TRUE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   ASSERT_FALSE(f.hasError(qi::FutureTimeout_None));
   ASSERT_TRUE(f.hasValue(qi::FutureTimeout_None));
 
@@ -828,11 +881,9 @@ TEST(TestFutureCancel, Canceleable)
 
   ASSERT_FALSE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   f.cancel();
   ASSERT_FALSE(f.isFinished());
   ASSERT_FALSE(f.isCanceled());
-  ASSERT_TRUE(f.isCancelable());
   EXPECT_THROW(f.hasError(qi::FutureTimeout_None), qi::FutureException);
   EXPECT_THROW(f.hasValue(qi::FutureTimeout_None), qi::FutureException);
 }
@@ -840,8 +891,8 @@ TEST(TestFutureCancel, Canceleable)
 TEST(TestFutureCancel, Canceled)
 {
   bool b = false;
-  qi::Future<void> f = qi::getEventLoop()->async(
-    boost::bind(&setTrue, &b), 200000);
+  qi::Future<void> f = qi::getEventLoop()->asyncDelay(
+    boost::bind(&setTrue, &b), qi::MicroSeconds(200000));
   f.cancel();
   // Depending on multi-thread timing future can be finished or not at this point
   qi::os::msleep(400);
@@ -862,11 +913,108 @@ int assinc(const qi::Future<int>& f, int exp)
 
 TEST(TestFutureThen, ThenR)
 {
-  qi::Future<int> f = qi::async<int>(&get42);
+  qi::Future<int> f = qi::async(&get42);
   qi::Future<int> ff = f.thenR<int>(&assinc, _1, 42);
   qi::Future<int> fff = ff.thenR<int>(&assinc, _1, 43);
 
   ASSERT_EQ(44, fff.value());
+}
+
+TEST(TestFutureThen, Then)
+{
+  qi::Future<int> f = qi::async(&get42);
+  qi::Future<int> ff = f.then(qi::bind(&assinc, _1, 42));
+  qi::Future<int> fff = ff.then(qi::bind(&assinc, _1, 43));
+
+  ASSERT_EQ(44, fff.value());
+}
+
+TEST(TestFutureThen, ThenCancel)
+{
+  qi::Promise<int> p;
+  qi::Future<void> f = p.future().then(qi::FutureCallbackType_Sync, [](qi::Future<int> f) {
+      ASSERT_TRUE(f.isCanceled());
+      });
+
+  f.cancel();
+  ASSERT_TRUE(p.isCancelRequested());
+  p.setCanceled();
+  ASSERT_TRUE(f.hasValue());
+}
+
+int fail(int f)
+{
+  throw std::runtime_error("fail");
+}
+
+int call(bool& b)
+{
+  b = true;
+  return 42;
+}
+
+TEST(TestFutureThen, AndThenR)
+{
+  bool called = false;
+  qi::Future<int> f = qi::async(&get42);
+  qi::Future<int> ff = f.andThenR<int>(boost::bind(&fail, _1));
+  qi::Future<int> fff = ff.andThenR<int>(boost::bind(&call, boost::ref(called)));
+
+  fff.wait();
+
+  EXPECT_FALSE(called);
+  ASSERT_TRUE(fff.hasError());
+  EXPECT_EQ(fff.error(), "fail");
+}
+
+TEST(TestFutureThen, AndThen)
+{
+  bool called = false;
+  qi::Future<int> f = qi::async(&get42);
+  qi::Future<int> ff = f.andThen(boost::bind(&fail, _1));
+  qi::Future<int> fff = ff.andThen(boost::bind(&call, boost::ref(called)));
+
+  fff.wait();
+
+  EXPECT_FALSE(called);
+  ASSERT_TRUE(fff.hasError());
+  EXPECT_EQ(fff.error(), "fail");
+}
+
+TEST(TestFutureThen, AndThenRVoid)
+{
+  bool called = false;
+  qi::Promise<void> p;
+  qi::Future<void> ff = p.future().andThenR<void>(boost::bind(&call, boost::ref(called)));
+  p.setValue(0);
+
+  ff.wait();
+
+  EXPECT_TRUE(called);
+  ASSERT_TRUE(ff.hasValue());
+}
+
+int block(int i, qi::Future<void> f)
+{
+  f.wait();
+  return 99;
+}
+
+TEST(TestFutureThen, AndThenRCancel)
+{
+  qi::Promise<void> blockProm;
+
+  bool called = false;
+  qi::Future<int> f = qi::Future<int>(42);
+  qi::Future<int> ff = f.andThenR<int>(boost::bind(&block, _1, blockProm.future()));
+  qi::Future<int> fff = ff.andThenR<int>(boost::bind(&call, boost::ref(called)));
+
+  fff.cancel();
+  blockProm.setValue(0);
+  fff.wait();
+
+  EXPECT_FALSE(called);
+  EXPECT_TRUE(fff.isCanceled());
 }
 
 TEST(TestFutureUnwrap, Unwrap)
@@ -939,14 +1087,14 @@ void setTrue(qi::Promise<T>& p, bool& b)
 
 TEST(TestFutureUnwrap, UnwrapCancel)
 {
-  bool cancelled = false;
+  bool canceled = false;
 
-  qi::Promise<qi::Future<int> > prom(boost::bind(setTrue<qi::Future<int> >, _1, boost::ref(cancelled)));
+  qi::Promise<qi::Future<int> > prom(boost::bind(setTrue<qi::Future<int> >, _1, boost::ref(canceled)));
   qi::Promise<int> prom2;
   qi::Future<int> future = prom.future().unwrap();
 
   ASSERT_TRUE(future.isRunning());
-  ASSERT_FALSE(cancelled);
+  ASSERT_FALSE(canceled);
 
   future.cancel();
 
@@ -955,26 +1103,26 @@ TEST(TestFutureUnwrap, UnwrapCancel)
 
   EXPECT_TRUE(prom.isCancelRequested());
   EXPECT_TRUE(future.isCanceled());
-  EXPECT_TRUE(cancelled);
+  EXPECT_TRUE(canceled);
 }
 
 TEST(TestFutureUnwrap, UnwrapCancel2)
 {
-  bool cancelled = false;
-  bool cancelled2 = false;
+  bool canceled = false;
+  bool canceled2 = false;
 
-  qi::Promise<qi::Future<int> > prom(boost::bind(setTrue<qi::Future<int> >, _1, boost::ref(cancelled)));
-  qi::Promise<int> prom2(boost::bind(setTrue<int>, _1, boost::ref(cancelled2)));
+  qi::Promise<qi::Future<int> > prom(boost::bind(setTrue<qi::Future<int> >, _1, boost::ref(canceled)));
+  qi::Promise<int> prom2(boost::bind(setTrue<int>, _1, boost::ref(canceled2)));
   qi::Future<int> future = prom.future().unwrap();
 
   ASSERT_TRUE(future.isRunning());
-  ASSERT_FALSE(cancelled);
+  ASSERT_FALSE(canceled);
 
   prom.setValue(prom2.future());
 
   ASSERT_TRUE(future.isRunning());
-  ASSERT_FALSE(cancelled);
-  ASSERT_FALSE(cancelled2);
+  ASSERT_FALSE(canceled);
+  ASSERT_FALSE(canceled2);
 
   future.cancel();
 
@@ -984,8 +1132,28 @@ TEST(TestFutureUnwrap, UnwrapCancel2)
   EXPECT_FALSE(prom.isCancelRequested());
   EXPECT_TRUE(prom2.isCancelRequested());
   EXPECT_TRUE(future.isCanceled());
-  EXPECT_FALSE(cancelled);
-  EXPECT_TRUE(cancelled2);
+  EXPECT_FALSE(canceled);
+  EXPECT_TRUE(canceled2);
+}
+
+TEST(TestFutureWeakCanceler, Cancel)
+{
+  qi::Promise<void> prom(qi::PromiseNoop<void>);
+  prom.future().makeCanceler()();
+  ASSERT_TRUE(prom.isCancelRequested());
+}
+
+TEST(TestFutureWeakCanceler, IsWeak)
+{
+  boost::weak_ptr<int> wptr;
+  boost::function<void()> canceler;
+  {
+    qi::Promise<boost::shared_ptr<int> > prom(qi::PromiseNoop<boost::shared_ptr<int> >);
+    canceler = prom.future().makeCanceler();
+    prom.setValue(boost::make_shared<int>(42));
+    wptr = prom.future().value();
+  }
+  ASSERT_FALSE(wptr.lock());
 }
 
 // ===== FutureBarrier =========================================================
@@ -1034,38 +1202,63 @@ TEST(TestPromiseBarrier, SimpleBarrier)
   ASSERT_EQ(it, *a);
 }
 
+TEST(TestPromiseBarrier, Cancel)
+{
+  qi::Future<std::vector<qi::Future<int> > > fut;
+  {
+    qi::FutureBarrier<int> barrier;
+    std::vector<qi::Promise<int> > promises;
+
+    // Loading the barrier.
+    for (int it = 0; it < BARRIER_N; ++it) {
+      qi::Promise<int> prom(doCancel);
+      promises.push_back(prom);
+      barrier.addFuture(prom.future());
+    }
+
+    fut = barrier.future();
+  }
+
+  fut.cancel();
+  // We wait for all futures of the for loop.
+  fut.value();
+}
+
 TEST(TestPromiseBarrier, ClosedBarrier)
 {
   qi::FutureBarrier<void> barrier;
 
   // Can add a future to the barrier because is not yet closed.
   qi::Promise<void> prom;
-  ASSERT_TRUE(barrier.addFuture(prom.future()));
+  ASSERT_NO_THROW(barrier.addFuture(prom.future()));
   prom.setValue(0);
 
   barrier.future().wait();
 
   // Invalid promise, because FutureBarrier is closed.
   qi::Promise<void> prom2;
-  ASSERT_FALSE(barrier.addFuture(prom2.future()));
+  ASSERT_ANY_THROW(barrier.addFuture(prom2.future()));
 }
 
 TEST(TestPromiseBarrier, CompleteExample)
 {
-  qi::Promise<void> call;
-  qi::FutureBarrier<int> barrier;
-
-  // Load data in the barrier.
-  for (int it = 0; it < BARRIER_N; ++it) {
-    qi::Promise<int> prom;
-    call.future().connect(boost::bind<void>(&mult42, prom, it));
-    barrier.addFuture(prom.future());
-  }
-  call.setValue(0);
-
-  // Bind something to do after everything is computed.
   qi::Promise<void> end;
-  barrier.future().connect(boost::bind(&checkBarrier, end, _1));
+
+  {
+    qi::Promise<void> call;
+    qi::FutureBarrier<int> barrier;
+
+    // Load data in the barrier.
+    for (int it = 0; it < BARRIER_N; ++it) {
+      qi::Promise<int> prom;
+      call.future().connect(boost::bind<void>(&mult42, prom, it));
+      barrier.addFuture(prom.future());
+    }
+    call.setValue(0);
+
+    // Bind something to do after everything is computed.
+    barrier.future().connect(boost::bind(&checkBarrier, end, _1));
+  }
 
   // Wait for the end of the check.
   end.future().wait();
@@ -1179,7 +1372,6 @@ TEST(TestAdaptFuture, PromiseCancel) {
   qi::Promise<void> prom2;
 
   qi::adaptFuture(prom1.future(), prom2);
-  ASSERT_TRUE(prom2.future().isCancelable());
   prom2.future().cancel();
   while(prom2.future().isRunning())
     qi::os::msleep(5);
@@ -1199,29 +1391,31 @@ int ping(int v)
 TEST(EventLoop, async)
 {
   qi::EventLoop* el = qi::getEventLoop();
-  qi::Future<int> f = el->async<int>(boost::bind(ping, 42), 200000);
+  qi::Future<int> f = el->asyncDelay(boost::bind(ping, 42), qi::MicroSeconds(200000));
   EXPECT_FALSE(f.isFinished());
   f.wait();
   EXPECT_FALSE(f.hasError());
   EXPECT_EQ(f.value(), 42);
 
-  f = el->async<int>(boost::bind(ping, 42), 200000);
+  f = el->asyncDelay(boost::bind(ping, 42), qi::MicroSeconds(200000));
   EXPECT_FALSE(f.isFinished());
   EXPECT_NO_THROW(f.cancel());
   EXPECT_EQ(f.wait(), qi::FutureState_Canceled);
 
-  f = el->async<int>(boost::bind(ping, -1), 200000);
+  f = el->asyncDelay(boost::bind(ping, -1), qi::MicroSeconds(200000));
   EXPECT_FALSE(f.isFinished());
   f.wait();
   EXPECT_TRUE(f.hasError());
 
-  f = el->async<int>(boost::bind(ping, 42), qi::MilliSeconds(20));
+  f = el->asyncDelay(boost::bind(ping, 42), qi::MilliSeconds(20));
   qi::os::msleep(25);
   EXPECT_TRUE(f.isFinished());
 
-  f = el->async<int>(boost::bind(ping, 42), qi::SteadyClock::now() + qi::MilliSeconds(10));
+  f = el->asyncAt(boost::bind(ping, 42), qi::SteadyClock::now() + qi::MilliSeconds(10));
   qi::os::msleep(15);
   EXPECT_TRUE(f.isFinished());
+
+  qi::async<void>([]{}).value();
 }
 
 void empty() {}
@@ -1330,17 +1524,21 @@ TEST(TestPeriodicTask, DeadLock)
   }
 }
 
-TEST(TestPeriodicTask, ParallelStart)
+TEST(TestPeriodicTask, StartIsNoop)
 {
-  qi::Atomic<int> a;
+  qi::Promise<void> prom;
   qi::PeriodicTask pt;
-  pt.setCallback(&inc, boost::ref(a));
-  pt.setUsPeriod(1000);
+  pt.setCallback(&block, 99, prom.future());
+  pt.setUsPeriod(100);
   std::vector<qi::Future<void> > futs;
+  // multiple start is no-op, this should not deadlock
   for (unsigned i=0; i<20; ++i)
     futs.push_back(qi::async(boost::function<void()>(boost::bind(&qi::PeriodicTask::start, &pt, true))));
   for (unsigned i=0; i<20; ++i)
     futs[i].wait();
+
+  prom.setValue(0);
+  pt.stop();
 }
 
 static void loopTrigger(qi::PeriodicTask& pt)
@@ -1400,7 +1598,7 @@ TEST(EventLoop, asyncFast)
   qi::EventLoop* el = qi::getEventLoop();
   for (int i = 0; i < 10; ++i)
   {
-    qi::Future<int> f = el->async<int>(get42);
+    qi::Future<int> f = el->async(get42);
     f.wait();
   }
 }

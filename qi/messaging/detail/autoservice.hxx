@@ -29,7 +29,7 @@ namespace qi
       {
         boost::mutex::scoped_lock scoped_lock(_mutex);
         _object = qi::Object<T>();
-        _promise.reset();
+        _promise = qi::Promise<void>();
       }
       serviceRemoved();
     }
@@ -53,7 +53,7 @@ namespace qi
       {
         boost::mutex::scoped_lock scoped_lock(_mutex);
         _object = qi::Object<T>();
-        _promise.reset();
+        _promise = qi::Promise<void>();
       }
       serviceRemoved();
     }
@@ -72,7 +72,7 @@ namespace qi
 
   /**
    * The compiler will recursively call operator-> on each returned object
-   * until he get a pointer We return an qi::details::Keeper\<T\> to keep T*
+   * until he get a pointer We return an qi::detail::Keeper\<T\> to keep T*
    * alive during the call (Object\<T\> will be temporary stored on stack while
    * the call is pending)
    */

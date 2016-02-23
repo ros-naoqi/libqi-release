@@ -6,7 +6,6 @@
  */
 
 #include <list>
-#include <iostream>
 
 #include <gtest/gtest.h>
 
@@ -36,6 +35,66 @@ qiLogCategory("test");
 //  m2.setService(1);
 //  ASSERT_TRUE(&m1.signature() != &m2.signature());
 //}
+
+int getint()
+{
+  return 42;
+}
+
+bool getbool()
+{
+  return false;
+}
+
+std::string getstring()
+{
+  return "lol";
+}
+
+float getfloat()
+{
+  return 42.0;
+}
+
+void getvoid()
+{
+}
+
+TEST(TestCall, Convert)
+{
+  qi::DynamicObjectBuilder ob;
+  ob.advertiseMethod("getint", &getint);
+  ob.advertiseMethod("getbool", &getbool);
+  ob.advertiseMethod("getstring", &getstring);
+  ob.advertiseMethod("getfloat", &getfloat);
+  ob.advertiseMethod("getvoid", &getvoid);
+
+  TestSessionPair p;
+  p.server()->registerService("Serv", ob.object());
+  qi::AnyObject obj = p.client()->service("Serv");
+
+  EXPECT_EQ(42, obj.call<float>("getint"));
+  EXPECT_ANY_THROW(obj.call<bool>("getint"));
+  EXPECT_ANY_THROW(obj.call<std::string>("getint"));
+
+  EXPECT_EQ(42.0, obj.call<int>("getfloat"));
+  EXPECT_ANY_THROW(obj.call<bool>("getfloat"));
+  EXPECT_ANY_THROW(obj.call<std::string>("getfloat"));
+
+  EXPECT_EQ(false, obj.call<bool>("getbool"));
+  EXPECT_EQ(0, obj.call<int>("getbool"));
+  EXPECT_EQ(0.0, obj.call<float>("getbool"));
+
+  EXPECT_ANY_THROW(obj.call<int>("getvoid"));
+  EXPECT_ANY_THROW(obj.call<std::string>("getvoid"));
+  EXPECT_ANY_THROW(obj.call<float>("getvoid"));
+  EXPECT_ANY_THROW(obj.call<bool>("getvoid"));
+
+  EXPECT_EQ("lol", obj.call<std::string>("getstring"));
+  EXPECT_ANY_THROW(obj.call<int>("getstring"));
+  EXPECT_ANY_THROW(obj.call<float>("getstring"));
+  EXPECT_ANY_THROW(obj.call<bool>("getstring"));
+}
 
 int addOne(int v)
 {
@@ -595,8 +654,8 @@ void bindObjectEvent(qi::AnyObject ptr, const std::string& eventName,
   qi::Promise<int>& eventValue)
 {
   // Keep ptr alive
-  ptr.connect(eventName, boost::bind(&onEvent, _1, eventValue,
-    new qi::AnyObject(ptr)));
+  ptr.connect(eventName, boost::function<void(int)>(boost::bind(&onEvent, _1, boost::ref(eventValue),
+    new qi::AnyObject(ptr))));
 }
 
 int makeObjectCall(qi::AnyObject ptr, const std::string& fname, int arg)
@@ -628,7 +687,7 @@ TEST(TestCall, TestObjectPassing)
 
   qi::DynamicObjectBuilder ob;
   ob.advertiseMethod("makeObjectCall", &makeObjectCall);
-  ob.advertiseMethod("bindObjectEvent", boost::bind(&bindObjectEvent, _1, _2, eventValue));
+  ob.advertiseMethod("bindObjectEvent", boost::function<void(qi::AnyObject, const std::string&)>(boost::bind(&bindObjectEvent, _1, _2, boost::ref(eventValue))));
   qi::AnyObject obj(ob.object());
   p.server()->registerService("s", obj);
   qi::AnyObject proxy = p.client()->service("s");
@@ -643,14 +702,14 @@ TEST(TestCall, TestObjectPassing)
   // Transmit unregisteredObj through the network.
   qi::Future<int> v = proxy.async<int>("makeObjectCall", unregisteredObj, "add", 1);
   v.wait(2000);
-  ASSERT_TRUE(!v.hasError());
+  ASSERT_FALSE(v.hasError());
   ASSERT_EQ(2, v.value());
   proxy.call<void>("bindObjectEvent", unregisteredObj, "fire");
   unregisteredObj.post("fire", 42);
   eventValue.future().wait(); //fixme wait(2s)
   ASSERT_TRUE(eventValue.future().isFinished());
   ASSERT_EQ(42, eventValue.future().value());
-  eventValue.reset();
+  eventValue = qi::Promise<int>();
 
   // Check that object is locked by remote end
   qi::AnyWeakObject unregisteredWeakObj = unregisteredObj;
@@ -664,11 +723,11 @@ TEST(TestCall, TestObjectPassing)
   eventValue.future().wait();
   ASSERT_TRUE(eventValue.future().isFinished());
   ASSERT_EQ(0, eventValue.future().value());
-  eventValue.reset();
-  ASSERT_TRUE(!eventValue.future().isFinished());
+  eventValue = qi::Promise<int>();
+  ASSERT_FALSE(eventValue.future().isFinished());
   unregisteredObj.post("fire", 1);
   eventValue.future().wait(2000);
-  ASSERT_TRUE(!eventValue.future().isFinished());
+  ASSERT_FALSE(eventValue.future().isFinished());
 
   // Check that unregisteredObj is no longer held
   unregisteredObj.reset();
@@ -753,7 +812,17 @@ TEST(TestCall, TestObjectPassingReturn)
   ASSERT_FALSE(weak.lock());
 }
 
-class TestClass
+class TestClassInterface
+{
+public:
+  virtual ~TestClassInterface() = default;
+  virtual qi::Future<int> ping(int v) = 0;
+  qi::Property<int> prop;
+};
+
+QI_REGISTER_MT_OBJECT(TestClassInterface, ping, prop)
+
+class TestClass : public TestClassInterface
 {
 public:
   TestClass() : v(0) {}
@@ -763,10 +832,10 @@ public:
     qiLogDebug() << "~TestClass " << this;
     ++destructionCount;
   }
-  int ping(int w)
+  qi::Future<int> ping(int w) override
   {
     qiLogDebug() << "TestClass::ping " << this << ' ' << v << ' ' << w;
-    return v+w;
+    return qi::Future<int>(v+w);
   }
   static boost::shared_ptr<TestClass> make(int v)
   {
@@ -786,7 +855,7 @@ public:
 
 qi::Atomic<int> TestClass::destructionCount;
 
-QI_REGISTER_MT_OBJECT(TestClass, ping, unregisterService);
+QI_REGISTER_MT_OBJECT(TestClass, ping, unregisterService, prop);
 
 TEST(TestCall, TestConcreteObjectPassingReturn)
 {
@@ -917,6 +986,19 @@ TEST(TestCall, Future)
   ASSERT_TRUE(f2.hasError());
 }
 
+TEST(TestCall, CallOnFutureReturn)
+{
+  TestSessionPair p;
+  qi::DynamicObjectBuilder gob;
+  gob.setThreadingModel(qi::ObjectThreadingModel_MultiThread);
+  gob.advertiseMethod("delaySet", &delaySet);
+  qi::AnyObject sobj = gob.object();
+  p.server()->registerService("delayer", sobj);
+  qi::AnyObject obj = p.client()->service("delayer");
+  int f = obj.call<int>("delaySet", 500, 41);
+  ASSERT_EQ(41, f);
+}
+
 void arrrg(int v) {
 }
 
@@ -988,7 +1070,7 @@ TEST(TestCall, Dynamic)
   qi::AnyObject os = qi::AnyReference::from(ap).to<qi::AnyObject>();
   p.server()->registerService("packer", os);
   qi::AnyObject o = p.client()->service("packer");
-  qi::details::printMetaObject(std::cerr, o.metaObject());
+  qi::detail::printMetaObject(std::cerr, o.metaObject());
   EXPECT_EQ(3, o.call<int>("callMe", 1, 2, 3));
   qi::AnyValue args = o.property<qi::AnyValue>("onCall");
   std::vector<int> expect = boost::assign::list_of(1)(2)(3);
@@ -1021,8 +1103,8 @@ TEST(TestAdvertise, Overload)
   EXPECT_EQ(1, c.call<int>("foo", std::string("bar")));
 }
 
-// hand-written specialized proxy on TestClall
-class TestClassProxy: public qi::Proxy
+// hand-written specialized proxy on TestCall
+class TestClassProxy: public TestClassInterface, public qi::Proxy
 {
 public:
   TestClassProxy() {}
@@ -1031,7 +1113,7 @@ public:
   qi::Future<int> ping(int v) { return asObject().async<int>("ping", v); }
 };
 
-QI_REGISTER_PROXY_INTERFACE(TestClassProxy, TestClass);
+QI_REGISTER_PROXY_INTERFACE(TestClassProxy, TestClassInterface);
 
 TEST(TestObjectT, Complete)
 {
@@ -1045,10 +1127,9 @@ TEST(TestObjectT, Complete)
   EXPECT_EQ(12, (*olocal).ping(12));
   EXPECT_EQ(12, olocal.asGenericObject()->call<int>("ping", 12));
   EXPECT_EQ(12, olocal.call<int>("ping", 12));
-  qi::registerProxy<TestClassProxy>();
   // Object<T> way, does not require proxy registration actually
 
-  qi::Object<TestClassProxy> oproxy = p.client()->service("s");
+  qi::Object<TestClassInterface> oproxy = p.client()->service("s");
   // Look! It's the same code as above!
   EXPECT_EQ(12, oproxy->ping(12));
   EXPECT_EQ(12, (*oproxy).ping(12));
@@ -1060,12 +1141,11 @@ TEST(TestObjectT, Complete)
   EXPECT_EQ(12, gproxy.call<int>("ping", 12));
 
   // old way for comparison. I don't see anything wrong with that :p
-  boost::shared_ptr<TestClassProxy> oldproxy =
-    qi::AnyValue(p.client()->service("s").value()).to<boost::shared_ptr<TestClassProxy> >();
+  boost::shared_ptr<TestClassInterface> oldproxy =
+    qi::AnyValue(p.client()->service("s").value()).to<boost::shared_ptr<TestClassInterface> >();
   ASSERT_TRUE(!!oldproxy);
   EXPECT_EQ(12, oldproxy->ping(12));
   EXPECT_EQ(12, (*oldproxy).ping(12));
-  EXPECT_EQ(12, oldproxy->asObject().call<int>("ping", 12));
 }
 
 // hard enough to read without it
@@ -1075,12 +1155,14 @@ class PassObject
 {
 public:
   AnyObject pingaa(AnyObject o) { return o;}
-  AnyObject pingat(Object<TestClassProxy> o) { return o;}
-  Object<TestClassProxy> pingta(AnyObject o) {return o;}
-  Object<TestClassProxy> pingtt(Object<TestClassProxy> o) { return o;}
+  AnyObject pingat(Object<TestClassInterface> o) { return o;}
+  Object<TestClassInterface> pingta(AnyObject o) {return o;}
+  Object<TestClassInterface> pingtt(Object<TestClassInterface> o) { return o;}
+
+  qi::Property<int> val;
 };
 
-QI_REGISTER_OBJECT(PassObject, pingaa, pingat, pingta, pingtt);
+QI_REGISTER_OBJECT(PassObject, pingaa, pingat, pingta, pingtt, val);
 
 TEST(TestObjectT, Passing)
 {
@@ -1089,16 +1171,17 @@ TEST(TestObjectT, Passing)
   p.server()->registerService("pinger", pingerService);
   AnyObject pinger = p.client()->service("pinger");
   Object<TestClass> tc(new TestClass());
-  Object<TestClassProxy> tcprox = tc;
-  tcprox = pinger.call<Object<TestClassProxy> >("pingaa", tc);
+  Object<TestClassInterface> tcprox = tc;
+  tcprox = pinger.call<Object<TestClassInterface> >("pingaa", tc);
   EXPECT_EQ(42, tcprox->ping(42));
-  tcprox = pinger.call<Object<TestClassProxy> >("pingat", tc);
+  tcprox = pinger.call<Object<TestClassInterface> >("pingat", tc);
   EXPECT_EQ(42, tcprox->ping(42));
-  tcprox = pinger.call<Object<TestClassProxy> >("pingta", tc);
+  tcprox = pinger.call<Object<TestClassInterface> >("pingta", tc);
   EXPECT_EQ(42, tcprox->ping(42));
-  tcprox = pinger.call<Object<TestClassProxy> >("pingtt", tc);
+  tcprox = pinger.call<Object<TestClassInterface> >("pingtt", tc);
   EXPECT_EQ(42, tcprox->ping(42));
 }
+
 TEST(TestObjectT, Doom)
 {
   TestSessionPair p;
@@ -1106,11 +1189,14 @@ TEST(TestObjectT, Doom)
   p.server()->registerService("pinger", pingerService);
   AnyObject pinger = p.client()->service("pinger");
   Object<TestClass> tc(new TestClass());
-  Object<TestClassProxy> tp = tc;
+  Object<TestClassInterface> tp = tc;
   // MUHAHAHAHAHA
   for (unsigned i=0; i<10; ++i)
-    tp = pinger.call<Object<TestClassProxy> >("pingaa", tp);
-  EXPECT_EQ(42, tp->ping(42));
+  {
+    tp = pinger.call<Object<TestClassInterface> >("pingaa", tp);
+    ASSERT_NO_THROW(tp.setProperty("prop", 42));
+  }
+  ASSERT_EQ(42, tp->ping(42));
 }
 
 TEST(TestObjectT, weak)
@@ -1258,18 +1344,39 @@ struct ColorA
   int r,g,b,a;
 };
 
-// only allow drop of a if it equals 0 (the default-constructed value)
-bool colorVersionHandler(ColorA* instance, const std::vector<std::string>& fields)
+// only allow drop of a if it equals 1
+bool colorDropHandler(std::map<std::string, ::qi::AnyValue>& fields,
+                      const std::vector<std::tuple<std::string, TypeInterface*>>& missing,
+                      const std::map<std::string, ::qi::AnyReference>& dropfields)
 {
-  qiLogDebug() << "colorVersionHandler " << instance->a;
-  if (fields.size() != 1 || fields.front() != "a")
+  try
+  {
+    if (!missing.empty())
+      return false;
+    if (dropfields.size() != 1 || dropfields.begin()->first != "a")
+      return false;
+    return dropfields.begin()->second.toInt() == 0;
+  }
+  catch (...)
+  {
     return false;
-  return instance->a == 0;
+  }
+}
+
+bool colorFillHandler(std::map<std::string, ::qi::AnyValue>& fields,
+                      const std::vector<std::tuple<std::string, TypeInterface*>>& missing,
+                      const std::map<std::string, ::qi::AnyReference>& dropfields)
+{
+  if (!dropfields.empty())
+    return false;
+  if (missing.size() != 1 || std::get<0>(missing.front()) != "a")
+    return false;
+  fields["a"] = qi::AnyValue::from(0);
+  return true;
 }
 
 QI_TYPE_STRUCT_REGISTER(Color, r, g, b);
-QI_TYPE_STRUCT_EXTENSION_DROP_HANDLER(ColorA, colorVersionHandler);
-QI_TYPE_STRUCT_EXTENSION_FILL_FIELDS(ColorA, "a");
+QI_TYPE_STRUCT_EXTENSION_CONVERT_HANDLERS(ColorA, colorFillHandler, colorDropHandler);
 QI_TYPE_STRUCT_REGISTER(ColorA, r, g, b, a);
 
 int getColor(Color& c) { return c.r+c.g+c.b;}
@@ -1343,6 +1450,7 @@ TEST(TestObject, StructVersioningEvent)
   *
   * Effective testing would require the sessions to be in different processes.
   */
+  onCounter = 0;
   TestSessionPair p;
   qi::DynamicObjectBuilder builder;
   builder.advertiseSignal<Color>("onColor");
@@ -1373,33 +1481,30 @@ TEST(TestObject, StructVersioningEvent)
 
 void doCancel(qi::Promise<void>& p)
 {
+  qiLogDebug() << "canceling !";
   p.setCanceled();
 }
 
-qi::Future<void> getCancellableFuture()
+qi::Future<void> getCancelableFuture(qi::Promise<void> promise)
 {
-  qi::Promise<void> promise(&doCancel);
-  EXPECT_TRUE(promise.future().isCancelable());
-  qiLogInfo() << "returning future";
+  qiLogDebug() << "returning future";
   return promise.future();
 }
 
-TEST(TestCall, TestAsyncFutureIsCancellable)
+TEST(TestCall, TestAsyncFutureIsCancelable)
 {
   TestSessionPair p;
 
-  // TODO make remote case work
-  if (p.client() != p.server())
-    return;
-
   qi::DynamicObjectBuilder ob;
-  ob.advertiseMethod("getCancellableFuture",
+  qi::Promise<void> promise(&doCancel);
+  ob.advertiseMethod("getCancelableFuture",
                      boost::function<qi::Future<void>()>(
-                       &getCancellableFuture));
+                       boost::bind(&getCancelableFuture, promise)));
+  ob.setThreadingModel(qi::ObjectThreadingModel_MultiThread);
   p.server()->registerService("test", ob.object());
   qi::AnyObject proxy = p.client()->service("test");
-  qi::Future<void> future = proxy.async<void>("getCancellableFuture");
-  ASSERT_TRUE(future.isCancelable());
+
+  qi::Future<void> future = proxy.async<void>("getCancelableFuture");
   future.cancel();
   future.wait();
   ASSERT_TRUE(future.isCanceled());

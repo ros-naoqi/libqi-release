@@ -2,7 +2,6 @@
 **  Copyright (C) 2012 Aldebaran Robotics
 **  See COPYING for the license
 */
-#include <iostream>
 #include <string>
 #include <cstring>
 #include <cstdlib>
@@ -83,7 +82,8 @@ namespace qi
         _acceptor = 0;
         qiLogError() << "fatal accept error: " << erc.value();
         qiLogDebug() << this << " Disabling acceptor for now, retrying in " << AcceptDownRetryTimerUs << "us";
-        context->async(boost::bind(&TransportServerAsioPrivate::restartAcceptor, this), AcceptDownRetryTimerUs);
+        context->asyncDelay(boost::bind(&TransportServerAsioPrivate::restartAcceptor, this),
+            qi::MicroSeconds(AcceptDownRetryTimerUs));
         return;
       }
     }
@@ -188,8 +188,8 @@ namespace qi
 
     }
 
-    _asyncEndpoints = context->async(boost::bind(_updateEndpoints, shared_from_this()),
-                                     ifsMonitoringTimeout);
+    _asyncEndpoints = context->asyncDelay(boost::bind(_updateEndpoints, shared_from_this()),
+        qi::MicroSeconds(ifsMonitoringTimeout));
   }
 
   qi::Future<void> TransportServerAsioPrivate::listen(const qi::Url& url)
@@ -203,12 +203,22 @@ namespace qi
     ip::tcp::resolver::query q(_listenUrl.host(), boost::lexical_cast<std::string>(_listenUrl.port()),
                                boost::asio::ip::tcp::resolver::query::all_matching);
     ip::tcp::resolver::iterator it = r.resolve(q);
+
+    static bool disableIPV6 = qi::os::getenv("QIMESSAGING_ENABLE_IPV6").empty();
+    if (disableIPV6)
+    {
+      while (it != boost::asio::ip::tcp::resolver::iterator() &&
+             it->endpoint().address().is_v6())
+        ++it;
+    }
     if (it == ip::tcp::resolver::iterator())
     {
-      const char* s = "Listen error: no endpoint.";
+      const char* s = "Listen error: no valid endpoint.";
       qiLogError() << s;
       return qi::makeFutureError<void>(s);
     }
+
+
     ip::tcp::endpoint ep = *it;
 #else
     ip::tcp::endpoint ep(boost::asio::ip::address::from_string(url.host()), url.port());
