@@ -1,0 +1,25 @@
+From 24d50ff5240be2b24963a2a096e64a0f9e442253 Mon Sep 17 00:00:00 2001
+From: Pandhariix <mbusy.pro@gmail.com>
+Date: Mon, 16 Dec 2019 14:54:43 +0100
+Subject: [PATCH 2/2] Add extra cmake rules for libqi
+
+---
+ cmake/libqi-extras.cmake.em | 6 ++++++
+ 1 file changed, 6 insertions(+)
+ create mode 100644 cmake/libqi-extras.cmake.em
+
+diff --git a/cmake/libqi-extras.cmake.em b/cmake/libqi-extras.cmake.em
+new file mode 100644
+index 0000000..894d2ed
+--- /dev/null
++++ b/cmake/libqi-extras.cmake.em
+@@ -0,0 +1,6 @@
++@[if DEVELSPACE]@
++include_directories(@(CATKIN_DEVEL_PREFIX)/include)
++@[end if]@
++if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
++endif()
+-- 
+2.7.4
+

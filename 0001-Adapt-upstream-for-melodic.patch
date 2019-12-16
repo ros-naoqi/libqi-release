@@ -1,0 +1,400 @@
+From 083440a17921081a031e3c52c4b70b317c66c061 Mon Sep 17 00:00:00 2001
+From: Pandhariix <mbusy.pro@gmail.com>
+Date: Mon, 16 Dec 2019 14:48:33 +0100
+Subject: [PATCH 1/2] Adapt upstream for melodic
+
+---
+ CMakeLists.txt                       | 210 ++++++++++++++++-------------------
+ qi/type/detail/listtypeinterface.hxx |   2 +-
+ qi/type/detail/object.hxx            |   8 +-
+ 3 files changed, 99 insertions(+), 121 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f56e5e8..f1baa33 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -3,9 +3,14 @@
+ ## found in the COPYING file.
+ 
+ cmake_minimum_required(VERSION 2.8)
+-project(LibQi)
+-find_package(qibuild)
+-qi_sanitize_compile_flags(HIDDEN_SYMBOLS)
++project(naoqi_libqi)
++find_package(catkin)
++find_package(OpenSSL REQUIRED)
++
++catkin_package(CFG_EXTRAS libqi-extras.cmake
++   INCLUDE_DIRS ./
++   LIBRARIES qi
++)
+ 
+ include(CheckSymbolExists)
+ check_symbol_exists(_SC_HOST_NAME_MAX "unistd.h" HAVE_SC_HOST_NAME_MAX)
+@@ -13,12 +18,6 @@ set_source_files_properties(src/os_posix.cpp
+   PROPERTIES
+     COMPILE_DEFINITIONS HAVE_SC_HOST_NAME_MAX)
+ 
+-#### Check optional packages {{{
+-qi_add_optional_package(BOOST_LOCALE "Enable usage of boost::locale")
+-qi_add_optional_package(SYSTEMD "Enable usage of journald")
+-#### }}}
+-
+-#### Set definitions {{{
+ # We always want boost filesystem v3
+ add_definitions("-DBOOST_FILESYSTEM_VERSION=3")
+ add_definitions("-DBOOST_ASIO_DISABLE_STD_CHRONO")
+@@ -35,14 +34,20 @@ if (UNIX)
+  add_definitions(" -fno-strict-aliasing ")
+ endif()
+ 
++if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
++  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
++endif()
++
++# Remove this line to use QT if usable
++set(WITH_QT5_CORE OFF)
++
+ if(WITH_BOOST_LOCALE)
+   add_definitions(" -DWITH_BOOST_LOCALE ")
+ endif()
+ 
+-if (WITH_SYSTEMD)
+-  add_definitions("-DWITH_SYSTEMD")
+-endif()
+-#### }}}
++enable_testing()
++include(CMakeDependentOption)
+ 
+ if (WITH_PROBES)
+   find_package(qiprobes)
+@@ -56,14 +61,6 @@ else()
+   set(_tp_qi "")
+ endif()
+ 
+-#### Set compilation flags {{{
+-if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=gnu++11")
+-endif()
+-#### }}}
+-
+-#### Set sources {{{
+ set(QI_H qi/detail/async.hxx
+          qi/detail/clock.hxx
+          qi/detail/eventloop.hxx
+@@ -72,9 +69,11 @@ set(QI_H qi/detail/async.hxx
+          qi/detail/futurebarrier.hpp
+          qi/detail/futureunwrap.hpp
+          qi/detail/executioncontext.hpp
+-         qi/detail/log.hxx
++
+          qi/detail/mpl.hpp
+          qi/detail/print.hpp
++         qi/detail/log.hxx
++         qi/detail/mpl.hpp
+          qi/detail/trackable.hxx
+          qi/detail/warn_push_ignore_deprecated.hpp
+          qi/detail/warn_pop_ignore_deprecated.hpp
+@@ -105,19 +104,14 @@ set(QI_H qi/detail/async.hxx
+          qi/path.hpp
+          qi/path_conf.hpp
+          qi/periodictask.hpp
++         qi/qi.hpp
+          qi/stats.hpp
+          qi/trackable.hpp
+          qi/translator.hpp
+          qi/eventloop.hpp
+          qi/version.hpp
+          qi/iocolor.hpp
+-         qi/strand.hpp
+-         qi/assert.hpp
+-
+-         qi/ptruid.hpp
+-         qi/objectuid.hpp
+-         qi/tag.hpp
+-         qi/uuid.hpp)
++         qi/strand.hpp)
+ 
+ set(QI_C src/dlfcn.cpp
+          src/path.cpp
+@@ -138,8 +132,8 @@ set(QI_C src/dlfcn.cpp
+          src/locale-light.cpp
+          src/os.cpp
+          src/path_conf.cpp
+-         src/periodictask.cpp
+          src/print.cpp
++         src/periodictask.cpp
+          src/utils.hpp
+          src/utils.cpp
+          src/eventloop.cpp
+@@ -148,44 +142,13 @@ set(QI_C src/dlfcn.cpp
+          src/version.cpp
+          src/iocolor.cpp
+          src/strand.cpp
+-         src/ptruid.cpp)
+-
+-#### Add optional files to source {{{
+-if (WIN32)
+-  list(APPEND QI_C
+-    src/os_launch_win32.cpp
+-    src/os_win32.cpp
+-    src/os_win32.hpp
+-    src/os_debugger_win32.cpp
+-  )
+-else()
+-  list(APPEND QI_C
+-    src/os_posix.cpp
+-    src/os_debugger_posix.cpp
+-  )
+-  if(ANDROID)
+-    list(APPEND QI_H qi/log/androidloghandler.hpp)
+-    list(APPEND QI_C
+-      src/androidloghandler.cpp
+-      src/os_launch_android.cpp)
+-  else()
+-    list(APPEND QI_C src/os_launch_posix.cpp)
+-  endif()
+-endif()
+-
+-if(WITH_BOOST_LOCALE)
+-  list(APPEND QI_H qi/translator.hpp)
+-  list(APPEND QI_C src/translator.cpp)
+-endif()
+-
+-if (WITH_SYSTEMD)
+-  list(APPEND QI_H qi/log/journaldloghandler.hpp)
+-  list(APPEND QI_C src/journaldloghandler.cpp)
+-endif()
++         src/ptruid.cpp
++         qi/assert.hpp
+ 
+-qi_create_config_h(_out qi/config.hpp.in qi/config.hpp)
+-list(APPEND QI_C ${_out})
+-#### }}}
++         qi/ptruid.hpp
++         qi/objectuid.hpp
++         qi/tag.hpp
++         qi/uuid.hpp)
+ 
+ set(QITYPE_H       qi/anyfunction.hpp
+                    qi/anyobject.hpp
+@@ -253,6 +216,7 @@ set(QITYPE_H       qi/anyfunction.hpp
+                    qi/type/typedispatcher.hpp)
+ 
+ 
++
+ set(QITYPE_C src/type/binarycodec.cpp
+              src/type/binarycodec_p.hpp
+              src/type/dynamicobject.cpp
+@@ -305,7 +269,7 @@ set(QIM_H qi/api.hpp
+           qi/url.hpp
+ )
+ 
+-set(QIM_C
++set(QIM_C 
+   src/messaging/applicationsession_internal.hpp
+   src/messaging/applicationsession_internal.cpp
+   src/messaging/applicationsession.cpp
+@@ -355,7 +319,7 @@ set(QIM_C
+   src/messaging/url.cpp
+   src/registration.cpp
+ )
+-
++        
+ set(QI_SOCKET_H
+   src/messaging/sock/accept.hpp
+   src/messaging/sock/common.hpp
+@@ -420,45 +384,68 @@ set(KA_H
+   ka/utility.hpp
+ )
+ 
+-#### }}}
+-
+-qi_install_header(${QI_H} ${QITYPE_H} ${QIM_H} ${QIPERF_H} ${KA_H} KEEP_RELATIVE_PATHS)
++configure_file(qi/config.hpp.in ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi/config.hpp)
++include_directories(${CATKIN_DEVEL_PREFIX}/include)
+ 
+-include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
++if(WITH_BOOST_LOCALE)
++  list(APPEND QI_H qi/translator.hpp)
++  list(APPEND QI_C src/translator.cpp)
++endif()
+ 
+-qi_stage_cmake(qimodule-config.cmake)
+-include(qimodule-config.cmake)
++install(DIRECTORY qi DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION})
++install(FILES ${CATKIN_DEVEL_PREFIX}/${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi/config.hpp DESTINATION ${CATKIN_GLOBAL_INCLUDE_DESTINATION}/qi)
+ 
+-qi_create_lib(qi SHARED
+-    ${QI_H}     ${QI_C}
+-    ${QITYPE_H} ${QITYPE_C}
+-    ${QIM_H}    ${QIM_C}
+-    ${QIPERF_H} ${QIPERF_C}
+-    ${QI_SOCKET_H}
+-    ${KA_H}
+-  DEPENDS
+-    ASSUME_SYSTEM_INCLUDE
+-    BOOST
+-    BOOST_ATOMIC
+-    BOOST_DATE_TIME
+-    BOOST_THREAD
+-    BOOST_CHRONO
+-    BOOST_FILESYSTEM
+-    BOOST_LOCALE
+-    BOOST_REGEX
+-    BOOST_PROGRAM_OPTIONS
+-    BOOST_RANDOM
+-  SUBMODULE ${_tp_qi}
+-)
++if (WIN32)
++  list(APPEND QI_C
++    src/os_launch_win32.cpp
++    src/os_win32.cpp
++    src/os_debugger_win32.cpp
++  )
++else()
++  list(APPEND QI_C
++    src/os_posix.cpp
++    src/os_debugger_posix.cpp
++  )
++  if(ANDROID)
++    list(APPEND QI_C src/os_launch_android.cpp)
++  else()
++    list(APPEND QI_C src/os_launch_posix.cpp)
++  endif()
++endif()
+ 
++#normalize BUILD_SHARED_LIBS, default ON
++if (NOT DEFINED BUILD_SHARED_LIBS)
++  set(BUILD_SHARED_LIBS ON)
++endif()
+ 
++# Set qi_STATIC_BUILD  used in config.hpp.in
++set(qi_STATIC_BUILD OFF)
++if (NOT BUILD_SHARED_LIBS) #lol
++  set(qi_STATIC_BUILD ON)
++endif()
+ 
+-#### Add optional libs {{{
+-if(WIN32)
+-  qi_use_lib(qi WSOCK IPHLPAPI PSAPI WSA) #Really?
++# Convert ON/OFF to SHARED/STATIC for create_lib argument
++set(_qilibtype)
++if (BUILD_SHARED_LIBS OR ANDROID)
++  set(_qilibtype SHARED)
++else()
++  set(_qilibtype STATIC)
+ endif()
+ 
+-qi_use_lib(qi OPENSSL)
++
++include_directories("${CMAKE_CURRENT_SOURCE_DIR}")
++
++include(qimodule-config.cmake)
++
++add_library(qi SHARED
++                 ${QI_H}     ${QI_C}
++                 ${QITYPE_H} ${QITYPE_C}
++                 ${QIM_H}    ${QIM_C}
++                 ${QI_SOCKET_H}
++                 ${KA_H}
++            )
++find_package(Boost QUIET COMPONENTS chrono filesystem program_options regex system thread random)
++target_link_libraries(qi ${Boost_LIBRARIES} OpenSSL::Crypto OpenSSL::SSL)
+ 
+ if (WITH_QT5_CORE)
+   qi_use_lib(qi QT5_CORE)
+@@ -467,12 +454,8 @@ if(WITH_BOOST_LOCALE)
+   qi_use_lib(qi BOOST_LOCALE)
+ endif()
+ 
+-if (WITH_SYSTEMD)
+-  qi_use_lib(qi SYSTEMD)
+-endif()
+-
+ if (UNIX)
+-  qi_use_lib(qi PTHREAD)
++  target_link_libraries(qi pthread)
+ endif()
+ 
+ if(ANDROID)
+@@ -480,18 +463,13 @@ if(ANDROID)
+ endif()
+ 
+ if(UNIX AND NOT APPLE AND NOT ANDROID)
+-  qi_use_lib(qi DL RT)
++  target_link_libraries(qi dl rt)
+ endif()
+-#### }}}
+ 
+-qi_stage_lib(qi INCLUDE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/compat")
++if(WIN32)
++  qi_use_lib(qi WSOCK IPHLPAPI PSAPI WSA) #Really?
++endif()
+ 
+-# Install a share/qi/path.conf so that libqi's sdkPrefix can be found
+-file(WRITE "${CMAKE_BINARY_DIR}/path.conf" "# Installed by qibuild. Do not remove\n")
+-qi_install_data(${CMAKE_BINARY_DIR}/path.conf SUBFOLDER "qi")
+ 
+-option(BUILD_EXAMPLES "build examples" ON)
+-if (BUILD_EXAMPLES)
+-  add_subdirectory("examples")
+-endif()
+-add_subdirectory("tests")
++install(TARGETS qi DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION})
++install(FILES package.xml DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
+diff --git a/qi/type/detail/listtypeinterface.hxx b/qi/type/detail/listtypeinterface.hxx
+index 1ab63fc..0cf621e 100644
+--- a/qi/type/detail/listtypeinterface.hxx
++++ b/qi/type/detail/listtypeinterface.hxx
+@@ -119,7 +119,7 @@ size_t ListTypeInterfaceImpl<T, H>::size(void* storage)
+ // There is no way to register a template container type :(
+ template<typename T> struct TypeImpl<std::vector<T> >: public ListTypeInterfaceImpl<std::vector<T> >
+ {
+-  static_assert(!boost::is_same<T,bool>::value, "std::vector<bool> is not supported by AnyValue.");
++  static_assert(!std::is_same<T,bool>::value, "std::vector<bool> is not supported by AnyValue.");
+ };
+ template<typename T> struct TypeImpl<std::list<T> >: public ListTypeInterfaceImpl<std::list<T> > {};
+ template<typename T> struct TypeImpl<std::set<T> >: public ListTypeInterfaceImpl<std::set<T> > {};
+diff --git a/qi/type/detail/object.hxx b/qi/type/detail/object.hxx
+index 7c35cb4..0391db0 100644
+--- a/qi/type/detail/object.hxx
++++ b/qi/type/detail/object.hxx
+@@ -254,12 +254,12 @@ public:
+   template<typename U> Object<T>& operator=(const Object<U>& o);
+   // Templates above do not replace default ctor or copy operator
+   Object(const Object& o);
+-  Object<T>& operator=(const Object& o);
+   // Disable the ctor taking future if T is Empty, as it would conflict with
++  Object<T>& operator=(const Object& o);
+   // We use None to disable it. The method must be instantiable because when we
+   // export the class under windows, all functions are instanciated
+   // Future cast operator
+-  using MaybeAnyObject = typename boost::mpl::if_<typename boost::is_same<T, Empty>::type, None, Object<Empty>>::type;
++  using MaybeAnyObject = typename boost::mpl::if_<typename std::is_same<T, Empty>::type, None, Object<Empty>>::type;
+   Object(const qi::Future<MaybeAnyObject>& fobj);
+   Object(const qi::FutureSync<MaybeAnyObject>& fobj);
+ 
+@@ -557,7 +557,7 @@ template<typename T> inline boost::shared_ptr<T> Object<T>::asSharedPtr()
+ template<typename T> inline void Object<T>::init(detail::ManagedObjectPtr obj)
+ {
+   _obj = obj;
+-  if (!boost::is_same<T, Empty>::value && obj)
++  if (!std::is_same<T, Empty>::value && obj)
+     checkT();
+   _obj = obj;
+ }
+@@ -603,7 +603,7 @@ template<typename T> Object<T>::operator Object<Empty>() const { return Object<E
+ /// Check tha value actually has the T interface
+ template<typename T> void Object<T>::checkT()
+ {
+-  if (boost::is_same<T, Empty>::value || !_obj)
++  if (std::is_same<T, Empty>::value || !_obj)
+     return;
+ 
+   const auto isMatchingType = [&] {
+-- 
+2.7.4
+
