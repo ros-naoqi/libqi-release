@@ -5,115 +5,95 @@
 ** Copyright (C) 2010, 2012 Aldebaran Robotics
 */
 
+#include <future>
 #include <vector>
 #include <string>
 #include <gtest/gtest.h>
-
-#include <boost/thread/thread.hpp>
 #include <qi/session.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
-#include <qi/messaging/gateway.hpp>
 #include <qi/os.hpp>
 #include <qi/application.hpp>
 #include <testsession/testsessionpair.hpp>
+#include <qi/testutils/testutils.hpp>
+#include "objectio.hpp"
 
-qiLogCategory("QiSession.Test");
+qiLogCategory("qi.test_call_on_close_session");
 
-static std::string reply(const std::string &msg)
+using namespace qi;
+using namespace test;
+
+namespace
 {
-  qi::os::msleep(300);
-  std::cout << msg << std::endl;
-  return msg;
-}
+  static const auto iterations = 100;
+  static const auto dummyServiceName = "serviceTest";
 
-void myCall(qi::AnyObject myService)
-{
-  try
+  std::string waitAndReply(qi::Promise<void> startPromise, const std::string& msg)
   {
-    myService.call<std::string>("reply::s(s)", "ok");
-    qi::os::msleep(300);
+    startPromise.future().wait();
+    return msg;
   }
-  catch(std::exception e)
+
+  AnyObject dummyDynamicObject()
   {
-    std::cout << e.what() << std::endl;
-  }
-}
-
-TEST(QiSession, CallOnCloseSession)
-{
-  qi::Session sd;
-  qi::Future<void> f = sd.listenStandalone("tcp://0.0.0.0:0");
-  int timeToWait = 1;
-
-  for(int j = 0; j < 10 ; j ++)
-  {
-    for (int i = 0; i < 20; i++)
-    {
-      TestSessionPair p;
-      std::cout << "time to wait is:" << timeToWait << std::endl;
-
-      qi::SessionPtr s1 = p.server();
-      qi::SessionPtr s2 = p.client();
-
-      qi::DynamicObjectBuilder ob;
-      ob.advertiseMethod("reply", &reply);
-      qi::AnyObject obj(ob.object());
-
-      s1->registerService("service1", obj);
-
-      qi::AnyObject myService;
-      myService = s2->service("service1");
-
-      boost::thread myThread(boost::bind(&myCall, myService));
-
-      qi::os::msleep(timeToWait);
-      s1->close();
-      qi::os::msleep(3);
-    }
-    timeToWait = timeToWait +1;
+    DynamicObjectBuilder ob;
+    ob.advertiseMethod("waitAndReply", &waitAndReply);
+    return ob.object();
   }
 }
 
-TEST(QiSession, GettingServiceWhileDisconnecting)
+TEST(TestCallOnCloseSession, CloseSessionBeforeCallEnds)
 {
-  qi::SessionPtr server = qi::makeSession();
-  server->listenStandalone("tcp://0.0.0.0:0");
+  auto obj = dummyDynamicObject();
 
-  qi::DynamicObjectBuilder builder;
-  qi::AnyObject object(builder.object());
-
-  std::string serviceName = "sarace";
-  server->registerService(serviceName, object);
-
-  qi::SessionPtr client = qi::makeSession();
-
-  for(int i = 0; i < 1000; ++i)
+  for (int i = 0; i < iterations; i++)
   {
-    client->connect(server->endpoints()[0]);
-    qi::Future<void> closing = client->close().async();
+    TestSessionPair sessionPair;
+    auto& server = *sessionPair.server();
+    auto& client = *sessionPair.client();
+
+    ASSERT_TRUE(finishesWithValue(server.registerService(dummyServiceName, obj)));
+
+    AnyObject myService;
+    ASSERT_TRUE(finishesWithValue(client.service(dummyServiceName), willAssignValue(myService)));
+
+    Promise<void> startReplyPromise;
+    auto f = std::async(std::launch::async,
+                        [&] { myService.call<std::string>("waitAndReply", "ok", startReplyPromise); });
+    ASSERT_TRUE(finishesWithValue(server.close()));
+    startReplyPromise.setValue(nullptr);
+    EXPECT_ANY_THROW(f.get());
+  }
+}
+
+TEST(TestCallOnCloseSession, GettingServiceWhileDisconnecting)
+{
+  auto object = dummyDynamicObject();
+
+  for(int i = 0; i < iterations; ++i)
+  {
+    TestSessionPair sessionPair;
+    auto& server = *sessionPair.server();
+    auto& client = *sessionPair.client();
+
+    ASSERT_TRUE(finishesWithValue(server.registerService(dummyServiceName, object)));
+
+    auto closing = client.close().async();
     try
     {
-      qi::AnyObject remoteObject = client->service(serviceName);
-      bool remoteObjectWasFound = remoteObject;
-      ASSERT_TRUE(remoteObjectWasFound);
+      AnyObject remoteObject = client.service(dummyServiceName).value();
+      ASSERT_TRUE(remoteObject); // if future did not throw at this point, then object must be valid
     }
-    catch(const qi::FutureException& e)
+    catch(const FutureException& e)
     {
       qiLogDebug() << "Got expected error: " << e.what();
+      SUCCEED() << "Got expected error: " << e.what();
     }
     catch(const std::exception& e)
     {
       qiLogDebug() << "Got standard error: " << e.what();
+      FAIL() << "Got standard error: " << e.what();
     }
-    closing.wait();
+    ASSERT_TRUE(finishesWithValue(closing));
   }
-}
-
-int main(int argc, char **argv)
-{
-  ::testing::InitGoogleTest(&argc, argv);
-  qi::Application app(argc, argv);
-  TestMode::forceTestMode(TestMode::Mode_SD);
-  return RUN_ALL_TESTS();
 }

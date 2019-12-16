@@ -3,12 +3,15 @@
 */
 
 #include <map>
+#include <thread>
+#include <chrono>
 #include <gtest/gtest.h>
 #include <qi/application.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
 #include <qi/session.hpp>
 #include <testsession/testsessionpair.hpp>
+#include <qi/testutils/testutils.hpp>
 
 qiLogCategory("test");
 static qi::Promise<int> *payload;
@@ -20,10 +23,10 @@ void onFire(const int& pl)
   payload->setValue(pl);
 }
 
-class TestObject: public ::testing::Test
+class ObjectEventRemote: public ::testing::Test
 {
 public:
-  TestObject()
+  ObjectEventRemote()
   {
     qi::DynamicObjectBuilder ob;
     ob.advertiseSignal<const int&>("fire");
@@ -36,14 +39,16 @@ protected:
     // In nightmare mode, there is a hidden service registered...
     unsigned int nbServices = TestMode::getTestMode() == TestMode::Mode_Nightmare ? 2 : 1;
 
-    ASSERT_GT(p.server()->registerService("coin", oserver), static_cast<unsigned int>(0));
+    ASSERT_GT(p.server()->registerService("coin", oserver).value(), static_cast<unsigned int>(0));
     EXPECT_EQ(nbServices, p.server()->services(qi::Session::ServiceLocality_Local).value().size());
 
-    std::vector<qi::ServiceInfo> services = p.client()->services();
+    std::vector<qi::ServiceInfo> services = p.client()->services().value();
     if (TestMode::getTestMode() == TestMode::Mode_Direct)
+    {
       EXPECT_EQ(2U, services.size());
-    oclient = p.client()->service("coin");
-    ASSERT_TRUE(oclient != 0);
+    }
+    oclient = p.client()->service("coin").value();
+    ASSERT_TRUE(oclient);
     payload = &prom;
   }
 
@@ -60,9 +65,9 @@ public:
 };
 
 
-TEST_F(TestObject, Simple)
+TEST_F(ObjectEventRemote, Simple)
 {
-  qi::SignalLink linkId = oclient.connect("fire", &onFire);
+  qi::SignalLink linkId = oclient.connect("fire", &onFire).value();
   EXPECT_LT((unsigned) 0, linkId);
   oserver.post("fire", 42);
   ASSERT_TRUE(payload->future().hasValue(2000));
@@ -70,9 +75,9 @@ TEST_F(TestObject, Simple)
 }
 
 
-TEST_F(TestObject, RemoteEmit)
+TEST_F(ObjectEventRemote, RemoteEmit)
 {
-  qi::SignalLink linkId = oclient.connect("fire", &onFire);
+  qi::SignalLink linkId = oclient.connect("fire", &onFire).value();
   EXPECT_LT((unsigned) 0, linkId);
   oclient.post("fire", 43);
   ASSERT_TRUE(payload->future().hasValue(2000));
@@ -82,12 +87,12 @@ TEST_F(TestObject, RemoteEmit)
 
 
 
-TEST_F(TestObject, CoDeco)
+TEST_F(ObjectEventRemote, CoDeco)
 {
   for (unsigned i=0; i<5; ++i)
   {
     *payload = qi::Promise<int>();
-    qi::SignalLink linkId = oclient.connect("fire", &onFire);
+    qi::SignalLink linkId = oclient.connect("fire", &onFire).value();
     qiLogDebug() << "connected with " << linkId;
     int exp;
     EXPECT_GE(linkId, (unsigned) 0);
@@ -110,15 +115,6 @@ TEST_F(TestObject, CoDeco)
   }
 }
 
-int verifA = 0;
-int verifB = 0;
-
-void cb(int a, int b)
-{
-  verifA = a;
-  verifB = b;
-}
-
 TEST(TestSignal, TwoLongPost)
 {
   qi::DynamicObjectBuilder gob;
@@ -129,26 +125,23 @@ TEST(TestSignal, TwoLongPost)
   TestSessionPair p;
   p.server()->registerService("MyService", op);
   qi::AnyObject clientOp = p.client()->service("MyService").value();
-  clientOp.connect("sig1", &cb);
+
+  std::atomic_int verifA {0};
+  std::atomic_int verifB {0};
+  qi::Promise<void> prom;
+  auto fut = prom.future();
+  clientOp.connect("sig1", [&](int a, int b){
+    verifA = a;
+    verifB = b;
+    prom.setValue(nullptr);
+  });
 
   qi::GenericFunctionParameters params;
   params.push_back(qi::AnyValue(42L).clone());
   params.push_back(qi::AnyValue(43L).clone());
 
   clientOp.metaPost("sig1", params);
-  for(unsigned int i=0; i<100 && (verifA == 0 || verifB == 0); ++i)
-    qi::os::msleep(10);
+  ASSERT_TRUE(test::finishesWithValue(fut));
   ASSERT_EQ(42, verifA);
   ASSERT_EQ(43, verifB);
-}
-
-int main(int argc, char *argv[])
-{
-#if defined(__APPLE__) || defined(__linux__)
-  setsid();
-#endif
-  qi::Application app(argc, argv);
-  TestMode::initTestMode(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }

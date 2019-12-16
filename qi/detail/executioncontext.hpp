@@ -7,9 +7,11 @@
 #ifndef _QI_EXECUTION_CONTEXT_HPP_
 #define _QI_EXECUTION_CONTEXT_HPP_
 
+#include <type_traits>
 #include <boost/function.hpp>
-#include <qi/clock.hpp>
 #include <qi/api.hpp>
+#include <qi/clock.hpp>
+#include <ka/typetraits.hpp>
 
 namespace qi
 {
@@ -36,6 +38,28 @@ namespace detail
 
 }
 
+enum class CancelOption     ///< If cancel have been requested for the associated scheduled task...
+{ AllowSkipExecution        ///< ... allow the execution context to not execute the task.
+, AlwaysSkipExecution       ///< ... the execution context must not execute the task.
+, NeverSkipExecution        ///< ... the executino context must still execute the task.
+};
+
+/// Represent execution behaviour options attached to a task that must be interpreted by an ExecutionContext.
+struct ExecutionOptions
+{
+  /** Specifies the behaviour when the task is scheduled but not executed
+      and it have been marked as cancel-requested.
+  */
+  CancelOption onCancelRequested;
+};
+
+BOOST_CONSTEXPR
+inline ExecutionOptions defaultExecutionOptions() BOOST_NOEXCEPT
+{
+  return { CancelOption::AllowSkipExecution };
+}
+
+
 class QI_API ExecutionContext
 {
 public:
@@ -44,29 +68,30 @@ public:
   // DEPRECATED STUFF
   /// call a callback asynchronously to be executed on tp
   /// @deprecated since 2.5
-  QI_API_DEPRECATED virtual qi::Future<void> async(const boost::function<void()>& callback,
-      qi::SteadyClockTimePoint tp) = 0;
+  QI_API_DEPRECATED_MSG(Use 'asyncAt' instead)
+  virtual qi::Future<void> async(const boost::function<void()>& callback, qi::SteadyClockTimePoint tp) = 0;
   /// call a callback asynchronously to be executed in delay
   /// @deprecated since 2.5
-  QI_API_DEPRECATED virtual qi::Future<void> async(const boost::function<void()>& callback,
-      qi::Duration delay) = 0;
+  QI_API_DEPRECATED_MSG(Use 'asyncDelay' instead)
+  virtual qi::Future<void> async(const boost::function<void()>& callback, qi::Duration delay) = 0;
+
   /// call a callback asynchronously to be executed in delay
   /// @deprecated since 2.5
   template <typename R>
-  QI_API_DEPRECATED typename boost::disable_if<boost::is_same<R, void>,
-                              qi::Future<R> >::type
-      async(const boost::function<R()>& callback,
-          qi::Duration delay);
+  QI_API_DEPRECATED_MSG(Use 'asyncDelay' instead)
+  typename boost::disable_if<std::is_same<R, void>, qi::Future<R> >::type
+  async(const boost::function<R()>& callback, qi::Duration delay);
   /// call a callback asynchronously to be executed on tp
   /// @deprecated since 2.5
   template <typename R>
-  QI_API_DEPRECATED typename boost::disable_if<boost::is_same<R, void>,
-                              qi::Future<R> >::type
-      async(const boost::function<R()>& callback, qi::SteadyClockTimePoint tp);
+  QI_API_DEPRECATED_MSG(Use 'asyncAt' instead)
+  typename boost::disable_if<std::is_same<R, void>, qi::Future<R> >::type
+  async(const boost::function<R()>& callback, qi::SteadyClockTimePoint tp);
 
   /// @deprecated since 2.5
   template <typename R>
-  QI_API_DEPRECATED qi::Future<R> async(const detail::Function<R()>& callback)
+  QI_API_DEPRECATED_MSG(Use 'async' without explicit return type template arguement instead)
+  qi::Future<R> async(const detail::Function<R()>& callback)
   {
     return asyncDelay(callback, qi::Duration(0));
   }
@@ -74,27 +99,29 @@ public:
 
   /// post a callback to be executed as soon as possible
   template <typename F>
-  void post(F&& callback);
+  void post(F&& callback, ExecutionOptions options = defaultExecutionOptions());
+
   /// call a callback asynchronously to be executed on tp
-  template <typename F>
-  auto asyncAt(F&& callback, qi::SteadyClockTimePoint tp) -> qi::Future<typename std::decay<decltype(callback())>::type>;
+  template <typename F, typename R = ka::Decay<decltype(std::declval<F>()())>>
+  qi::Future<R> asyncAt(F&& callback, qi::SteadyClockTimePoint tp, ExecutionOptions options = defaultExecutionOptions());
   /// call a callback asynchronously to be executed in delay
-  template <typename F>
-  auto asyncDelay(F&& callback, qi::Duration delay) -> qi::Future<typename std::decay<decltype(callback())>::type>;
+  template <typename F, typename R = ka::Decay<decltype(std::declval<F>()())>>
+  qi::Future<R> asyncDelay(F&& callback, qi::Duration delay, ExecutionOptions options = defaultExecutionOptions());
 
   template <typename F>
-  auto async(F&& callback) -> decltype(asyncDelay(std::forward<F>(callback), qi::Duration(0)))
+  auto async(F&& callback, ExecutionOptions options = defaultExecutionOptions())
+    -> decltype(asyncDelay(std::forward<F>(callback), qi::Duration(0), options))
   {
-    return asyncDelay(std::forward<F>(callback), qi::Duration(0));
+    return asyncDelay(std::forward<F>(callback), qi::Duration(0), options);
   }
 
   /// return true if the current thread is in this context
-  virtual bool isInThisContext() = 0;
+  virtual bool isInThisContext() const = 0;
 
 protected:
-  virtual void postImpl(boost::function<void()> callback) = 0;
-  virtual qi::Future<void> asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp) = 0;
-  virtual qi::Future<void> asyncDelayImpl(boost::function<void()> cb, qi::Duration delay) = 0;
+  virtual void postImpl(boost::function<void()> callback, ExecutionOptions options) = 0;
+  virtual qi::Future<void> asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp, ExecutionOptions options) = 0;
+  virtual qi::Future<void> asyncDelayImpl(boost::function<void()> cb, qi::Duration delay, ExecutionOptions options) = 0;
 };
 
 }
@@ -147,17 +174,22 @@ void callAndSet(qi::Promise<R> p, boost::function<R()> f)
   }
 }
 template <typename R>
-void checkCanceled(qi::Future<void> f, qi::Promise<R> p)
+void forwardError(qi::Future<void> f, qi::Promise<R> p)
 {
-  if (f.wait() == FutureState_Canceled)
-    p.setCanceled();
-  // Nothing to do for other states.
+  switch (f.wait())
+  {
+    case FutureState_Canceled:          p.setCanceled(); break;
+    case FutureState_FinishedWithError: p.setError(f.error()); break;
+    case FutureState_None: // Nothing to do for these states.
+    case FutureState_Running:
+    case FutureState_FinishedWithValue: break;
+  }
 }
 
 }
 
 template <typename R>
-typename boost::disable_if<boost::is_same<R, void>,
+typename boost::disable_if<std::is_same<R, void>,
                             qi::Future<R> >::type
     ExecutionContext::async(const boost::function<R()>& callback,
                             qi::Duration delay)
@@ -169,12 +201,12 @@ typename boost::disable_if<boost::is_same<R, void>,
   promise.setup(
       boost::bind(&detail::futureCancelAdapter<void>,
                   boost::weak_ptr<detail::FutureBaseTyped<void> >(f.impl())));
-  f.connect(boost::bind(&detail::checkCanceled<R>, _1, promise), FutureCallbackType_Sync);
+  f.connect(boost::bind(&detail::forwardError<R>, _1, promise), FutureCallbackType_Sync);
   return promise.future();
 }
 
 template <typename R>
-typename boost::disable_if<boost::is_same<R, void>,
+typename boost::disable_if<std::is_same<R, void>,
                             qi::Future<R> >::type
     ExecutionContext::async(const boost::function<R()>& callback,
                             qi::SteadyClockTimePoint tp)
@@ -186,14 +218,14 @@ typename boost::disable_if<boost::is_same<R, void>,
   promise.setup(
       boost::bind(&detail::futureCancelAdapter<void>,
                   boost::weak_ptr<detail::FutureBaseTyped<void> >(f.impl())));
-  f.connect(boost::bind(&detail::checkCanceled<R>, _1, promise), FutureCallbackType_Sync);
+  f.connect(boost::bind(&detail::forwardError<R>, _1, promise), FutureCallbackType_Sync);
   return promise.future();
 }
 
 template <typename F>
-void ExecutionContext::post(F&& callback)
+void ExecutionContext::post(F&& callback, ExecutionOptions options)
 {
-  postImpl(std::forward<F>(callback));
+  postImpl(std::forward<F>(callback), options);
 }
 
 template <typename ReturnType, typename Callback>
@@ -212,31 +244,27 @@ struct ToPost
   }
 };
 
-template <typename F>
-auto ExecutionContext::asyncAt(F&& callback, qi::SteadyClockTimePoint tp) -> qi::Future<typename std::decay<decltype(callback())>::type>
+template <typename F, typename R>
+Future<R> ExecutionContext::asyncAt(F&& callback, qi::SteadyClockTimePoint tp, ExecutionOptions options)
 {
-  using ReturnType = typename std::decay<decltype(callback())>::type;
-
-  ToPost<ReturnType, typename std::decay<F>::type> topost(std::move(callback));
+  ToPost<R, typename std::decay<F>::type> topost(std::forward<F>(callback));
   auto promise = topost.promise;
-  qi::Future<void> f = asyncAtImpl(std::move(topost), tp);
+  qi::Future<void> f = asyncAtImpl(std::move(topost), tp, options);
   promise.setup(boost::bind(&detail::futureCancelAdapter<void>,
                             boost::weak_ptr<detail::FutureBaseTyped<void> >(f.impl())));
-  f.connect(boost::bind(&detail::checkCanceled<ReturnType>, _1, promise), FutureCallbackType_Sync);
+  f.connect(boost::bind(&detail::forwardError<R>, _1, promise), FutureCallbackType_Sync);
   return promise.future();
 }
 
-template <typename F>
-auto ExecutionContext::asyncDelay(F&& callback, qi::Duration delay) -> qi::Future<typename std::decay<decltype(callback())>::type>
+template <typename F, typename R>
+Future<R> ExecutionContext::asyncDelay(F&& callback, qi::Duration delay, ExecutionOptions options)
 {
-  using ReturnType = typename std::decay<decltype(callback())>::type;
-
-  ToPost<ReturnType, typename std::decay<F>::type> topost(std::move(callback));
+  ToPost<R, typename std::decay<F>::type> topost(std::forward<F>(callback));
   auto promise = topost.promise;
-  qi::Future<void> f = asyncDelayImpl(std::move(topost), delay);
+  qi::Future<void> f = asyncDelayImpl(std::move(topost), delay, options);
   promise.setup(boost::bind(&detail::futureCancelAdapter<void>,
                             boost::weak_ptr<detail::FutureBaseTyped<void> >(f.impl())));
-  f.connect(boost::bind(&detail::checkCanceled<ReturnType>, _1, promise), FutureCallbackType_Sync);
+  f.connect(boost::bind(&detail::forwardError<R>, _1, promise), FutureCallbackType_Sync);
   return promise.future();
 }
 }

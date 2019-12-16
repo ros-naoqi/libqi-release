@@ -32,23 +32,20 @@ struct QI_API ObjectTypeData
    * bypass ObjectTypeInterface::metaCall which would have to be removed.
    * -> RemoteObject, ALBridge needs to be rewriten.
    */
-  typedef boost::function<SignalBase* (void*)> SignalGetter;
-  typedef std::map<unsigned int, SignalGetter> SignalGetterMap;
+  using SignalGetter = boost::function<SignalBase* (void*)>;
+  using SignalGetterMap = std::map<unsigned int, SignalGetter>;
   SignalGetterMap signalGetterMap;
 
-  typedef boost::function<PropertyBase*(void*)> PropertyGetter;
-  typedef std::map<unsigned int, PropertyGetter> PropertyGetterMap;
+  using PropertyGetter = boost::function<PropertyBase*(void*)>;
+  using PropertyGetterMap = std::map<unsigned int, PropertyGetter>;
   PropertyGetterMap propertyGetterMap;
 
-  typedef std::map<
-    unsigned int,
-    std::pair<AnyFunction, MetaCallType>
-  > MethodMap;
+  using MethodMap = std::map<unsigned int, std::pair<AnyFunction, MetaCallType>>;
 
   MethodMap methodMap;
 
   TypeInterface* classType;
-  std::vector<std::pair<TypeInterface*, int> > parentTypes;
+  std::vector<std::pair<TypeInterface*, std::ptrdiff_t> > parentTypes;
   ObjectThreadingModel threadingModel;
   qi::AnyFunction strandAccessor;
 };
@@ -65,22 +62,23 @@ class QI_API StaticObjectTypeBase: public ObjectTypeInterface
 {
 public:
   void initialize(const MetaObject& mo, const ObjectTypeData& data);
-  virtual const TypeInfo& info();
-  virtual const MetaObject& metaObject(void* instance);
-  virtual qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature);
-  virtual void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params);
-  virtual qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber);
+  const TypeInfo& info() override;
+  const MetaObject& metaObject(void* instance) override;
+  ObjectUid uid(void* instance) const override;
+  qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature) override;
+  void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params) override;
+  qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber) override;
   /// Disconnect an event link. Returns if disconnection was successful.
-  virtual qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId);
-  virtual qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id);
-  virtual qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue value);
+  qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId) override;
+  qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id) override;
+  qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue value) override;
 
-  virtual const std::vector<std::pair<TypeInterface*, int> >& parentTypes();
-  virtual void* initializeStorage(void*);
-  virtual void* ptrFromStorage(void**);
-  virtual void* clone(void* inst);
-  virtual void destroy(void*);
-  virtual bool less(void* a, void* b);
+  const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& parentTypes() override;
+  void* initializeStorage(void*) override;
+  void* ptrFromStorage(void**) override;
+  void* clone(void* inst) override;
+  void destroy(void*) override;
+  bool less(void* a, void* b) override;
 private:
   MetaObject     _metaObject;
   ObjectTypeData _data;

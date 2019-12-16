@@ -1,155 +1,328 @@
 /*
-**  Copyright (C) 2012 Aldebaran Robotics
+**  Copyright (C) 2018 Softbank Robotics Europe
 **  See COPYING for the license
 */
 #include <atomic>
+#include <boost/atomic.hpp>
+#include <boost/thread/synchronized_value.hpp>
+#include <boost/container/flat_map.hpp>
+
+#include <ka/errorhandling.hpp>
 #include <qi/strand.hpp>
 #include <qi/log.hpp>
 #include <qi/future.hpp>
 #include <qi/getenv.hpp>
-#include <deque>
-#include <boost/enable_shared_from_this.hpp>
 
 qiLogCategory("qi.strand");
 
 namespace qi {
 
-class StrandPrivate : public boost::enable_shared_from_this<StrandPrivate>
+namespace
 {
-public:
-  enum class State
+  // Executes the callback immediately. This function returns a Future for consistency with the
+  // async functions and simplicity of use. The future will be in error if the callback throws
+  // an exception.
+  // Procedure<void()> Proc
+  template<typename Proc>
+  Future<void> execNow(Proc&& proc, ExecutionOptions)
   {
-    None,
-    Scheduled,
-    Running,
-    Canceled
-    // we don't care about finished state
+    Promise<void> p;
+    detail::setPromiseFromCallWithExceptionSupport(p, std::forward<Proc>(proc));
+    return p.future();
+  }
+
+  // Executes the provided function and returns any caught exception's message if any.
+  // Procedure<void()> Proc
+  template<class Proc>
+  Strand::OptionalErrorMessage safeInvoke(Proc&& proc) noexcept
+  {
+    return ka::invoke_catch(ka::exception_message{}, [&] {
+      std::forward<Proc>(proc)();
+      return Strand::OptionalErrorMessage{};
+    });
+  }
+
+  static const auto dyingStrandMessage = "The strand is dying.";
+}
+
+  // Stores promises and set them in error on destruction if they are not removed before.
+  class StrandPrivate::ScopedPromiseGroup
+  {
+    struct ErrorSetter
+    {
+      qi::Promise<void> promise;
+
+      void operator()() {
+        if (!promise.future().isFinished()) // That `if` could be removed but it reduces the chances of
+                                            // ending with an exception thrown when setting the promise
+        {
+          promise.setError("Strand joining - deferred task promise broken");
+        }
+      }
+    };
+
+  public:
+    ~ScopedPromiseGroup()
+    {
+      setAllInError();
+    }
+
+    // Registers a promise to be set in error once this object is destroyed.
+    FutureUniqueId add(Promise<void> promise)
+    {
+      const auto id = promise.future().uniqueId();
+      _promiseTerminators->emplace(id, ErrorSetter{std::move(promise)});
+      return id;
+    }
+
+    // Removes a promise to avoid setting it in error.
+    // Note: `id` should have been obtained through `add()`.
+    void remove(FutureUniqueId id)
+    {
+      _promiseTerminators->erase(id);
+    }
+
+    // Sets all the currently registered promises in error and unregisters them.
+    void setAllInError()
+    {
+      auto synchedTerminators = _promiseTerminators.synchronize();
+      for (auto&& slot : *synchedTerminators)
+      {
+        auto errorMsg = safeInvoke([&]{
+          // We move the setter out so that setter's resources are guaranteed
+          // to be released as soon as invocation is terminated (whatever the issue).
+          auto errorSetter = std::move(slot.second);
+          errorSetter();
+        });
+        if (errorMsg)
+        {
+          qiLogWarning() << "Error when setting promise in error: " << *errorMsg;
+        }
+      }
+      synchedTerminators->clear();
+    }
+
+  private:
+    using FutureFuncMap = boost::container::flat_map<FutureUniqueId, ErrorSetter>;
+    boost::synchronized_value<FutureFuncMap> _promiseTerminators;
   };
 
-  struct Callback
-  {
-    uint32_t id;
-    State state;
-    boost::function<void()> callback;
-    qi::Promise<void> promise;
-    qi::Future<void> asyncFuture;
-  };
-
-  typedef std::deque<boost::shared_ptr<Callback> > Queue;
-
-  qi::ExecutionContext& _eventLoop;
-  boost::atomic<unsigned int> _curId;
-  boost::atomic<unsigned int> _aliveCount;
-  bool _processing; // protected by mutex, no need for atomic
-  boost::atomic<int> _processingThread;
-  boost::mutex _mutex;
-  boost::condition_variable _processFinished;
-  bool _dying;
-  Queue _queue;
-
-  StrandPrivate(qi::ExecutionContext& eventLoop);
-  ~StrandPrivate();
-
-  Future<void> asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp);
-  Future<void> asyncDelayImpl(boost::function<void()> cb, qi::Duration delay);
-
-  boost::shared_ptr<Callback> createCallback(boost::function<void()> cb);
-  void enqueue(boost::shared_ptr<Callback> cbStruct);
-
-  void process();
-  void cancel(boost::shared_ptr<Callback> cbStruct);
+enum class StrandPrivate::State
+{
+  None,
+  Scheduled,
+  Running,
+  Canceled,
+  // we don't care about finished state
 };
 
-StrandPrivate::StrandPrivate(qi::ExecutionContext& eventLoop)
-  : _eventLoop(eventLoop)
+struct StrandPrivate::Callback
+{
+  uint32_t id;
+  State state;
+  boost::function<void()> callback;
+  qi::Promise<void> promise;
+  qi::Future<void> asyncFuture;
+  ExecutionOptions executionOptions;
+};
+
+
+StrandPrivate::StrandPrivate(qi::ExecutionContext& executor)
+  : _executor(executor)
   , _curId(0)
   , _aliveCount(0)
   , _processing(false)
   , _processingThread(0)
   , _dying(false)
+  , _deferredTasksFutures{ std::make_shared<ScopedPromiseGroup>() }
 {
 }
 
-StrandPrivate::~StrandPrivate()
-{
+
+StrandPrivate::~StrandPrivate() {
+  const auto error = ka::invoke_catch(ka::exception_message{}, [this]{
+    join();
+    return Strand::OptionalErrorMessage{};
+  });
+
+  if (error)
+  {
+    qiLogWarning() << "Error while joining tasks in StrandPrivate destruction. "
+      "Detail: " << *error;
+  }
 }
 
-boost::shared_ptr<StrandPrivate::Callback> StrandPrivate::createCallback(boost::function<void()> cb)
+void StrandPrivate::join() QI_NOEXCEPT(true)
+{
+  if (joined)
+  {
+    qiLogDebug() << "Strand joining (" << this << ") -> already joined, ignored.";
+    return;
+  }
+
+  boost::unique_lock<boost::recursive_mutex> lock(_mutex);
+  qiLogDebug() << "Strand joining (" << this << ")...";
+
+  _dying = true; // Starting from this point, either this thread or the processing thread will complete the joining.
+
+  if (isInThisContext())
+  {
+    qiLogDebug() << "Strand joining (" << this << ") -> joining in the thread currently executing task:"
+      << "deferring join until after task is finished...";
+    return;
+  }
+
+  qiLogDebug() << "Strand joining (" << this << ") -> Joining starts : processing=" << _processing
+    << ", size=" << _aliveCount << ")";
+
+  qiLogDebug() << "Strand joining (" << this << ") -> clearing scheduled tasks...";
+  for (auto&& task : _queue)
+  {
+    if (task->state == StrandPrivate::State::Canceled)
+      continue;
+    QI_ASSERT(task->state == StrandPrivate::State::Scheduled);
+
+    const auto errorMsg = safeInvoke([&]{
+      task->promise.setError(dyingStrandMessage);
+    });
+    if (errorMsg)
+    {
+      qiLogWarning() << "Error when setting promise in error: " << *errorMsg;
+    }
+  }
+  _queue.clear();
+
+  qiLogDebug() << "Strand joining (" << this << ") -> clearing deferred tasks...";
+  _deferredTasksFutures.reset();
+
+  qiLogDebug() << "Strand joining (" << this << ") -> waiting for currently executing task to finish...";
+  _processFinished.wait(lock, [&]{ return !_processing; });
+
+  qiLogDebug() << "Strand joining (" << this << ") -> DONE";
+  joined = true;
+}
+
+
+
+boost::shared_ptr<StrandPrivate::Callback> StrandPrivate::createCallback(boost::function<void()> cb, ExecutionOptions options)
 {
   ++_aliveCount;
   boost::shared_ptr<Callback> cbStruct = boost::make_shared<Callback>();
   cbStruct->id = ++_curId;
   cbStruct->state = State::None;
   cbStruct->callback = std::move(cb);
+  cbStruct->executionOptions = options;
   return cbStruct;
 }
 
-Future<void> StrandPrivate::asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp)
+Future<void> StrandPrivate::asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp, ExecutionOptions options)
 {
-  boost::shared_ptr<Callback> cbStruct = createCallback(std::move(cb));
-  cbStruct->promise =
-    qi::Promise<void>(boost::bind(&StrandPrivate::cancel, this, cbStruct));
-  qiLogDebug() << "Scheduling job id " << cbStruct->id
-    << " at " << qi::to_string(tp);
-  cbStruct->asyncFuture = _eventLoop.asyncAt(boost::bind(
-        &StrandPrivate::enqueue, this, cbStruct),
-      tp);
-  return cbStruct->promise.future();
+  const auto now = SteadyClock::now();
+  if (tp <= now && isInThisContext())
+    return execNow(std::move(cb), options);
+  return deferImpl(std::move(cb), tp - now, options);
 }
 
-Future<void> StrandPrivate::asyncDelayImpl(boost::function<void()> cb, qi::Duration delay)
+Future<void> StrandPrivate::asyncDelayImpl(boost::function<void()> cb, qi::Duration delay, ExecutionOptions options)
 {
-  boost::shared_ptr<Callback> cbStruct = createCallback(std::move(cb));
-  cbStruct->promise =
-    qi::Promise<void>(boost::bind(&StrandPrivate::cancel, this, cbStruct));
-  qiLogDebug() << "Scheduling job id " << cbStruct->id
-    << " in " << qi::to_string(delay);
+  if (delay == qi::Duration::zero() && isInThisContext())
+    return execNow(std::move(cb), options);
+  return deferImpl(std::move(cb), delay, options);
+}
+
+Future<void> StrandPrivate::deferImpl(boost::function<void()> cb, qi::Duration delay, ExecutionOptions options)
+{
+  boost::shared_ptr<Callback> cbStruct = createCallback(std::move(cb), options);
+  cbStruct->promise = qi::Promise<void>(boost::bind(&StrandPrivate::cancel, this, cbStruct));
+
+  qiLogDebug() << "Deferring job id " << cbStruct->id << " in " << qi::to_string(delay);
   if (delay.count())
-    cbStruct->asyncFuture = _eventLoop.asyncDelay(boost::bind(
-          &StrandPrivate::enqueue, this, cbStruct),
-        delay);
+  {
+    cbStruct->asyncFuture = _executor.asyncDelay(track([=]{
+      enqueue(cbStruct, options);
+    }), delay, options).then(ka::constant_function());
+    _deferredTasksFutures->add(cbStruct->promise);
+  }
   else
-    enqueue(cbStruct);
+    enqueue(cbStruct, options);
   return cbStruct->promise.future();
 }
 
-void StrandPrivate::enqueue(boost::shared_ptr<Callback> cbStruct)
+void StrandPrivate::enqueue(boost::shared_ptr<Callback> cbStruct, ExecutionOptions options)
 {
-  qiLogDebug() << "Enqueueing job id " << cbStruct->id;
-  bool shouldschedule = false;
-
+  const bool shouldschedule = [&]()
   {
-    boost::mutex::scoped_lock lock(_mutex);
+    boost::recursive_mutex::scoped_lock lock(_mutex);
+    qiLogDebug() << "Enqueueing job id " << cbStruct->id;
+
+    auto scheduleCallback = [&] {
+      _queue.push_back(cbStruct);
+      cbStruct->state = State::Scheduled;
+    };
+
     // the callback may have been canceled
     if (cbStruct->state == State::None)
     {
       if (_dying)
       {
-        cbStruct->promise.setError("the strand is dying");
-        return;
+        cbStruct->promise.setError(dyingStrandMessage);
+        qiLogDebug() << "Strand is dying on job id " << cbStruct->id;
+        return false;
       }
 
-      _queue.push_back(cbStruct);
-      cbStruct->state = State::Scheduled;
+      qiLogDebug() << "Strand callback state is None on job id " << cbStruct->id;
+      scheduleCallback();
     }
     else
     {
-      assert(cbStruct->state == State::Canceled);
-      qiLogDebug() << "Job was canceled, dropping";
-      return;
+      QI_ASSERT(cbStruct->state == State::Canceled);
+      if (options.onCancelRequested == CancelOption::NeverSkipExecution)
+      {
+        qiLogDebug() << "Job was canceled but is specified as never skipped - will execute";
+        scheduleCallback();
+      }
+      else
+      {
+        qiLogDebug() << "Job was canceled, dropping";
+        return false;
+      }
     }
     // if process was not scheduled yet, do it, there is work to do
     if (!_processing)
     {
+      qiLogDebug() << "Schedule process on job id " << cbStruct->id;
       _processing = true;
-      shouldschedule = true;
+      if (cbStruct->asyncFuture.isValid())
+      {
+        _deferredTasksFutures->remove(cbStruct->promise.future().uniqueId());
+      }
+      return true;
     }
-  }
+
+    return false;
+  }();
 
   if (shouldschedule)
   {
     qiLogDebug() << "StrandPrivate::process was not scheduled, doing it";
-    _eventLoop.async(boost::bind(&StrandPrivate::process, shared_from_this()));
+    _executor.async(track([=]{ process(); }), options);
+  }
+}
+
+void StrandPrivate::stopProcess(boost::recursive_mutex::scoped_lock& lock,
+                                bool finished)
+{
+  // if we still have work
+  if (!finished && !_dying)
+  {
+    qiLogDebug() << "Strand quantum expired, rescheduling";
+    lock.unlock();
+    _executor.async(track([=] { process(); }));
+  }
+  else
+  {
+    _processing = false;
+    _processFinished.notify_all();
   }
 }
 
@@ -164,29 +337,29 @@ void StrandPrivate::process()
 
   qi::SteadyClockTimePoint start = qi::SteadyClock::now();
 
-  bool finished = false;
-
   do
   {
     boost::shared_ptr<Callback> cbStruct;
     {
-      boost::mutex::scoped_lock lock(_mutex);
+      boost::recursive_mutex::scoped_lock lock(_mutex);
       if (_dying)
       {
         qiLogDebug() << this << " strand is dying, stopping process";
         break;
       }
 
-      assert(_processing);
+      QI_ASSERT(_processing);
       if (_queue.empty())
       {
         qiLogDebug() << "Queue empty, stopping";
-        finished = true;
-        break;
+        stopProcess(lock, true);
+        _processingThread = 0;
+        return;
       }
       cbStruct = _queue.front();
       _queue.pop_front();
-      if (cbStruct->state == State::Scheduled)
+      if (cbStruct->state == State::Scheduled
+      || (cbStruct->state == State::Canceled && cbStruct->executionOptions.onCancelRequested == CancelOption::NeverSkipExecution))
       {
         --_aliveCount;
         cbStruct->state = State::Running;
@@ -216,25 +389,14 @@ void StrandPrivate::process()
   _processingThread = 0;
 
   {
-    boost::mutex::scoped_lock lock(_mutex);
-    // if we still have work
-    if (!finished && !_dying)
-    {
-      qiLogDebug() << "Strand quantum expired, rescheduling";
-      lock.unlock();
-      _eventLoop.async(boost::bind(&StrandPrivate::process, shared_from_this()));
-    }
-    else
-    {
-      _processing = false;
-      _processFinished.notify_all();
-    }
+    boost::recursive_mutex::scoped_lock lock(_mutex);
+    stopProcess(lock, false);
   }
 }
 
 void StrandPrivate::cancel(boost::shared_ptr<Callback> cbStruct)
 {
-  boost::mutex::scoped_lock lock(_mutex);
+  boost::recursive_mutex::scoped_lock lock(_mutex);
 
   switch (cbStruct->state)
   {
@@ -242,11 +404,15 @@ void StrandPrivate::cancel(boost::shared_ptr<Callback> cbStruct)
       qiLogDebug() << "Not scheduled yet, canceling future";
       cbStruct->asyncFuture.cancel();
       cbStruct->state = State::Canceled;
-      --_aliveCount;
-      cbStruct->promise.setCanceled();
+      if(cbStruct->executionOptions.onCancelRequested != CancelOption::NeverSkipExecution)
+      {
+        --_aliveCount;
+        cbStruct->promise.setCanceled();
+      }
       break;
     case State::Scheduled:
       qiLogDebug() << "Was scheduled, removing it from queue";
+      if (cbStruct->executionOptions.onCancelRequested != CancelOption::NeverSkipExecution)
       {
         bool erased = false;
         for (Queue::iterator iter = _queue.begin(); iter != _queue.end(); ++iter)
@@ -257,13 +423,17 @@ void StrandPrivate::cancel(boost::shared_ptr<Callback> cbStruct)
             break;
           }
         // state was scheduled, so the callback must be there
-        assert(erased);
+        QI_ASSERT(erased);
         // Silence compile warning unused erased
         (void)erased;
 
+        --_aliveCount;
+        cbStruct->promise.setCanceled();
       }
-      --_aliveCount;
-      cbStruct->promise.setCanceled();
+      else
+      {
+        cbStruct->state = State::Canceled;
+      }
       break;
     default:
       qiLogDebug() << "State is " << static_cast<int>(cbStruct->state)
@@ -272,14 +442,19 @@ void StrandPrivate::cancel(boost::shared_ptr<Callback> cbStruct)
   }
 }
 
+bool StrandPrivate::isInThisContext() const
+{
+  return _processingThread == qi::os::gettid();
+}
+
 Strand::Strand()
-  : _p(new StrandPrivate(*qi::getEventLoop()))
+  : _p(boost::make_shared<StrandPrivate>(*qi::getEventLoop()))
 {
   qiLogDebug() << this << " new strand";
 }
 
 Strand::Strand(qi::ExecutionContext& eventloop)
-  : _p(new StrandPrivate(eventloop))
+  : _p(boost::make_shared<StrandPrivate>(eventloop))
 {
 }
 
@@ -288,47 +463,30 @@ Strand::~Strand()
   join();
 }
 
-void Strand::join()
+void Strand::join() QI_NOEXCEPT(true)
 {
-  if (!_p)
+  // keep it alive until we unlock the mutex
+  auto pimpl = boost::atomic_exchange(&_p, {});
+  QI_ASSERT_NULL(_p);
+  if (!pimpl)
   {
     qiLogDebug() << this << " already joined";
     return;
   }
+  pimpl->join();
+}
 
-  // keep it alive until we unlock the mutex
-  boost::shared_ptr<StrandPrivate> prv;
-
-  {
-    boost::unique_lock<boost::mutex> lock(_p->_mutex);
-    qiLogVerbose() << this << " joining (processing: " << _p->_processing
-      << ", size: " << _p->_aliveCount << ")";
-
-    _p->_dying = true;
-
-    if (isInThisContext())
-    {
-      qiLogVerbose() << this << " joining from inside the context";
-      // don't wait if we are joining the strand from within the strand
-      return;
-    }
-
-    boost::atomic_exchange(&prv, _p);
-
-    prv->_processFinished.wait(lock, [&]{ return !prv->_processing; });
-    while (!prv->_queue.empty())
-    {
-      auto task = std::move(prv->_queue.front());
-      prv->_queue.pop_front();
-      if (task->state == StrandPrivate::State::Canceled)
-        continue;
-      assert(task->state == StrandPrivate::State::Scheduled);
-      task->promise.setError("the strand is dying");
-      --prv->_aliveCount;
-    }
-
-    qiLogVerbose() << this << " joined, remaining tasks: " << prv->_aliveCount;
-  }
+/// Join all tasks, returning an error message if necessary instead of throwing
+/// an exception.
+///
+/// Note: under extreme circumstances such as system memory exhaustion, this
+///   method could still throw a `std::bad_alloc` exception, thus causing a call
+///   to `std::terminate` because of the `noexcept` specifier. This behavior is
+///   considered acceptable.
+Strand::OptionalErrorMessage Strand::join(std::nothrow_t) QI_NOEXCEPT(true)
+{
+  // Catch any exception and return its message.
+  return ka::invoke_catch(ka::exception_message{}, [this]() {join(); return OptionalErrorMessage{};});
 }
 
 Future<void> Strand::async(const boost::function<void()>& cb,
@@ -338,7 +496,7 @@ Future<void> Strand::async(const boost::function<void()>& cb,
   if (prv)
     return prv->asyncAtImpl(cb, tp);
   else
-    return makeFutureError<void>("the strand is dying");
+    return makeFutureError<void>(dyingStrandMessage);
 }
 
 Future<void> Strand::async(const boost::function<void()>& cb,
@@ -348,39 +506,57 @@ Future<void> Strand::async(const boost::function<void()>& cb,
   if (prv)
     return prv->asyncDelayImpl(cb, delay);
   else
-    return makeFutureError<void>("the strand is dying");
+    return makeFutureError<void>(dyingStrandMessage);
 }
 
-Future<void> Strand::asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp)
+Future<void> Strand::asyncAtImpl(boost::function<void()> cb, qi::SteadyClockTimePoint tp, ExecutionOptions options)
 {
   auto prv = boost::atomic_load(&_p);
   if (prv)
-    return prv->asyncAtImpl(std::move(cb), tp);
+    return prv->asyncAtImpl(std::move(cb), tp, options);
   else
-    return makeFutureError<void>("the strand is dying");
+    return makeFutureError<void>(dyingStrandMessage);
 }
 
-Future<void> Strand::asyncDelayImpl(boost::function<void()> cb, qi::Duration delay)
+Future<void> Strand::asyncDelayImpl(boost::function<void()> cb, qi::Duration delay, ExecutionOptions options)
 {
   auto prv = boost::atomic_load(&_p);
   if (prv)
-    return prv->asyncDelayImpl(std::move(cb), delay);
+    return prv->asyncDelayImpl(std::move(cb), delay, options);
   else
-    return makeFutureError<void>("the strand is dying");
+    return makeFutureError<void>(dyingStrandMessage);
 }
 
-void Strand::postImpl(boost::function<void()> callback)
+void Strand::postImpl(boost::function<void()> callback, ExecutionOptions options)
 {
   auto prv = boost::atomic_load(&_p);
   if (prv)
-    prv->enqueue(prv->createCallback(std::move(callback)));
+  {
+    // As no future will be returned, we need to at least log the user if a problem occured.
+    prv->enqueue(prv->createCallback([=] {
+      auto errorLogger = ka::compose([](const std::string& msg) {
+        qiLogWarning() << "Uncaught error in task posted in a strand: " << msg;
+      }, ka::exception_message{});
+
+      ka::invoke_catch(std::move(errorLogger), callback);
+    }, options), options);
+  }
 }
 
-bool Strand::isInThisContext()
+Future<void> Strand::defer(const boost::function<void ()>& cb, MicroSeconds delay, ExecutionOptions options)
 {
   auto prv = boost::atomic_load(&_p);
   if (prv)
-    return prv->_processingThread == qi::os::gettid();
+    return prv->deferImpl(cb, delay, options);
+  else
+    return makeFutureError<void>(dyingStrandMessage);
+}
+
+bool Strand::isInThisContext() const
+{
+  auto prv = boost::atomic_load(&_p);
+  if (prv)
+    return prv->isInThisContext();
   else
     return false;
 }

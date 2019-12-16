@@ -18,7 +18,7 @@
 TEST(TestPackage, TestFreeFunctions)
 {
     qi::AnyModule pkg = ::qi::import("qi_test_anymodule");
-    ASSERT_TRUE(pkg != 0);
+    ASSERT_TRUE(pkg);
 
     int r;
 
@@ -36,18 +36,11 @@ TEST(TestPackage, FactoryCreatesFunctionalObject)
 {
     qi::AnyModule pkg = ::qi::import("qi_test_anymodule");
 
-    ASSERT_TRUE(pkg != 0);
+    ASSERT_TRUE(pkg);
 
     qi::AnyObject obj = pkg.call<qi::AnyObject>("Cat");
     obj.setProperty("meowVolume", ::qi::AnyValue::from(42));
     int result = obj.call<int>("meow");
 
     ASSERT_EQ(result, 42);
-}
-
-int main(int ac, char **av)
-{
-    qi::Application app(ac, av);
-    ::testing::InitGoogleTest(&ac, av);
-    return RUN_ALL_TESTS();
 }

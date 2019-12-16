@@ -15,7 +15,29 @@
 namespace qi
 {
 
-typedef std::map<std::string, AnyValue> CapabilityMap;
+using CapabilityMap = std::map<std::string, AnyValue>;
+
+  namespace capabilityname
+  {
+    // Capability: A client socket has the capability to accept and
+    // dispatch Type_Call messages (& friends).
+    // If set, stream used to register a service to the SD can be reused
+    // to communicate with said service, for instance.
+    QI_API extern char const * const clientServerSocket;
+
+    // Capability: Object serialization protocol supports the
+    // caching of MetaObjects (binary protocol change).
+    QI_API extern char const * const metaObjectCache;
+
+    // Capability: remote ends support Message flags (flags in 'type' header field)
+    QI_API extern char const * const messageFlags;
+
+    // Capability: remote end supports call cancelations.
+    QI_API extern char const * const remoteCancelableCalls;
+
+    // Capability: Objects allow unique identification using Ptruid/ObjectUid.
+    QI_API extern char const * const objectPtrUid;
+  }
 
 /** Store contextual data associated to one point-to-point point transport.
  *
@@ -41,39 +63,39 @@ public:
   virtual void advertiseCapabilities(const CapabilityMap& map);
 
   /// Fetch remote capability (default: from local cache).
-  virtual boost::optional<AnyValue> remoteCapability(const std::string& key);
+  virtual boost::optional<AnyValue> remoteCapability(const std::string& key) const;
 
   bool hasReceivedRemoteCapabilities() const;
 
   template<typename T>
-  T remoteCapability(const std::string& key, const T& defaultValue);
+  T remoteCapability(const std::string& key, const T& defaultValue) const;
 
   const CapabilityMap& remoteCapabilities() const;
   const CapabilityMap& localCapabilities() const;
 
   /// Fetch back what we advertised to the other end (default: local cache)
-  virtual boost::optional<AnyValue> localCapability(const std::string& key);
+  virtual boost::optional<AnyValue> localCapability(const std::string& key) const;
 
   template<typename T>
-  T localCapability(const std::string& key, const T& defaultValue);
+  T localCapability(const std::string& key, const T& defaultValue) const;
 
   /** Return a value based on shared capability.
   * If not present on one side, returns void.
   * If present on both sides with same type, return the lesser of both values.
   * Otherwise, throws.
   */
-  boost::optional<AnyValue> sharedCapability(const std::string& key);
+  boost::optional<AnyValue> sharedCapability(const std::string& key) const;
 
   /// Similar to above, but replace error conditions by default value.
   template<typename T>
-  T sharedCapability(const std::string& key, const T& defaultValue);
+  T sharedCapability(const std::string& key, const T& defaultValue) const;
 
   /// Return (cacheUid, wasInserted)
   std::pair<unsigned int, bool> sendCacheSet(const MetaObject& mo);
 
   void receiveCacheSet(unsigned int uid, const MetaObject& mo);
 
-  MetaObject receiveCacheGet(unsigned int uid);
+  MetaObject receiveCacheGet(unsigned int uid) const;
 
   /// Default capabilities injected on all transports upon connection
   static const CapabilityMap& defaultCapabilities();
@@ -82,19 +104,19 @@ public:
 protected:
   qi::Atomic<int> _cacheNextId;
   // Protects all storage
-  boost::mutex  _contextMutex;
+  mutable boost::mutex  _contextMutex;
 
   CapabilityMap _remoteCapabilityMap; // remote capabilities we received
   CapabilityMap _localCapabilityMap; // memory of what we advertisedk
 
-  typedef std::map<MetaObject, unsigned int> SendMetaObjectCache;
-  typedef std::map<unsigned int, MetaObject> ReceiveMetaObjectCache;
+  using SendMetaObjectCache = std::map<MetaObject, unsigned int>;
+  using ReceiveMetaObjectCache = std::map<unsigned int, MetaObject>;
   SendMetaObjectCache _sendMetaObjectCache;
   ReceiveMetaObjectCache _receiveMetaObjectCache;
 };
 
 template<typename T>
-T StreamContext::remoteCapability(const std::string& key, const T& defaultValue)
+T StreamContext::remoteCapability(const std::string& key, const T& defaultValue) const
 {
   boost::optional<AnyValue> v = remoteCapability(key);
   if (v)
@@ -104,7 +126,7 @@ T StreamContext::remoteCapability(const std::string& key, const T& defaultValue)
 }
 
 template<typename T>
-T StreamContext::localCapability(const std::string& key, const T& defaultValue)
+T StreamContext::localCapability(const std::string& key, const T& defaultValue) const
 {
   boost::optional<AnyValue> v = localCapability(key);
   if (v)
@@ -113,9 +135,8 @@ T StreamContext::localCapability(const std::string& key, const T& defaultValue)
     return defaultValue;
 }
 
-
 template<typename T>
-T StreamContext::sharedCapability(const std::string& key, const T& defaultValue)
+T StreamContext::sharedCapability(const std::string& key, const T& defaultValue) const
 {
   try
   {
@@ -130,7 +151,6 @@ T StreamContext::sharedCapability(const std::string& key, const T& defaultValue)
     return defaultValue;
   }
 }
-
 
 }
 

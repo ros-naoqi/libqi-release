@@ -4,116 +4,100 @@
  * found in the COPYING file.
  */
 
+#include <utility>
 #include <boost/program_options.hpp>
+#include <boost/range/adaptor/transformed.hpp>
 #include <qi/trackable.hpp>
 #include <qi/applicationsession.hpp>
 #include <qi/anyvalue.hpp>
+#include <qi/log.hpp>
+#include "applicationsession_internal.hpp"
 
-static void onDisconnected(const std::string& /*errorMessage*/)
-{
-  ::qi::Application::stop();
-}
-
-static std::string _address;
-static std::string _listenAddress;
-static bool _standAlone = false;
-
-static void parseAddress()
-{
-  namespace po = boost::program_options;
-  po::options_description desc("ApplicationSession options");
-
-  desc.add_options()
-      ("qi-url", po::value<std::string>(&_address), "The address of the service directory")
-      ("qi-listen-url", po::value<std::string>(&_listenAddress), "The url to listen to")
-      ("qi-standalone", "create a standalone session (this will use qi-listen-url if provided");
-
-  po::variables_map vm;
-  po::parsed_options parsed =
-      po::command_line_parser(qi::Application::arguments()).options(desc).allow_unregistered().run();
-  po::store(parsed, vm);
-  po::notify(vm);
-
-  qi::Application::setArguments(po::collect_unrecognized(parsed.options, po::include_positional));
-  _standAlone = vm.count("qi-standalone");
-
-  {
-    po::options_description descTmp;
-    descTmp.add_options()
-        ("help,h", "");
-
-    po::variables_map vmTmp;
-    po::store(po::command_line_parser(qi::Application::arguments()).options(descTmp).allow_unregistered().run(),
-              vmTmp);
-
-    if (vmTmp.count("help"))
-      std::cout << desc << std::endl;
-  }
-}
-
-// This function is used to add the callback before the call of Application's constructor
-static int& addParseOptions(int& argc)
-{
-  qi::Application::atEnter(parseAddress);
-  return argc;
-}
+qiLogCategory("qi.applicationsession");
 
 namespace qi
 {
+
+namespace
+{
+
+using appsession_internal::ProgramOptions;
+boost::synchronized_value<boost::optional<ProgramOptions>> g_defaultProgramOptions;
+
+template<typename... Args>
+ProgramOptions emplaceDefaultProgramOptions(Args&&... args)
+{
+  auto syncProgOpts = g_defaultProgramOptions.synchronize();
+  syncProgOpts->emplace(std::forward<Args>(args)...);
+  return syncProgOpts->get();
+}
+
+/// @throws `boost::bad_optional_access` if `setDefaultProgramOptions` was not called before.
+ProgramOptions defaultProgramOptions()
+{
+  return g_defaultProgramOptions->value();
+}
+
+void onDisconnected(const std::string& /*errorMessage*/)
+{
+  Application::stop();
+}
+
+// This function is used to add the callback before the call of Application's constructor
+int& addParseOptions(int& argc)
+{
+  Application::atEnter([]{
+    const auto programOptions = emplaceDefaultProgramOptions(Application::arguments());
+    Application::setArguments(programOptions.unrecognizedArgs);
+    Application::options().add(ProgramOptions::description());
+  });
+  return argc;
+}
+
+}
+
 class ApplicationSessionPrivate : public Trackable<ApplicationSessionPrivate>
 {
 public:
   ApplicationSessionPrivate(const ApplicationSession::Config& config)
-    : _session(new qi::Session)
+    : _config(reconfigureWithProgramOptions(config, defaultProgramOptions()))
+    , _session(makeSession(_config.sessionConfig()))
     , _init(false)
   {
-    if (!(config.option() & qi::ApplicationSession::Option_NoAutoExit))
+    if (!(_config.option() & ApplicationSession::Option_NoAutoExit))
     {
-      _session->disconnected.connect(&::onDisconnected);
+      _session->disconnected.connect(&onDisconnected);
     }
-
-    if (_standAlone && !_address.empty())
-      throw std::runtime_error("You cannot be standAlone if you specified --qi-url to connect");
-
-    _standAlone = _standAlone ? _standAlone : config.defaultStandAlone();
-    if (!_address.empty())
-    {
-      _url = Url(_address, "tcp", 9559);
-      _standAlone = false;
-    }
-    else
-    {
-      _url = config.defaultUrl();
-    }
-    _listenUrl = _listenAddress.empty() ? config.defaultListenUrl() : Url(_listenAddress, "tcp", 9559);
   }
 
   virtual ~ApplicationSessionPrivate()
   {
     destroy();
-    qi::Application::stop();
+    Application::stop();
     _session->close();
   }
 
-  void connect()
+  void start()
   {
-    if (_standAlone)
+    // Rely on the configuration we passed to the session for the URLs.
+
+    if (_config.standalone())
     {
-      _session->listenStandalone(_listenUrl);
+      _session->listenStandalone();
       return;
     }
 
-    // listen + connect
-    _session->connect(_url);
-    if (!_listenAddress.empty())
-      _session->listen(_listenUrl);
+    _session->connect();
+
+    // Only listen if there were listen URLs specified on the command line.
+    if (defaultProgramOptions().hasCliListenUrl)
+      _session->listen();
   }
 
 public:
+  const ApplicationSession::Config _config;
   SessionPtr _session;
   bool _init;
-  Url _url;
-  Url _listenUrl;
   boost::mutex _mutex;
 };
 
@@ -125,10 +109,8 @@ enum StateMachineConfig
 };
 
 ApplicationSession::Config::Config()
-  : _stateMachine(StateMachineConfig_unset)
+  : _standalone(false)
   , _opt(Option_None)
-  , _url("tcp://127.0.0.1:9559")
-  , _listenUrl("tcp://0.0.0.0:9559")
 {
 }
 
@@ -136,19 +118,25 @@ ApplicationSession::Config::~Config()
 {
 }
 
-ApplicationSession::Config& ApplicationSession::Config::setDefaultStandAlone(bool standAlone)
+ApplicationSession::Config& ApplicationSession::Config::setDefaultStandAlone(bool standalone)
 {
-  if (_stateMachine == StateMachineConfig_connect)
-    throw std::runtime_error("You cannot be standAlone if you specified url to connect");
-
-  if (standAlone)
-    _stateMachine = StateMachineConfig_standAlone;
-
-  return *this;
+  return setStandalone(standalone);
 }
+
 bool ApplicationSession::Config::defaultStandAlone() const
 {
-  return _stateMachine == StateMachineConfig_standAlone;
+  return standalone();
+}
+
+ApplicationSession::Config& ApplicationSession::Config::setStandalone(bool standalone)
+{
+  _standalone = standalone;
+  return *this;
+}
+
+bool ApplicationSession::Config::standalone() const
+{
+  return _standalone;
 }
 
 ApplicationSession::Config& ApplicationSession::Config::setOption(ApplicationSession::Option opt)
@@ -163,26 +151,63 @@ ApplicationSession::Option ApplicationSession::Config::option() const
 
 ApplicationSession::Config& ApplicationSession::Config::setDefaultUrl(const Url& url)
 {
-  if (_stateMachine == StateMachineConfig_standAlone)
-    throw std::runtime_error("You cannot specify url to connect if you are standAlone");
-
-  _url = url;
-  _stateMachine = StateMachineConfig_connect;
-  return *this;
+  return setConnectUrl(url);
 }
+
 const Url& ApplicationSession::Config::defaultUrl() const
 {
-  return _url;
+  return connectUrl().value();
+}
+
+ApplicationSession::Config& ApplicationSession::Config::setConnectUrl(Url url)
+{
+  _sessionConfig.connectUrl = std::move(url);
+  return *this;
+}
+
+const boost::optional<Url>& ApplicationSession::Config::connectUrl() const
+{
+  return _sessionConfig.connectUrl;
 }
 
 ApplicationSession::Config& ApplicationSession::Config::setDefaultListenUrl(const Url& listenUrl)
 {
-  _listenUrl = listenUrl;
+  setListenUrls({ listenUrl });
   return *this;
 }
+
 const Url& ApplicationSession::Config::defaultListenUrl() const
 {
-  return _listenUrl;
+  return listenUrls().front();
+}
+
+ApplicationSession::Config& ApplicationSession::Config::addListenUrl(Url listenUrl)
+{
+  _sessionConfig.listenUrls.push_back(std::move(listenUrl));
+  return *this;
+}
+
+ApplicationSession::Config& ApplicationSession::Config::setListenUrls(std::vector<Url> listenUrls)
+{
+  _sessionConfig.listenUrls = std::move(listenUrls);
+  return *this;
+}
+
+const std::vector<Url>&ApplicationSession::Config::listenUrls() const
+{
+  return _sessionConfig.listenUrls;
+}
+
+ApplicationSession::Config& ApplicationSession::Config::setSessionConfig(
+  SessionConfig sessConfig)
+{
+  _sessionConfig = std::move(sessConfig);
+  return *this;
+}
+
+const SessionConfig& ApplicationSession::Config::sessionConfig() const
+{
+  return _sessionConfig;
 }
 
 ApplicationSession::Config& ApplicationSession::Config::setName(const std::string& name)
@@ -195,70 +220,60 @@ const std::string& ApplicationSession::Config::name() const
   return _name;
 }
 
-static void envConfigInit(qi::ApplicationSession::Config& conf)
+ApplicationSession::ApplicationSession(int& argc, char**& argv, int opt, const Url& defaultUrl)
+  : Application(addParseOptions(argc), argv)
+  , _p(new ApplicationSessionPrivate(
+      Config{}.setConnectUrl(defaultUrl).setOption(static_cast<Option>(opt))))
 {
-  std::string listenUrl = qi::os::getenv("QI_LISTEN_URL");
-  std::string sdUrl = qi::os::getenv("QI_URL");
-
-  if (listenUrl.length())
-    conf.setDefaultListenUrl(Url(listenUrl));
-  if (sdUrl.length() && !conf.defaultStandAlone())
-    conf.setDefaultUrl(sdUrl);
 }
 
-ApplicationSession::ApplicationSession(int& argc, char**& argv, int opt, const Url& url)
-  : Application(::addParseOptions(argc), argv)
-{
-  Config config;
-  envConfigInit(config);
-  config.setDefaultUrl(url);
-  config.setOption((Option)opt);
-
-  _p = new ApplicationSessionPrivate(config);
-}
 ApplicationSession::ApplicationSession(const std::string& name,
                                        int& argc,
                                        char**& argv,
                                        int opt,
-                                       const Url& url)
-  : Application(::addParseOptions(argc), argv, name)
+                                       const Url& defaultUrl)
+  : Application(addParseOptions(argc), argv, name)
+  , _p(new ApplicationSessionPrivate(
+      Config{}.setName(name).setConnectUrl(defaultUrl).setOption(static_cast<Option>(opt))))
 {
-  Config config;
-  envConfigInit(config);
-  config.setName(name);
-  config.setDefaultUrl(url);
-  config.setOption((Option)opt);
-
-  _p = new ApplicationSessionPrivate(config);
 }
 
 ApplicationSession::ApplicationSession(int& argc, char**& argv, const Config& defaultConfig)
-  : Application(::addParseOptions(argc), argv, defaultConfig.name())
+  : Application(addParseOptions(argc), argv, defaultConfig.name())
+  , _p(new ApplicationSessionPrivate(defaultConfig))
 {
-  Config config(defaultConfig);
-  envConfigInit(config);
-  _p = new ApplicationSessionPrivate(config);
 }
 
-ApplicationSession::~ApplicationSession()
-{
-  delete _p;
-  _p = 0;
-}
+ApplicationSession::~ApplicationSession() = default;
 
-SessionPtr ApplicationSession::session()
+SessionPtr ApplicationSession::session() const
 {
   return _p->_session;
 }
 
-Url ApplicationSession::url()
+const ApplicationSession::Config& ApplicationSession::config() const
 {
-  return _p->_url;
+  return _p->_config;
 }
 
-Url ApplicationSession::listenUrl()
+Url ApplicationSession::url() const
 {
-  return _p->_listenUrl;
+  const auto connectUrl = _p->_config.connectUrl();
+  // The configuration must hold a connect URL as it is guaranteed by `finalizeConfig`.
+  QI_ASSERT_TRUE(connectUrl.is_initialized());
+  return *_p->_config.connectUrl();
+}
+
+Url ApplicationSession::listenUrl() const
+{
+  const auto& confListenUrls = _p->_config.sessionConfig().listenUrls;
+  QI_ASSERT_FALSE(confListenUrls.empty());
+  return confListenUrls.at(0);
+}
+
+std::vector<Url> ApplicationSession::allListenUrl() const
+{
+  return _p->_config.sessionConfig().listenUrls;
 }
 
 void ApplicationSession::start()
@@ -279,12 +294,24 @@ void ApplicationSession::startSession()
   }
 
   // The connection is asynchronous, therefore a wait is expected here
-  _p->connect();
+  _p->start();
 }
 
 void ApplicationSession::run()
 {
-  startSession();
+  if(!_p->_session->isConnected())
+    startSession();
   Application::run();
 }
+
+bool ApplicationSession::standAlone()
+{
+  return _p->_config.standalone();
+}
+
+std::string ApplicationSession::helpText() const
+{
+  return Application::helpText();
+}
+
 }

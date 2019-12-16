@@ -40,37 +40,45 @@ public:
   /* We need a per-instance offset from effective type to Proxy.
    * Avoid code explosion by putting it per-instance
   */
-  typedef boost::function<Proxy*(void*)> ToProxy;
+  using ToProxy = boost::function<Proxy*(void*)>;
   TypeProxy(ToProxy  toProxy)
   : toProxy(toProxy)
   {
   }
-  virtual const MetaObject& metaObject(void* instance)
+  const MetaObject& metaObject(void* instance) override
   {
     Proxy* ptr = toProxy(instance);
     return ptr->asObject().metaObject();
   }
-  virtual qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature)
+
+  ObjectUid uid(void* instance) const override
+  {
+    QI_ASSERT_TRUE(instance);
+    Proxy* ptr = toProxy(instance);
+    return ptr->asObject().uid();
+  }
+
+  qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature) override
   {
     Proxy* ptr = toProxy(instance);
     return ptr->asObject().metaCall(method, params, callType, returnSignature);
   }
-  virtual void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params)
+  void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params) override
   {
     Proxy* ptr = toProxy(instance);
     ptr->asObject().metaPost(signal, params);
   }
-  virtual qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber)
+  qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber) override
   {
     Proxy* ptr = toProxy(instance);
     return ptr->asObject().connect(event, subscriber);
   }
-  virtual qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId)
+  qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId) override
   {
      Proxy* ptr = toProxy(instance);
      return ptr->asObject().disconnect(linkId);
   }
-  virtual const std::vector<std::pair<TypeInterface*, int> >& parentTypes()
+  const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& parentTypes() override
   {
     using ReturnType = typename std::decay<decltype(parentTypes())>::type;
     static ReturnType* parents = nullptr;
@@ -79,7 +87,7 @@ public:
         { qi::typeOf<InterfaceType>(), []{
             ProxyType* ptr = static_cast<ProxyType*>(reinterpret_cast<void*>(0x10000));
             InterfaceType* pptr = ptr;
-            intptr_t offset = reinterpret_cast<intptr_t>(pptr)-reinterpret_cast<intptr_t>(ptr);
+            std::ptrdiff_t offset = reinterpret_cast<intptr_t>(pptr)-reinterpret_cast<intptr_t>(ptr);
             return offset;
           }()
         }
@@ -90,23 +98,22 @@ public:
 
     return *parents;
   }
-  virtual qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id)
+  qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id) override
   {
     Proxy* ptr = toProxy(instance);
     GenericObject* obj = ptr->asObject().asGenericObject();
     return obj->type->property(obj->value, context, id);
   }
-  virtual qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue value)
+  qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue value) override
   {
     Proxy* ptr = toProxy(instance);
     GenericObject* obj = ptr->asObject().asGenericObject();
     return obj->type->setProperty(obj->value, context, id, value);
   }
-  typedef DefaultTypeImplMethods<Proxy> Methods;
+  using Methods = DefaultTypeImplMethods<Proxy>;
   _QI_BOUNCE_TYPE_METHODS(Methods);
   ToProxy toProxy;
 };
-
 
 namespace detail
 {
@@ -145,7 +152,7 @@ bool registerProxyInterface()
   qiLogVerbose("qitype.type") << "ProxyInterface registration " << typeOf<Interface>()->infoString();
   // Runtime-register TypeInterface for Proxy, using ProxyInterface with
   // proper static_cast (from Proxy template to qi::Proxy) helper.
-  registerType(typeid(Proxy), detail::makeProxyInterface<Interface, Proxy>());
+  registerType(qi::typeId<Proxy>(), detail::makeProxyInterface<Interface, Proxy>());
   detail::ProxyGeneratorMap& map = detail::proxyGeneratorMap();
   map[typeOf<Interface>()->info()] = boost::function<AnyReference(AnyObject)>(&detail::makeProxy<Proxy>);
   return true;
@@ -153,16 +160,16 @@ bool registerProxyInterface()
 
 }
 
-#define QI_REGISTER_PROXY(Proxy)                           \
-  namespace {                                              \
-    static bool BOOST_PP_CAT(_qi_register_proxy_, Proxy) = \
-        ::qi::registerProxy<Proxy>();                      \
+#define QI_REGISTER_PROXY(Proxy)                                          \
+  namespace {                                                             \
+    static bool BOOST_PP_CAT(_qi_register_proxy_, Proxy) QI_ATTR_UNUSED = \
+        ::qi::registerProxy<Proxy>();                                     \
   }
 
-#define QI_REGISTER_PROXY_INTERFACE(Proxy, Interface)      \
-  namespace {                                              \
-    static bool BOOST_PP_CAT(_qi_register_proxy_, Proxy) = \
-        ::qi::registerProxyInterface<Proxy, Interface>();  \
+#define QI_REGISTER_PROXY_INTERFACE(Proxy, Interface)                     \
+  namespace {                                                             \
+    static bool BOOST_PP_CAT(_qi_register_proxy_, Proxy) QI_ATTR_UNUSED = \
+        ::qi::registerProxyInterface<Proxy, Interface>();                 \
   }
 
 #endif

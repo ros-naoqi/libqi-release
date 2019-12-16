@@ -73,7 +73,7 @@ namespace qi
   }
 
   template<typename T>
-  inline boost::weak_ptr<T> Trackable<T>::weakPtr()
+  inline boost::weak_ptr<T> Trackable<T>::weakPtr() const
   {
     return boost::weak_ptr<T>(_ptr);
   }
@@ -83,7 +83,7 @@ namespace qi
     template <typename T>
     T defaultConstruct()
     {
-      return {};
+      return T{}; // Default constructor might be explicit, so we are forced to call it explicitly.
     }
 
     template <>
@@ -110,7 +110,8 @@ namespace qi
 
       template <typename... Args>
       // decltype(this->_f(std::forward<Args>(args)...)) does not work on vs2013 \o/
-      auto operator()(Args&&... args) const -> decltype(std::declval<F>()(std::forward<Args>(args)...))
+      auto operator()(Args&&... args)
+        -> decltype(std::declval<F>()(std::forward<Args>(args)...))
       {
         auto s = _wptr.lock();
         if (s)
@@ -146,11 +147,11 @@ namespace qi
       static const bool is_async = true;
       template <typename F>
       using wrap_type = decltype(
-          std::declval<T>()->strand()->schedulerFor(std::declval<typename std::decay<F>::type>()));
+          std::declval<T>()->strandedUnwrapped(std::declval<typename std::decay<F>::type>()));
       template <typename F>
       static wrap_type<F> wrap(const T& arg, F&& func, boost::function<void()> onFail)
       {
-        return arg->strand()->schedulerFor(std::forward<F>(func), std::move(onFail));
+        return arg->strandedUnwrapped(std::forward<F>(func), std::move(onFail));
       }
     };
 
@@ -174,26 +175,6 @@ namespace qi
                            std::false_type>::type
     {
     };
-
-    template <bool IsAsync, typename F, typename... Args>
-    struct DecayAsyncResultImpl;
-
-    template <typename F, typename... Args>
-    struct DecayAsyncResultImpl<false, F, Args...>
-    {
-      using type = decltype(std::declval<F>()(std::declval<Args>()...));
-    };
-
-    template <typename F, typename... Args>
-    struct DecayAsyncResultImpl<true, F, Args...>
-    {
-      // I'd like to use a decltype, but vs2013 fails to parse this
-      //using type = typename decltype(std::declval<F>()(std::declval<Args>()...))::TemplateValue;
-      using type = typename std::result_of<F(Args...)>::type::TemplateValue;
-    };
-
-    template <typename T, typename... Args>
-    using DecayAsyncResult = DecayAsyncResultImpl<IsAsyncBind<typename std::decay<T>::type>::value, T, Args...>;
 
     template <typename T, bool IsTrackable>
     struct BindTransformImpl
@@ -294,9 +275,9 @@ namespace qi
       }
     };
 
-    template <typename T, typename K = typename std::decay<T>::type>
+    template <typename T>
     using BindTransform =
-      BindTransformImpl<K, std::is_base_of<TrackableBase, typename std::remove_pointer<K>::type>::value>;
+      BindTransformImpl<typename std::decay<T>::type, std::is_base_of<TrackableBase, typename std::remove_pointer<typename std::decay<T>::type>::type>::value>;
 
     inline void throwPointerLockException()
     {
@@ -305,7 +286,8 @@ namespace qi
   }
 
   template <typename RF, typename AF, typename Arg0, typename... Args>
-  QI_API_DEPRECATED typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type
+  QI_API_DEPRECATED_MSG(Use 'bindWithFallback' without explicit template method signature)
+  typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type
   bindWithFallback(boost::function<void()> onFail, AF&& fun, Arg0&& arg0, Args&&... args)
   {
     using Transform = detail::BindTransform<Arg0>;
@@ -314,14 +296,16 @@ namespace qi
     return Transform::wrap(arg0, std::move(f), std::move(onFail));
   }
   template <typename RF, typename AF, typename Arg0, typename... Args>
-  QI_API_DEPRECATED typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type bindSilent(AF&& fun,
+  QI_API_DEPRECATED_MSG(Use 'bindSilent' without explicit template method signature)
+  typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type bindSilent(AF&& fun,
                                                                                              Arg0&& arg0,
                                                                                              Args&&... args)
   {
     return bindWithFallback<RF, AF>({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...);
   }
   template <typename RF, typename AF, typename Arg0, typename... Args>
-  QI_API_DEPRECATED typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type bind(AF&& fun,
+  QI_API_DEPRECATED_MSG(Use 'bind' without explicit template method signature)
+  typename std::enable_if<std::is_function<RF>::value, boost::function<RF>>::type bind(AF&& fun,
                                                                                        Arg0&& arg0,
                                                                                        Args&&... args)
   {
@@ -329,12 +313,23 @@ namespace qi
         std::forward<Args>(args)...);
   }
 
+  namespace detail
+  {
+    template<typename AF, typename Arg0, typename... Args>
+    struct WorkaroundVS2015 // TODO: Remove once we upgrade from VS2015
+    {
+      using type = decltype(boost::bind(
+        std::declval<AF>(),
+        detail::BindTransform<Arg0>::transform(std::declval<Arg0>()),
+        std::declval<Args>()...));
+    };
+  }
+
   template <typename AF, typename Arg0, typename... Args>
-  auto bindWithFallback(boost::function<void()> onFail, AF&& fun, Arg0&& arg0, Args&&... args) ->
-      typename detail::BindTransform<Arg0>::template wrap_type<
-          decltype(boost::bind(std::forward<AF>(fun),
-                               detail::BindTransform<Arg0>::transform(arg0),
-                               std::forward<Args>(args)...))>
+  auto bindWithFallback(boost::function<void()> onFail, AF&& fun, Arg0&& arg0, Args&&... args)
+    -> typename detail::BindTransform<Arg0>::template wrap_type<
+         typename detail::WorkaroundVS2015<AF, Arg0, Args...>::type
+       >
   {
     using Transform = detail::BindTransform<Arg0>;
     auto transformed = Transform::transform(arg0);
@@ -344,15 +339,16 @@ namespace qi
   }
   template <typename AF, typename Arg0, typename... Args>
   auto bindSilent(AF&& fun, Arg0&& arg0, Args&&... args)
-      -> decltype(bindWithFallback({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...))
+    -> decltype(bindWithFallback({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...))
   {
     return bindWithFallback({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...);
   }
   template <typename AF, typename Arg0, typename... Args>
-  auto bind(AF&& fun, Arg0&& arg0, Args&&... args) -> decltype(bindWithFallback(detail::throwPointerLockException,
-                                                                                std::forward<AF>(fun),
-                                                                                std::forward<Arg0>(arg0),
-                                                                                std::forward<Args>(args)...))
+  auto bind(AF&& fun, Arg0&& arg0, Args&&... args)
+    -> decltype(bindWithFallback(detail::throwPointerLockException,
+                                 std::forward<AF>(fun),
+                                 std::forward<Arg0>(arg0),
+                                 std::forward<Args>(args)...))
   {
     return bindWithFallback(detail::throwPointerLockException,
                             std::forward<AF>(fun),
@@ -360,14 +356,27 @@ namespace qi
                             std::forward<Args>(args)...);
   }
 
+  template <typename R, typename T, typename Instance, typename... Args0, typename... Args1>
+  auto bind(R(T::*fun)(Args0...), Instance&& instance, Args1&&... args1)
+    -> decltype(bindWithFallback(detail::throwPointerLockException,
+                                 fun,
+                                 std::forward<Instance>(instance),
+                                 std::forward<Args1>(args1)...))
+  {
+    return bindWithFallback(detail::throwPointerLockException,
+                            fun,
+                            std::forward<Instance>(instance),
+                            std::forward<Args1>(args1)...);
+  }
+
   // with support for R
   template <typename R, typename AF, typename Arg0, typename... Args>
-  auto bindWithFallback(boost::function<void()> onFail, AF&& fun, Arg0&& arg0, Args&&... args) ->
-      typename std::enable_if<!std::is_function<R>::value,
-                              typename detail::BindTransform<Arg0>::template wrap_type<
-                                  decltype(boost::bind<R>(std::forward<AF>(fun),
-                                                          detail::BindTransform<Arg0>::transform(arg0),
-                                                          std::forward<Args>(args)...))>>::type
+  auto bindWithFallback(boost::function<void()> onFail, AF&& fun, Arg0&& arg0, Args&&... args)
+    -> typename std::enable_if<!std::is_function<R>::value,
+                               typename detail::BindTransform<Arg0>::template wrap_type<
+                                 decltype(boost::bind<R>(std::forward<AF>(fun),
+                                                         detail::BindTransform<Arg0>::transform(arg0),
+                                                         std::forward<Args>(args)...))>>::type
   {
     using Transform = detail::BindTransform<Arg0>;
     auto transformed = Transform::transform(arg0);
@@ -376,20 +385,23 @@ namespace qi
                            std::move(onFail));
   }
   template <typename R, typename AF, typename Arg0, typename... Args>
-  auto bindSilent(AF&& fun, Arg0&& arg0, Args&&... args) -> typename std::enable_if<
-      !std::is_function<R>::value,
-      decltype(
-          bindWithFallback<R>({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...))>::type
+  auto bindSilent(AF&& fun, Arg0&& arg0, Args&&... args)
+    -> typename std::enable_if<!std::is_function<R>::value,
+                               decltype(bindWithFallback<R>({},
+                                                            std::forward<AF>(fun),
+                                                            std::forward<Arg0>(arg0),
+                                                            std::forward<Args>(args)...))>::type
   {
     return bindWithFallback<R>({}, std::forward<AF>(fun), std::forward<Arg0>(arg0), std::forward<Args>(args)...);
   }
+
   template <typename R, typename AF, typename Arg0, typename... Args>
-  auto bind(AF&& fun, Arg0&& arg0, Args&&... args) ->
-      typename std::enable_if<!std::is_function<R>::value,
-                              decltype(bindWithFallback<R>(detail::throwPointerLockException,
-                                                           std::forward<AF>(fun),
-                                                           std::forward<Arg0>(arg0),
-                                                           std::forward<Args>(args)...))>::type
+  auto bind(AF&& fun, Arg0&& arg0, Args&&... args)
+    -> typename std::enable_if<!std::is_function<R>::value,
+                               decltype(bindWithFallback<R>(detail::throwPointerLockException,
+                                                            std::forward<AF>(fun),
+                                                            std::forward<Arg0>(arg0),
+                                                            std::forward<Args>(args)...))>::type
   {
     return bindWithFallback<R>(detail::throwPointerLockException,
                                std::forward<AF>(fun),
@@ -397,39 +409,42 @@ namespace qi
                                std::forward<Args>(args)...);
   }
 
-  template <typename F, typename Arg0>
-  auto trackWithFallback(boost::function<void()> onFail, F&& f, Arg0&& arg0)
-      -> decltype(detail::BindTransform<Arg0>::wrap(std::forward<Arg0>(arg0), std::forward<F>(f), std::move(onFail)))
+  template <typename F, typename T>
+  auto trackWithFallback(boost::function<void()> onFail, F&& f, T&& toTrack)
+      -> decltype(detail::BindTransform<T>::wrap(std::forward<T>(toTrack), std::forward<F>(f), std::move(onFail)))
   {
-    return detail::BindTransform<Arg0>::wrap(std::forward<Arg0>(arg0), std::forward<F>(f), std::move(onFail));
-  }
-  template <typename F, typename Arg0>
-  auto track(F&& f, Arg0&& arg0)
-      -> decltype(trackWithFallback(detail::throwPointerLockException, std::forward<F>(f), std::forward<Arg0>(arg0)))
-  {
-    return trackWithFallback(detail::throwPointerLockException, std::forward<F>(f), std::forward<Arg0>(arg0));
-  }
-  template <typename F, typename Arg0>
-  auto trackSilent(F&& f, Arg0&& arg0) -> decltype(trackWithFallback({}, std::forward<F>(f), std::forward<Arg0>(arg0)))
-  {
-    return trackWithFallback({}, std::forward<F>(f), std::forward<Arg0>(arg0));
+    return detail::BindTransform<T>::wrap(std::forward<T>(toTrack), std::forward<F>(f), std::move(onFail));
   }
 
-  template<typename F, typename Arg0>
-  boost::function<F> trackWithFallback(boost::function<void()> onFail,
-      boost::function<F> f, const Arg0& arg0)
+  template <typename F, typename T>
+  auto track(F&& f, T&& toTrack)
+      -> decltype(trackWithFallback(detail::throwPointerLockException, std::forward<F>(f), std::forward<T>(toTrack)))
   {
-    return detail::BindTransform<Arg0>::wrap(arg0, std::move(f), std::move(onFail));
+    return trackWithFallback(detail::throwPointerLockException, std::forward<F>(f), std::forward<T>(toTrack));
   }
-  template<typename F, typename Arg0>
-  boost::function<F> trackSilent(boost::function<F> f, const Arg0& arg0)
+
+  template <typename F, typename T>
+  auto trackSilent(F&& f, T&& toTrack)
+      -> decltype(trackWithFallback({}, std::forward<F>(f), std::forward<T>(toTrack)))
   {
-    return trackWithFallback<F, Arg0>({}, std::move(f), arg0);
+    return trackWithFallback({}, std::forward<F>(f), std::forward<T>(toTrack));
   }
-  template<typename F, typename Arg0>
-  boost::function<F> track(boost::function<F> f, const Arg0& arg0)
+
+  template<typename F, typename T>
+  boost::function<F> trackWithFallback(
+      boost::function<void()> onFail, boost::function<F> f, const T& toTrack)
   {
-    return trackWithFallback<F, Arg0>(detail::throwPointerLockException, std::move(f), arg0);
+    return detail::BindTransform<T>::wrap(toTrack, std::move(f), std::move(onFail));
+  }
+  template<typename F, typename T>
+  boost::function<F> trackSilent(boost::function<F> f, const T& toTrack)
+  {
+    return trackWithFallback<F, T>({}, std::move(f), toTrack);
+  }
+  template<typename F, typename T>
+  boost::function<F> track(boost::function<F> f, const T& toTrack)
+  {
+    return trackWithFallback<F, T>(detail::throwPointerLockException, std::move(f), toTrack);
   }
 }
 

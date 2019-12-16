@@ -7,6 +7,7 @@
 #ifndef _QI_TYPE_DETAIL_OBJECT_HXX_
 #define _QI_TYPE_DETAIL_OBJECT_HXX_
 
+#include <functional>
 #include <boost/mpl/if.hpp>
 
 #include <qi/future.hpp>
@@ -17,32 +18,24 @@
 #include <qi/type/metasignal.hpp>
 #include <qi/type/metamethod.hpp>
 #include <qi/type/metaobject.hpp>
+#include <qi/objectuid.hpp>
 
 // Visual defines interface...
 #ifdef interface
 #undef interface
 #endif
 
+#include <type_traits>
+
 namespace qi {
+
+// This id is used to identify a null Object. It is useful for example in Objects serialization.
+static const unsigned int nullObjectId = 0;
 
 class Empty {};
 
-/** create a T, wrap in a AnyObject
- *  All template parameters are given to the T constructor except the first one
- */
-#define genCall(n, ATYPEDECL, ATYPES, ADECL, AUSE, comma) \
-template<typename T comma ATYPEDECL>                      \
-Object<T> constructObject(ADECL)                          \
-{                                                         \
-  return Object<T>(new T(AUSE));                          \
-}
-QI_GEN(genCall)
-#undef genCall
-
 namespace detail {
-
-  typedef std::map<TypeInfo, boost::function<AnyReference(AnyObject)> >
-    ProxyGeneratorMap;
+  using ProxyGeneratorMap = std::map<TypeInfo, boost::function<AnyReference(AnyObject)>>;
   QI_API ProxyGeneratorMap& proxyGeneratorMap();
 
   /* On ubuntu (and maybe other platforms), the linking is done by default with
@@ -185,6 +178,56 @@ namespace detail {
     }
   };
 
+  template <typename T>
+  struct InterfaceImplTraits
+  {
+    using Defined = std::false_type;
+  };
+}
+
+// these methods are used by advertiseFactory and arguments are specified explicitely, we can't used forwarding here
+template <typename T, typename... Args>
+typename boost::enable_if<typename detail::InterfaceImplTraits<T>::Defined, qi::Object<T> >::type constructObject(
+    Args... args)
+{
+  return boost::make_shared<typename detail::InterfaceImplTraits<T>::ImplType>(std::forward<Args>(args)...);
+}
+template <typename T, typename... Args>
+typename boost::disable_if<typename detail::InterfaceImplTraits<T>::Defined, qi::Object<T> >::type constructObject(
+    Args&&... args)
+{
+  return Object<T>(new T(std::forward<Args>(args)...));
+}
+
+// QI_REGISTER_IMPLEMENTATION_H associates an interface type to an
+// implementation type that might be unrelated (no inheritance or conversion).
+// However, not like QI_REGISTER_IMPLEMENTATION(note the absence of `_H`),
+// QI_REGISTER_IMPLEMENTATION_H also generates special proxy types wrapping
+// the real implementation object.
+// These wrappers are then used as implementation details by libqi
+// when an object of the implementation type is stored in a qi::Object.
+// The wrappers handle the thread-safety and the different kinds of API
+// (returning or not futures, for example) while not modifying the original type.
+#define QI_REGISTER_IMPLEMENTATION_H(interface, impl)\
+namespace qi\
+{\
+  namespace detail\
+  {\
+    template <>\
+    struct InterfaceImplTraits<interface>\
+    {\
+      using Defined = std::true_type;\
+      using InterfaceType = interface;\
+      using ImplType = impl;\
+      using AsyncType = interface##LocalAsync<boost::shared_ptr<ImplType>>;\
+      using SyncType = interface##LocalSync<boost::shared_ptr<ImplType>>;\
+    };\
+\
+    template<>\
+    struct InterfaceImplTraits<impl>:\
+      public InterfaceImplTraits<interface>\
+    {};\
+  }\
 }
 
 /** Type erased object that has a known interface T.
@@ -198,7 +241,7 @@ namespace detail {
  * \includename{qi/anyobject.hpp}
  */
 template<typename T> class Object :
-  public detail::GenericObjectBounce<Object<T> >
+  public detail::GenericObjectBounce<Object<T>>
 {
   // see qi::Future constructors below
   struct None {
@@ -216,7 +259,7 @@ public:
   // We use None to disable it. The method must be instantiable because when we
   // export the class under windows, all functions are instanciated
   // Future cast operator
-  typedef typename boost::mpl::if_<typename boost::is_same<T, Empty>::type, None, Object<Empty> >::type MaybeAnyObject;
+  using MaybeAnyObject = typename boost::mpl::if_<typename boost::is_same<T, Empty>::type, None, Object<Empty>>::type;
   Object(const qi::Future<MaybeAnyObject>& fobj);
   Object(const qi::FutureSync<MaybeAnyObject>& fobj);
 
@@ -236,11 +279,21 @@ public:
   /// Shares ref counter with other, which must handle the destruction of go.
   template<typename U> Object(GenericObject* go, boost::shared_ptr<U> other);
   template<typename U> Object(boost::shared_ptr<U> other);
-  bool operator <(const Object& b) const;
-  template<typename U> bool operator !=(const Object<U>& b) const;
-  template<typename U> bool operator ==(const Object<U>& b) const;
-  operator bool() const;
+  bool isValid() const;
+  explicit operator bool() const;
   operator Object<Empty>() const;
+
+  // Generates `>`, `<=`, `>=` in terms of `<`.
+  friend KA_GENERATE_REGULAR_OP_GREATER(Object)
+  friend KA_GENERATE_REGULAR_OP_LESS_OR_EQUAL(Object)
+  friend KA_GENERATE_REGULAR_OP_GREATER_OR_EQUAL(Object)
+
+  /// The unique identifier of the object qi::Object's instance is refering to.
+  /// Won't change if that instance travels through the network.
+  ObjectUid uid() const;
+
+  QI_API_DEPRECATED_MSG("Use qi::Object::uid() instead.")
+  PtrUid ptrUid() const { return uid(); }
 
   boost::shared_ptr<T> asSharedPtr();
 
@@ -252,19 +305,16 @@ public:
   void reset();
   unsigned use_count() const { return _obj.use_count();}
 
-  ObjectTypeInterface* interface();
+  static ObjectTypeInterface* interface();
   // Check or obtain T interface, or throw
   void checkT();
   // no-op deletor callback
-  static void keepManagedObjectPtr(detail::ManagedObjectPtr ptr) {}
-  template<typename U>
-  static void keepReference(GenericObject* obj, boost::shared_ptr<U> ptr) {qiLogDebug("qi.object") << "AnyObject ptr holder deleter"; delete obj;}
+  static void keepManagedObjectPtr(detail::ManagedObjectPtr) {}
   static void noDeleteT(T*) {qiLogDebug("qi.object") << "AnyObject noop T deleter";}
   static void noDelete(GenericObject*) {qiLogDebug("qi.object") << "AnyObject noop deleter";}
   // deletor callback that deletes only the GenericObject and not the content
   static void deleteGenericObjectOnly(GenericObject* obj) { qiLogDebug("qi.object") << "AnyObject GO deleter"; delete obj;}
-  template<typename U>
-  static void deleteGenericObjectOnlyAndKeep(GenericObject* obj, U) { qiLogDebug("qi.object") << "AnyObject GO-keep deleter";delete obj;}
+
   static void deleteCustomDeleter(GenericObject* obj, boost::function<void(T*)> deleter)
   {
     qiLogDebug("qi.object") << "custom deleter";
@@ -308,7 +358,7 @@ public:
   Object<T> lock() { return Object<T>(_ptr.lock());}
   boost::weak_ptr<GenericObject> _ptr;
 };
-typedef WeakObject<Empty> AnyWeakObject;
+using AnyWeakObject = WeakObject<Empty>;
 
 template<typename T> inline ObjectTypeInterface* Object<T>::interface()
 {
@@ -389,22 +439,84 @@ template<typename T> template<typename U> Object<T>::Object(GenericObject* go, b
 }
 namespace detail
 {
-  template<typename T, typename U> ManagedObjectPtr fromSharedPtr(Object<T>& dst, boost::shared_ptr<U>& other, boost::false_type)
+  // Low-level constructor from type, for factorization purpose only
+  template<typename T>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      ObjectTypeInterface* oit,
+      boost::shared_ptr<T> other,
+      const boost::optional<ObjectUid>& maybeUid = boost::none)
   {
-    ObjectTypeInterface* otype = dst.interface();
-    T* ptr = static_cast<T*>(other.get());
-    return ManagedObjectPtr(new GenericObject(otype, ptr),
-      boost::bind(&Object<T>::template keepReference<U>, _1, other));
+    return ManagedObjectPtr(
+            new GenericObject(oit, other.get(), maybeUid),
+            [other](GenericObject* object) mutable {
+              other.reset();
+              delete object;
+            });
   }
-  template<typename U> ManagedObjectPtr fromSharedPtr(AnyObject& dst, boost::shared_ptr<U>& other, boost::true_type)
+
+  // Constructing an AnyObject from a registered implementation.
+  template<typename From>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      Object<Empty>&,
+      boost::shared_ptr<From>& other,
+      std::true_type)
+  { // Bounce on a specialized object constructor
+    return qi::Object<typename qi::detail::InterfaceImplTraits<From>::InterfaceType>(other).managedObjectPtr();
+  }
+
+  // Constructing an AnyObject from an arbitrary type
+  template<typename From>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      Object<Empty>&,
+      boost::shared_ptr<From>& other,
+      std::false_type)
+  { // Bounce on a specialized object constructor
+    return qi::Object<From>(other).managedObjectPtr();
+  }
+
+  // Directly constructing object of the same type
+  template<typename ToSameAsFrom>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      Object<ToSameAsFrom>& dst,
+      boost::shared_ptr<ToSameAsFrom>& other,
+      std::false_type)
+  { // It may throw if type is not registered
+    return managedObjectFromSharedPtr(dst.interface(), other);
+  }
+
+  // Original pointer is not recognized as an implementation to construct a specialized object
+  template<typename To, typename From>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      Object<To>& dst,
+      boost::shared_ptr<From>& other,
+      std::false_type)
   {
-    return Object<U>(other).managedObjectPtr();
+    static_assert(
+          std::is_base_of<typename std::decay<To>::type, typename std::decay<From>::type>::value,
+          "Cannot construct object from instance, because it is not a direct base or an associated implementation");
+    auto asDestinationType = boost::static_pointer_cast<To>(other);
+    return managedObjectFromSharedPtr(dst.interface(), asDestinationType);
+  }
+
+  // Original pointer is recognized as an implementation to construct a specialized object
+  template<typename To, typename From>
+  ManagedObjectPtr managedObjectFromSharedPtr(
+      Object<To>&,
+      boost::shared_ptr<From>& other,
+      std::true_type)
+  {
+    using SyncProxyType = typename InterfaceImplTraits<From>::SyncType;
+    // We want the uid value to match the real impl object, not the proxy object we are using here.
+    const auto realImplUid = os::ptrUid(other.get());
+    auto localProxy = boost::make_shared<SyncProxyType>(other);
+    return managedObjectFromSharedPtr(qi::Object<To>::interface(), std::move(localProxy), realImplUid);
   }
 }
 
 template<typename T> template<typename U> Object<T>::Object(boost::shared_ptr<U> other)
-{ // bounce depending on T==Empty
-  _obj = detail::fromSharedPtr(*this, other, typename boost::is_same<T, Empty>::type());
+{
+  _obj = detail::managedObjectFromSharedPtr(
+        *this, other, typename qi::detail::InterfaceImplTraits<U>::Defined{});
 }
 
 template<typename T> inline Object<T>::Object(T* ptr)
@@ -450,16 +562,42 @@ template<typename T> inline void Object<T>::init(detail::ManagedObjectPtr obj)
   _obj = obj;
 }
 
-template<typename T> inline bool Object<T>::operator <(const Object& b) const { return _obj < b._obj;}
-template<typename T> template<typename U> bool Object<T>::operator !=(const Object<U>& b) const
+/// Compares identities, not values.
+///
+/// The uid identifies the pointer initially used to create the Object. Thus,
+/// if an object crosses the network boundaries, its (local) memory address will
+/// change but the uid will be the same.
+template<typename T, typename U>
+bool operator==(const Object<T>& a, const Object<U>& b)
 {
-  return !(*this ==b);
+  QI_ASSERT(a.asGenericObject() && b.asGenericObject());
+  return a.asGenericObject()->uid == b.asGenericObject()->uid;
 }
-template<typename T> template<typename U> bool Object<T>::operator ==(const Object<U>& b) const
+
+template<typename T, typename U>
+bool operator!=(const Object<T>& a, const Object<U>& b)
 {
-  return asGenericObject() == b.asGenericObject();
+  return !(a == b);
 }
-template<typename T> Object<T>::operator bool() const   { return _obj && _obj->type;}
+
+template<typename T>
+bool operator<(const Object<T>& a, const Object<T>& b)
+{
+  QI_ASSERT(a.asGenericObject() && b.asGenericObject());
+  return a.asGenericObject()->uid < b.asGenericObject()->uid;
+}
+
+template<typename T>
+bool Object<T>::isValid() const
+{
+  return _obj && _obj->type;
+}
+
+template<typename T>
+Object<T>::operator bool() const
+{
+  return isValid();
+}
 
 template<typename T> Object<T>::operator Object<Empty>() const { return Object<Empty>(_obj);}
 /// Check tha value actually has the T interface
@@ -483,11 +621,16 @@ template<typename T> void Object<T>::checkT()
       AnyReference ref = it->second(AnyObject(_obj));
       _obj = ref.to<detail::ManagedObjectPtr>();
       ref.destroy();
-      assert(isMatchingType());
+      QI_ASSERT(isMatchingType());
       return;
     }
     throw std::runtime_error(std::string() + "Object does not have interface " + typeOf<T>()->infoString());
   }
+}
+template<typename T> ObjectUid Object<T>::uid() const
+{
+  QI_ASSERT(_obj);
+  return _obj->uid;
 }
 template<typename T> T& Object<T>::asT() const
 {
@@ -531,8 +674,8 @@ namespace detail
  * Object<T> is handling this through the checkT() method.
  */
 template<typename T>
-class QI_API TypeImpl<Object<T> > :
-  public TypeImpl<boost::shared_ptr<GenericObject> >
+class QI_API TypeImpl<Object<T>> :
+  public TypeImpl<boost::shared_ptr<GenericObject>>
 {
 };
 
@@ -545,5 +688,19 @@ template class QI_API Object<Empty>;
 #endif
 
 }
+
+namespace std
+{
+  /// The hash of an object is the hash of its ObjectUid.
+  template<typename T>
+  struct hash<qi::Object<T>>
+  {
+    std::size_t operator()(const qi::Object<T>& o) const
+    {
+      QI_ASSERT(o.asGenericObject());
+      return hash<qi::ObjectUid>{}(o.asGenericObject()->uid);
+    }
+  };
+} // namespace std
 
 #endif  // _QITYPE_DETAIL_OBJECT_HXX_

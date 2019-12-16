@@ -8,24 +8,14 @@
 #include <boost/filesystem/fstream.hpp>
 #include <boost/filesystem.hpp>
 
+#include <qi/log.hpp>
 #include <qi/path.hpp>
+#include <qi/path_conf.hpp>
+
+qiLogCategory("qi.path");
 
 namespace qi {
   namespace path {
-    namespace detail {
-
-// recursive helper for parseQiPathConf();
-static void recParseQiPathConf(const std::string &pathConf, std::vector<std::string> &res,
-                              std::set<std::string>& filesSeen);
-
-std::vector<std::string> parseQiPathConf(const std::string &pathConf)
-{
-  std::vector<std::string> res;
-  std::set<std::string> filesSeen;
-  recParseQiPathConf(pathConf, res, filesSeen);
-  return res;
-}
-
 
 static void recParseQiPathConf(const std::string &prefix, std::vector<std::string>& res,
                               std::set<std::string>& filesSeen)
@@ -46,7 +36,13 @@ static void recParseQiPathConf(const std::string &prefix, std::vector<std::strin
       continue;
     }
     boost::filesystem::path bpath(path, qi::unicodeFacet());
-    if (!boost::filesystem::exists(bpath)) {
+    boost::system::error_code ec;
+    bool exists = boost::filesystem::exists(bpath, ec);
+    if (!exists) {
+      continue;
+    }
+    if (ec) {
+      qiLogError() << "Cannot access path '" << bpath << "': " << ec.message();
       continue;
     }
     std::string newPrefix = bpath.string(qi::unicodeFacet());
@@ -59,7 +55,14 @@ static void recParseQiPathConf(const std::string &prefix, std::vector<std::strin
   }
 }
 
-    } // detail
+std::vector<std::string> parseQiPathConf(const std::string &prefix)
+{
+  std::vector<std::string> res;
+  std::set<std::string> filesSeen;
+  recParseQiPathConf(prefix, res, filesSeen);
+  return res;
+}
+
   } // path
 } // qi
 

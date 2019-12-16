@@ -30,16 +30,14 @@ namespace qi
   class QI_API StringTypeInterfaceImpl: public StringTypeInterface
   {
   public:
-    typedef DefaultTypeImplMethods<std::string,
-            TypeByPointerPOD<std::string>
-              > Methods;
-    virtual ManagedRawString get(void* storage)
+    using Methods = DefaultTypeImplMethods<std::string, TypeByPointerPOD<std::string>>;
+    ManagedRawString get(void* storage) override
     {
       std::string* ptr = (std::string*)Methods::ptrFromStorage(&storage);
-      return ManagedRawString(RawString((char*)ptr->c_str(), ptr->size()),
+      return ManagedRawString(RawString(const_cast<char*>(ptr->c_str()), ptr->size()),
           Deleter());
     }
-    virtual void set(void** storage, const char* value, size_t sz)
+    void set(void** storage, const char* value, size_t sz) override
     {
       std::string* ptr = (std::string*)Methods::ptrFromStorage(storage);
       ptr->assign(value, sz);
@@ -55,24 +53,24 @@ namespace qi
   class QI_API TypeCStringImpl: public StringTypeInterface
   {
   public:
-    virtual ManagedRawString get(void* storage)
+    ManagedRawString get(void* storage) override
     {
       return ManagedRawString(RawString((char*)storage, strlen((char*)storage)),
           Deleter());
     }
-    virtual void set(void** storage, const char* ptr, size_t sz)
+    void set(void** storage, const char* ptr, size_t sz) override
     {
       *(char**)storage = qi::os::strdup(ptr);
     }
-    virtual void* clone(void* src)
+    void* clone(void* src) override
     {
       return qi::os::strdup((char*)src);
     }
-    virtual void destroy(void* src)
+    void destroy(void* src) override
     {
       free(src);
     }
-    typedef DefaultTypeImplMethods<char*, TypeByValue<char*> > Methods;
+    using Methods = DefaultTypeImplMethods<char*, TypeByValue<char*>>;
     _QI_BOUNCE_TYPE_METHODS_NOCLONE(Methods);
   };
 
@@ -84,30 +82,29 @@ namespace qi
   template<int I> class TypeImpl<char [I]>: public StringTypeInterface
   {
   public:
-    virtual void* clone(void* src)
+    void* clone(void* src) override
     {
       char* res = new char[I];
       memcpy(res, src, I);
       return res;
     }
-    virtual void destroy(void* ptr)
+    void destroy(void* ptr) override
     {
       delete[]  (char*)ptr;
     }
-    virtual ManagedRawString get(void* storage)
+    ManagedRawString get(void* storage) override
     {
       return ManagedRawString(RawString((char*)storage, I-1),
           Deleter());
     }
-    virtual void set(void** storage, const char* ptr, size_t sz)
+    void set(void** storage, const char* ptr, size_t sz) override
     {
       qiLogCategory("qitype.typestring");
       // haha...no
       qiLogWarning() << "set on C array not implemented";
     }
 
-    typedef  DefaultTypeImplMethods<char[I],
-      TypeByPointerPOD<char[I]> > Methods;
+    using Methods = DefaultTypeImplMethods<char[I], TypeByPointerPOD<char[I]>>;
       _QI_BOUNCE_TYPE_METHODS_NOCLONE(Methods);
   };
 
@@ -127,17 +124,18 @@ namespace qi
 
   inline StringTypeInterface::ManagedRawString makeManagedString(const std::string& s)
   {
-    return StringTypeInterface::ManagedRawString(StringTypeInterface::RawString((char*)s.c_str(), s.size()),
+    return StringTypeInterface::ManagedRawString(StringTypeInterface::RawString(const_cast<char*>(s.c_str()), s.size()),
                                                  StringTypeInterface::Deleter());
   }
 
   inline StringTypeInterface::ManagedRawString makeManagedString(std::string&& s)
   {
-    const auto size = s.size() + 1;
-    auto strKeptAlive = new char[size]();
-    std::copy(begin(s), end(s), strKeptAlive);
-    return StringTypeInterface::ManagedRawString(StringTypeInterface::RawString(strKeptAlive, size),
-                                                 [](const StringTypeInterface::RawString& rawStr){ delete[] rawStr.first; });
+    // Move the string parameter in a new allocated string. This way, we avoid string buffer copy.
+    const auto ms = new auto(std::move(s));
+
+    return StringTypeInterface::ManagedRawString(StringTypeInterface::RawString(const_cast<char*>(ms->c_str()), ms->size()),
+                                                 // Capture ms and delete it. No action is performed on RawString
+                                                 [=](const StringTypeInterface::RawString&){ delete ms; });
   }
 
   /** Declare a Type for T of Kind string.
@@ -151,15 +149,15 @@ namespace qi
   {
   public:
     TypeEquivalentString(F f): _getter(f) {}
-    typedef DefaultTypeImplMethods<T, TypeByPointerPOD<T> > Impl;
+    using Impl = DefaultTypeImplMethods<T, TypeByPointerPOD<T>>;
 
-    virtual void set(void** storage, const char* ptr, size_t sz)
+    void set(void** storage, const char* ptr, size_t sz) override
     {
       T* inst = (T*)ptrFromStorage(storage);
       *inst = T(std::string(ptr, sz));
     }
 
-    virtual ManagedRawString get(void* storage)
+    ManagedRawString get(void* storage) override
     {
       T* ptr = (T*)Impl::ptrFromStorage(&storage);
       return makeManagedString(callWithInstance(_getter, *ptr));
@@ -180,7 +178,7 @@ namespace qi
  * for setter, and function \p func for getter
  */
 #define QI_EQUIVALENT_STRING_REGISTER(type, func) \
-  static bool BOOST_PP_CAT(__qi_registration, __COUNTER__) \
-    = qi::registerType(typeid(type),  qi::makeTypeEquivalentString((type*)0, func))
+  static bool BOOST_PP_CAT(__qi_registration, __COUNTER__) QI_ATTR_UNUSED \
+    = qi::registerType(qi::typeId<type>(),  qi::makeTypeEquivalentString((type*)0, func))
 
 #endif  // _QITYPE_DETAIL_TYPESTRING_HXX_

@@ -8,10 +8,13 @@
 #define _QI_TYPE_TYPEOBJECT_HPP_
 
 #include <limits>
+#include <cstdint>
 
 #include <qi/type/metaobject.hpp>
 #include <qi/future.hpp>
 #include <qi/anyfunction.hpp>
+#include <qi/os.hpp>
+#include <qi/objectuid.hpp>
 
 namespace qi {
 
@@ -28,7 +31,7 @@ namespace qi {
   };
   class SignalSubscriber;
   class Manageable;
-  typedef qi::uint64_t SignalLink;
+  using SignalLink = qi::uint64_t;
 
   /* We will have 2 implementations for 2 classes of C++ class:
    * - DynamicObject: Use DynamicObjectBuilder
@@ -46,21 +49,21 @@ namespace qi {
   {
   public:
     virtual const MetaObject& metaObject(void* instance) = 0;
+    virtual ObjectUid uid(void* instance) const = 0;
     virtual qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType = MetaCallType_Auto, Signature returnSig = Signature())=0;
     virtual void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params)=0;
     virtual qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber)=0;
     /// Disconnect an event link. Returns if disconnection was successful.
     virtual qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId)=0;
-    /// @return parent types with associated poniter offset
-    virtual const std::vector<std::pair<TypeInterface*, int> >& parentTypes() = 0;
+    /// @return parent types with associated pointer offset
+    virtual const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& parentTypes() = 0;
     virtual qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id) = 0;
     virtual qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue value) = 0;
     virtual TypeKind kind() { return TypeKind_Object;}
-
-    static const int INHERITS_FAILED = INT_MIN;
+    static const auto INHERITS_FAILED = PTRDIFF_MAX;
 
     /// @return INHERITS_FAILED if there is no inheritance, or the pointer offset
-    int inherits(TypeInterface* other);
+    std::ptrdiff_t inherits(TypeInterface* other);
   };
 
 }

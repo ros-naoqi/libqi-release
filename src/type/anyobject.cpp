@@ -4,6 +4,7 @@
 */
 
 #include <qi/anyobject.hpp>
+#include <memory>
 
 #ifdef _MSC_VER
 #  pragma warning( push )
@@ -15,7 +16,7 @@ qiLogCategory("qitype.object");
 namespace qi
 {
 
-int ObjectTypeInterface::inherits(TypeInterface* other)
+std::ptrdiff_t ObjectTypeInterface::inherits(TypeInterface* other)
 {
   /* A registered class C can have to TypeInterface* around:
   * - TypeImpl<C*>
@@ -24,25 +25,26 @@ int ObjectTypeInterface::inherits(TypeInterface* other)
   */
   if (this == other)
     return 0;
-  const std::vector<std::pair<TypeInterface*, int> >& parents = parentTypes();
+  const auto& parents = parentTypes();
   qiLogDebug() << infoString() <<" has " << parents.size() <<" parents";
-  for (unsigned i=0; i<parents.size(); ++i)
+  for (const auto& parentTypePair : parents)
   {
-    if (parents[i].first->info() == other->info())
-      return parents[i].second;
-    ObjectTypeInterface* op = dynamic_cast<ObjectTypeInterface*>(parents[i].first);
+    const auto parentType = parentTypePair.first;
+    const auto parentTypeOffset = parentTypePair.second;
+    if (parentType->info() == other->info())
+      return parentTypeOffset;
+    ObjectTypeInterface* op = dynamic_cast<ObjectTypeInterface*>(parentType);
     if (op)
     {
-      int offset = op->inherits(other);
+      auto offset = op->inherits(other);
       if (offset != INHERITS_FAILED)
       {
-        qiLogDebug() << "Inheritance offsets " << parents[i].second
-         << " " << offset;
-        return parents[i].second + offset;
+        qiLogDebug() << "Inheritance offsets " << parentTypeOffset << " " << offset;
+        return parentTypeOffset + offset;
       }
     }
-    qiLogDebug() << parents[i].first->infoString() << " does not match " << other->infoString()
-    <<" " << ((op != 0) == (dynamic_cast<ObjectTypeInterface*>(other) != 0));
+    qiLogDebug() << parentType->infoString() << " does not match " << other->infoString()
+    <<" " << ((op != 0) == (dynamic_cast<ObjectTypeInterface*>(other) != nullptr));
   }
   return INHERITS_FAILED;
 }
@@ -119,6 +121,7 @@ inline void call(qi::Promise<AnyReference>& out,
         case TypeKind_Map:
         case TypeKind_Tuple:
         case TypeKind_Dynamic:
+        case TypeKind_Optional:
           args[i] = params[i+1];
           break;
         default:
@@ -191,9 +194,9 @@ class MFunctorCall
 {
 public:
   MFunctorCall(AnyFunction& func_, GenericFunctionParameters& params_,
-     qi::Promise<AnyReference>* out_, bool noCloneFirst_,
+     qi::Promise<AnyReference> out_, bool noCloneFirst_,
      AnyObject context_, unsigned int methodId_, unsigned int callerId_, qi::os::timeval postTimestamp_)
-    : out(out_)
+    : out(std::move(out_))
     , noCloneFirst(noCloneFirst_)
     , context(context_)
     , methodId(methodId_)
@@ -204,6 +207,7 @@ public:
     std::swap((AnyReferenceVector&) params_,
       (AnyReferenceVector&) this->params);
   }
+
   MFunctorCall(const MFunctorCall& b)
   {
     (*this) = b;
@@ -223,11 +227,10 @@ public:
   }
   void operator()()
   {
-    call(*out, context, params, methodId, func, callerId, postTimestamp);
+    call(out, context, params, methodId, func, callerId, postTimestamp);
     params.destroy(noCloneFirst);
-    delete out;
   }
-  qi::Promise<AnyReference>* out;
+  qi::Promise<AnyReference> out;
   GenericFunctionParameters params;
   AnyFunction func;
   bool noCloneFirst;
@@ -266,7 +269,7 @@ qi::Future<AnyReference> metaCall(ExecutionContext* el,
 
   if (sync)
   {
-    qi::Promise<AnyReference> out(&PromiseNoop<AnyReference>, FutureCallbackType_Sync);
+    qi::Promise<AnyReference> out(FutureCallbackType_Sync);
     call(out, context, params, methodId, func,
          callerId ? callerId : qi::os::gettid(), postTimestamp);
     return out.future();
@@ -275,12 +278,12 @@ qi::Future<AnyReference> metaCall(ExecutionContext* el,
   {
     // If call is handled by our thread pool, we can safely switch the promise
     // to synchronous mode.
-    qi::Promise<AnyReference>* out = new qi::Promise<AnyReference>(&PromiseNoop<AnyReference>);
+    qi::Promise<AnyReference> out;
     GenericFunctionParameters pCopy = params.copy(noCloneFirst);
-    qi::Future<AnyReference> result = out->future();
+    qi::Future<AnyReference> result = out.future();
     qi::os::timeval t(qi::SystemClock::now().time_since_epoch());
-    el->post(MFunctorCall(func, pCopy, out, noCloneFirst, context, methodId,
-                          callerId ? callerId : qi::os::gettid(), t));
+    el->post(MFunctorCall(func, pCopy, out, noCloneFirst, context,
+                           methodId, callerId ? callerId : qi::os::gettid(), t));
     return result;
   }
 }

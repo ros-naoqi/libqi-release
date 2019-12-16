@@ -10,11 +10,10 @@
 namespace qi {
 
   template<typename TypeDispatcher>
-  TypeDispatcher& typeDispatch(const TypeDispatcher &vv, AnyReference value)
+  TypeDispatcher& typeDispatch(TypeDispatcher &v, AnyReference value)
   {
     if (!value.type())
       throw std::runtime_error("NULL type");
-    TypeDispatcher& v = const_cast<TypeDispatcher&>(vv);
     switch(value.kind())
     {
       case TypeKind_Void:
@@ -109,6 +108,10 @@ namespace qi {
       case TypeKind_VarArgs:
         v.visitVarArgs(value.begin(), value.end());
         break;
+      case TypeKind_Optional:
+        v.visitOptional(value);
+        break;
+
       case TypeKind_Function:
       case TypeKind_Signal:
       case TypeKind_Property:

@@ -8,45 +8,70 @@
 #define _SRC_OBJECTHOST_HPP_
 
 #include <map>
-
-#include <boost/thread/mutex.hpp>
+#include <mutex>
+#include <memory>
 
 #include <qi/atomic.hpp>
-
 #include <qi/type/fwd.hpp>
 
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 
 
 namespace qi
 {
   class Message;
   class BoundObject;
-  class StreamContext;
-  typedef boost::shared_ptr<BoundObject> BoundAnyObject;
+  using BoundObjectPtr = boost::shared_ptr<BoundObject>;
 
+  namespace detail
+  {
+    namespace boundObject
+    {
+      class SocketBinding;
+    }
+  }
+
+  /// This class is responsible for handling the ownership of bound objects created in the context
+  /// of a socket.
   class ObjectHost
   {
   public:
     ObjectHost(unsigned int service);
-    ~ObjectHost();
-    void onMessage(const qi::Message &msg, TransportSocketPtr socket);
-    unsigned int addObject(BoundAnyObject obj, StreamContext* remoteReferencer, unsigned int objId = 0);
-    void removeObject(unsigned int);
-    void removeRemoteReferences(TransportSocketPtr socket);
-    unsigned int service() { return _service;}
+    virtual ~ObjectHost();
+
+    /// @throws A `std::logic_error` if an object with the same ID was already added on this host.
+    // TODO: Throw an domain specific error.
+    unsigned int addObject(BoundObjectPtr obj, MessageSocketPtr socket);
+
+    /// @returns True if the object with this id was removed, false otherwise.
+    /// @invariant `!(h.removeObject(id) && h.removeObject(id))`
+    bool removeObject(unsigned int id) noexcept;
+
+    /// @returns The number of objects removed.
+    /// @invariant `forall s, o: noexcept(h.removeObjectsFromSocket(s), h.addObject(o, s))`
+    std::size_t removeObjectsFromSocket(const MessageSocketPtr& socket) noexcept;
+
+    /// @invariant `ObjectHost(id).service() == id`
+    unsigned int service() const { return _service; }
+
     virtual unsigned int nextId() = 0;
-    typedef std::map<unsigned int, BoundAnyObject > ObjectMap;
-    const ObjectMap& objects() const { return _objectMap; }
-    qi::Signal<> onDestroy;
+
   protected:
-    void clear();
+    /// Removes all objects.
+    /// @post `removeObject(_) == false`
+    void clear() noexcept;
+
   private:
-    typedef std::map<StreamContext*, std::vector<unsigned int> > RemoteReferencesMap;
-    boost::recursive_mutex    _mutex;
-    unsigned int    _service;
-    ObjectMap       _objectMap;
-    RemoteReferencesMap _remoteReferences;
+    /// Sequentializes the destruction of objects to avoid trashing the eventloop with tons of
+    /// callbacks.
+    ///
+    /// Range<BoundObjectPtr> Range
+    template<typename Range>
+    static Future<void> sequentializeDeferDestruction(Range objects);
+
+    const unsigned int _service;
+    using ObjSocketBindingList = std::vector<detail::boundObject::SocketBinding>;
+    boost::synchronized_value<ObjSocketBindingList> _objSockBindings;
   };
 }
 

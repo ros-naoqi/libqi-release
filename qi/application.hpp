@@ -9,6 +9,7 @@
 # define _QI_APPLICATION_HPP_
 
 # include <functional>
+# include <boost/program_options.hpp>
 # include <vector>
 # include <string>
 # include <qi/api.hpp>
@@ -49,7 +50,8 @@ namespace qi {
      * \deprecated Use Application(int&, char**&, const std::string&, const
      * std::string&)
      */
-    QI_API_DEPRECATED Application(const std::string &name, int& argc, char** &argv);
+    QI_API_DEPRECATED_MSG(Use 'Application(int, char**, string, string)' instead)
+    Application(const std::string &name, int& argc, char** &argv);
     /**
      * \brief Application destructor. It executes atExit() callbacks.
      * \see qi:Application::atExit
@@ -57,13 +59,17 @@ namespace qi {
      */
     ~Application();
 
+    // non-copyable
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
+
     /**
      * \brief Wait until the end of the program.
      *
      * \verbatim
      * Wait until one of those conditions becomes true:
      * - stop() is called.
-     * - TERM or QUIT signal is received.
+     * - TERM or INT signal is received.
      * - the Application instance is destroyed, which means main() is exiting.
      *
      * Run can be called by multiple threads simultaneously.
@@ -184,13 +190,6 @@ namespace qi {
     static const char* _suggestedSdkPath();
 
     /**
-     * \brief Return the SDK path given through QI_ADDITIONAL_SDK_PREFIXES
-     *
-     * Used internally, you should not need this.
-     */
-    static const std::vector<std::string>& _suggestedSdkPaths();
-
-    /**
      * \brief Register a function to be executed at Application creation.
      * \param func Callback function at Application creation.
      * \return True if registering succeeded, false otherwise.
@@ -231,6 +230,17 @@ namespace qi {
      * except that it should return reasonably quickly.
      */
     static bool atSignal(std::function<void(int)> func, int signal);
+
+    /**
+     * \brief Get the registered global program options.
+     * \return The options_description of the currently added program options.
+     */
+    static boost::program_options::options_description& options();
+
+    /**
+     * \return Get the help text displayed when the `--help` option is used.
+     */
+    static std::string helpText();
   };
 }
 
@@ -239,7 +249,7 @@ namespace qi {
  * \param func The handler that must be called at enter.
  */
 #define QI_AT_ENTER(func)                                               \
-  static bool QI_UNIQ_DEF(_qi_atenter) = ::qi::Application::atEnter(func);
+  static bool QI_UNIQ_DEF(_qi_atenter) QI_ATTR_UNUSED = ::qi::Application::atEnter(func);
 
 /**
  * \def QI_AT_EXIT(func)
@@ -247,7 +257,7 @@ namespace qi {
  * \param func The handler that must be called at exit.
  */
 #define QI_AT_EXIT(func)                                                \
-  static bool QI_UNIQ_DEF(_qi_atexit) = ::qi::Application::atExit(func);
+  static bool QI_UNIQ_DEF(_qi_atexit) QI_ATTR_UNUSED = ::qi::Application::atExit(func);
 
 //THIS IS INTERNAL
 //API is not maintained for this function
@@ -263,33 +273,12 @@ namespace qi {
 #define _QI_COMMAND_LINE_OPTIONS(desc, opts)                            \
   static void QI_UNIQ_DEF(_qi_opt_func)() {                             \
     namespace po = boost::program_options;                              \
-    po::variables_map vm;                                               \
-    po::command_line_parser p(::qi::Application::arguments());          \
     po::options_description options(desc);                              \
     {                                                                   \
       using namespace boost::program_options;                           \
       options.add_options() opts;                                       \
     }                                                                   \
-    po::parsed_options res = p.options(options)                         \
-      .allow_unregistered()                                             \
-      .run();                                                           \
-    po::store(res, vm);                                                 \
-    /* Invoke notify callbacks*/                                        \
-    po::notify(vm);                                                     \
-    {                                                                   \
-      po::options_description descTmp;                                  \
-      descTmp.add_options()                                             \
-        ("help,h", "");                                                 \
-      po::variables_map vmTmp;                                          \
-      po::store(po::command_line_parser(qi::Application::arguments())   \
-                .options(descTmp).allow_unregistered().run(), vmTmp);   \
-      if (vmTmp.count("help"))                                          \
-        std::cout << options << std::endl;                              \
-    }                                                                   \
-    std::vector<std::string> args                                       \
-      = po::collect_unrecognized(res.options, po::include_positional);  \
-    /* Set arguments to what was not used */                            \
-    ::qi::Application::setArguments(args);                              \
+    ::qi::Application::options().add(options);                          \
   }                                                                     \
   QI_AT_ENTER(boost::bind(&(QI_UNIQ_DEF(_qi_opt_func))))
 

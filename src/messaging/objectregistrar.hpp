@@ -34,7 +34,8 @@ namespace qi {
   /** the Server 0 object
    * handle metaObject request, event connection/disconnection
    */
-  class ObjectRegistrar : private Server {
+  class ObjectRegistrar : private Server
+  {
 
   public:
     ObjectRegistrar(ServiceDirectoryClient *sdClient, bool enforceAuth = false);
@@ -54,13 +55,11 @@ namespace qi {
     qi::ServiceInfo               registeredService(const std::string &service);
     qi::AnyObject                 registeredServiceObject(const std::string &service);
 
-    // Add an existing running socket to the list
-    void registerSocket(TransportSocketPtr socket);
-
     using Server::setAuthProviderFactory;
     using Server::listen;
     using Server::setIdentity;
     using Server::endpoints;
+    using Server::addOutgoingSocket;
 
   private:
     //0 on error
@@ -68,12 +67,12 @@ namespace qi {
 
   private:
     //Future
-    void onFutureFinished(qi::Future<unsigned int> future, long id, qi::Promise<unsigned int> result);
+    void onFutureFinished(qi::Future<unsigned int> future, int id, qi::Promise<unsigned int> result);
 
   private:
-    typedef std::map<unsigned int, BoundService>                       BoundServiceMap;
-    typedef std::map<int, std::pair<qi::AnyObject, qi::ServiceInfo> >  RegisterServiceMap;
-    typedef std::map<std::string, unsigned int>                        ServiceNameToIndexMap;
+    using BoundServiceMap = std::map<unsigned int, BoundService>;
+    using RegisterServiceMap = std::map<int, std::pair<qi::AnyObject, qi::ServiceInfo>>;
+    using ServiceNameToIndexMap = std::map<std::string, unsigned int>;
 
   public:
     BoundServiceMap                     _services;
@@ -90,6 +89,9 @@ namespace qi {
 
     ServiceDirectoryClient             *_sdClient;
     const std::string                   _id;
+
+    struct Tracker : qi::Trackable<Tracker> { using Trackable::destroy; };
+    Tracker _tracker;
 
     friend class Session_SD;
   };

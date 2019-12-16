@@ -5,23 +5,25 @@
  ** Copyright (C) 2013 Aldebaran Robotics
  */
 
+#include <array>
+
 #include <gtest/gtest.h>
 
 #include <qi/applicationsession.hpp>
 #include <qi/future.hpp>
 
 static bool _stopped = false;
-static qi::Session _sd;
-static qi::ApplicationSession* _app;
-static char **_argv = nullptr;
-static int _argc = 5;
+static qi::Session* _sd = nullptr;
+static qi::ApplicationSession* _app = nullptr;
+static char** _argv = nullptr;
+static int _argc;
 static std::string _url;
 static qi::Promise<void> _sync;
 
 void onStop()
 {
   _stopped = true;
-  _sync.setValue(0);
+  _sync.setValue(nullptr);
 }
 
 TEST(QiApplicationSession, defaultConnect)
@@ -30,10 +32,10 @@ TEST(QiApplicationSession, defaultConnect)
   _app->startSession();
   ASSERT_TRUE(_app->session()->isConnected());
 
-  ASSERT_EQ(_url, _app->session()->url());
+  ASSERT_EQ(qi::Url(_url), _app->session()->url());
 
   ASSERT_FALSE(_stopped);
-  _sd.close();
+  _sd->close();
   _sync.future().wait();
   ASSERT_TRUE(_stopped);
 
@@ -51,31 +53,41 @@ TEST(QiApplicationSession, checkArgs)
   EXPECT_EQ(std::string("foo"), _argv[0]);
 }
 
-TEST(QiApplicationSession, defineConfig)
-{
-  qi::ApplicationSession::Config config;
-  config.setDefaultStandAlone(true);
-  config.setDefaultListenUrl("tcp://localhost:0");
-  config.setName("AppSessionTest");
-}
-
 int main(int argc, char** argv)
 {
   ::testing::InitGoogleTest(&argc, argv);
 
-  _sd.listenStandalone("tcp://127.0.0.1:0");
-  _url = _sd.endpoints()[0].str();
+  auto sd = qi::makeSession();
+  auto scopedSd = ka::scoped_set_and_restore(_sd, sd.get());
+  sd->listenStandalone("tcp://127.0.0.1:0");
+  _url = sd->endpoints()[0].str();
 
-  _argv = new char*[6];
-  strcpy((_argv[0] = new char[4]), "foo");
-  strcpy((_argv[1] = new char[10]), "--qi-url");
-  strcpy((_argv[2] = new char[100]), _url.c_str());
-  strcpy((_argv[3] = new char[20]), "--qi-listen-url");
-  strcpy((_argv[4] = new char[100]), "tcp://localhost:0");
-  _argv[5] = 0;
+  std::array<char*, 5> args {
+    const_cast<char*>("foo"),
+    const_cast<char*>("--qi-url"),
+    const_cast<char*>(_url.c_str()),
+    const_cast<char*>("--qi-listen-url"),
+    const_cast<char*>("tcp://localhost:0"),
+  };
+  _argc = static_cast<int>(args.size());
+  auto scopedArgv = ka::scoped_set_and_restore(_argv, args.data());
 
-  qi::ApplicationSession app(_argc, _argv, qi::ApplicationSession::Option_None, "This url will be ignored");
+  qi::log::addFilter("qi.application*", qi::LogLevel_Debug);
+
+  qi::ApplicationSession app(
+        _argc, _argv,
+        qi::ApplicationSession::Config()
+            .setOption(qi::ApplicationSession::Option_None)
+            .setConnectUrl("tcp://127.0.0.1:9559")
+            .setListenUrls({ "tcp://127.0.0.1:9559" }));
+  auto scopedApp = ka::scoped_set_and_restore(_app, &app);
   app.atStop(&onStop);
-  _app = &app;
-  return RUN_ALL_TESTS();
+
+  auto res = RUN_ALL_TESTS();
+
+  // We must explicitly close the standalone session before destroying the app, otherwise it might
+  // use resources that are owned by the app.
+  sd->close();
+
+  return res;
 }

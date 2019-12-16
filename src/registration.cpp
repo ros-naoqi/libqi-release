@@ -15,7 +15,8 @@
 namespace qi {
 
 #define INTEGRAL_TYPE(t) \
-static bool BOOST_PP_CAT(unused_ , __LINE__) = registerType(typeid(t), new IntTypeInterfaceImpl<t>());
+static bool BOOST_PP_CAT(unused_ , __LINE__) QI_ATTR_UNUSED \
+  = registerType(qi::typeId<t>(), new IntTypeInterfaceImpl<t>());
 
 /** Integral types.
  * Since long is neither int32 nor uint32 on 32 bit platforms,
@@ -43,7 +44,8 @@ QI_TYPE_REGISTER_CUSTOM(bool, qi::TypeBoolImpl<bool>);
 namespace qi {
 
 #define FLOAT_TYPE(t) \
-static bool BOOST_PP_CAT(unused_ , __LINE__) = registerType(typeid(t), new FloatTypeInterfaceImpl<t>());
+static bool BOOST_PP_CAT(unused_ , __LINE__) QI_ATTR_UNUSED \
+  = registerType(qi::typeId<t>(), new FloatTypeInterfaceImpl<t>());
 
 FLOAT_TYPE(float);
 FLOAT_TYPE(double);
@@ -56,24 +58,24 @@ template<typename T>
 class DurationTypeInterface: public qi::IntTypeInterface
 {
 public:
-  typedef qi::DefaultTypeImplMethods<T, qi::TypeByPointerPOD<T> > ImplType;
+  using ImplType = qi::DefaultTypeImplMethods<T, qi::TypeByPointerPOD<T>>;
 
-  virtual int64_t get(void* value)
+  int64_t get(void* value) override
   {
     return boost::chrono::duration_cast<qi::Duration>(*((T*)ImplType::Access::ptrFromStorage(&value))).count();
   }
 
-  virtual void set(void** storage, int64_t value)
+  void set(void** storage, int64_t value) override
   {
     (*(T*)ImplType::Access::ptrFromStorage(storage)) = boost::chrono::duration_cast<T>(qi::Duration(value));
   }
 
-  virtual unsigned int size()
+  unsigned int size() override
   {
     return sizeof(qi::int64_t);
   }
 
-  virtual bool isSigned()
+  bool isSigned() override
   {
     return false;
   }
@@ -85,25 +87,25 @@ template <typename T>
 class TimePointTypeInterface: public qi::IntTypeInterface
 {
 public:
-  typedef qi::DefaultTypeImplMethods<T, qi::TypeByPointerPOD<T> > ImplType;
-  virtual int64_t get(void* value)
+  using ImplType = qi::DefaultTypeImplMethods<T, qi::TypeByPointerPOD<T>>;
+  int64_t get(void* value) override
   {
     T* tp = (T*)ImplType::Access::ptrFromStorage(&value);
     return tp->time_since_epoch().count();
   }
 
-  virtual void set(void** storage, int64_t value)
+  void set(void** storage, int64_t value) override
   {
     T* tp = (T*)ImplType::Access::ptrFromStorage(storage);
     *tp = T(qi::Duration(value));
   }
 
-  virtual unsigned int size()
+  unsigned int size() override
   {
     return sizeof(qi::int64_t);
   }
 
-  virtual bool isSigned()
+  bool isSigned() override
   {
     return false;
   }
@@ -217,31 +219,99 @@ static qi::Future<std::vector<qi::ServiceInfo> > servicesBouncer(qi::Session& se
   return session.services();
 }
 
+namespace qi {
+static qi::AnyReference sessionSetClientAuthenticatorFactory(qi::AnyReferenceVector args)
+{
+  class DynamicClientAuth : public ClientAuthenticator
+  {
+  public:
+    DynamicClientAuth(qi::AnyObject obj)
+      : obj_(obj) {}
+
+    CapabilityMap initialAuthData() override
+    {
+      return obj_.call<CapabilityMap>("initialAuthData");
+    }
+
+    CapabilityMap _processAuth(const CapabilityMap& authData) override
+    {
+      return obj_.call<CapabilityMap>("_processAuth", authData);
+    }
+
+  private:
+    AnyObject obj_;
+  };
+
+  class DynamicClientAuthFactory : public ClientAuthenticatorFactory
+  {
+  public:
+    DynamicClientAuthFactory(qi::AnyObject obj)
+      : obj_(obj) {}
+
+    ClientAuthenticatorPtr newAuthenticator() override
+    {
+      auto authenticator = obj_.call<AnyObject>("newAuthenticator");
+      return boost::make_shared<DynamicClientAuth>(authenticator);
+    }
+
+  private:
+    AnyObject obj_;
+  };
+
+  if (args.size() < 2)
+    throw std::runtime_error("Not enough arguments");
+  qi::Session& session = args[0].as<qi::Session>();
+  auto factory = args[1].toObject();
+  if (!factory)
+  {
+    throw std::runtime_error("Invalid Factory");
+  }
+
+  auto sharedFactory = boost::make_shared<DynamicClientAuthFactory>(factory);
+  session.setClientAuthenticatorFactory(sharedFactory);
+  return qi::AnyReference(qi::typeOf<void>());
+}
+} // qi
+
 static bool _qiregisterSession() {
   ::qi::ObjectTypeBuilder<qi::Session> builder;
   builder.setThreadingModel(qi::ObjectThreadingModel_MultiThread);
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, connect, qi::FutureSync<void>, ());
   QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, connect, qi::FutureSync<void>, (const std::string&));
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, isConnected);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, url);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, services);
   builder.advertiseMethod("services", &servicesBouncer);
   QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, service, qi::FutureSync<qi::AnyObject>, (const std::string&, const std::string&));
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, service, qi::FutureSync<qi::AnyObject>, (const std::string&, const std::string&, qi::MilliSeconds));
   QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, service, qi::FutureSync<qi::AnyObject>, (const std::string&));
-  QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, listen);
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, service, qi::FutureSync<qi::AnyObject>, (const std::string&, qi::MilliSeconds));
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listen, qi::FutureSync<void>, ());
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listen, qi::FutureSync<void>, (const qi::Url&));
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listen, qi::FutureSync<void>, (const std::vector<qi::Url>&));
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, endpoints);
+  QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, setIdentity);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, close);
-  QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, listenStandalone);
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listenStandalone, qi::FutureSync<void>, ());
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listenStandalone, qi::FutureSync<void>, (const qi::Url &));
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, listenStandalone, qi::FutureSync<void>, (const std::vector<qi::Url> &));
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, registerService);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, unregisterService);
   // these two methods are variadic, make a dynamic bouncer
   builder.advertiseMethod("loadServiceRename", qi::AnyFunction::fromDynamicFunction(&sessionLoadService));
   builder.advertiseMethod("callModule", qi::AnyFunction::fromDynamicFunction(&sessionCallModule));
-  QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, waitForService);
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, waitForService, qi::FutureSync<void>, (const std::string&, qi::MilliSeconds));
+  QI_OBJECT_BUILDER_ADVERTISE_OVERLOAD(builder, qi::Session, waitForService, qi::FutureSync<void>, (const std::string&));
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, serviceRegistered);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, serviceUnregistered);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, connected);
   QI_OBJECT_BUILDER_ADVERTISE(builder, qi::Session, disconnected);
+
+  // We don't want to expose the hierarchy of ClientAuthenticator. So we create a function, setClientAuthenticatorFactory
+  // which takes an array of AnyReference, and internally convert them to ClientAuthenticator.
+  builder.advertiseMethod("setClientAuthenticatorFactory", qi::AnyFunction::fromDynamicFunction(&qi::sessionSetClientAuthenticatorFactory));
+
   builder.registerType();
   return true;
 }
-static bool __qi_registrationSession = _qiregisterSession();
+static bool _qi_registrationSession QI_ATTR_UNUSED = _qiregisterSession();

@@ -6,20 +6,18 @@
 #include <cstring>
 #include <cstdlib>
 #include <queue>
-#include <qi/log.hpp>
 #include <cerrno>
-
 #include <boost/asio.hpp>
-
 #include <boost/lexical_cast.hpp>
-
-#include "transportserver.hpp"
-#include "transportsocket.hpp"
-#include "tcptransportsocket.hpp"
-
+#include <ka/memory.hpp>
+#include <qi/log.hpp>
 #include <qi/eventloop.hpp>
-
+#include "transportserver.hpp"
+#include "messagesocket.hpp"
+#include "tcpmessagesocket.hpp"
 #include "transportserverasio_p.hpp"
+#include "sock/traits.hpp"
+#include "sock/sslcontextptr.hpp"
 
 qiLogCategory("qimessaging.transportserver");
 
@@ -30,11 +28,7 @@ namespace qi
 
   void _onAccept(TransportServerImplPtr p,
                  const boost::system::error_code& erc,
-#ifdef WITH_SSL
-                 boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* s
-#else
-                 boost::asio::ip::tcp::socket* s
-#endif
+                 sock::SocketWithContextPtr<sock::NetworkAsio> s
                  )
   {
     boost::shared_ptr<TransportServerAsioPrivate> ts = boost::dynamic_pointer_cast<TransportServerAsioPrivate>(p);
@@ -58,23 +52,20 @@ namespace qi
   }
 
   void TransportServerAsioPrivate::onAccept(const boost::system::error_code& erc,
-#ifdef WITH_SSL
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* s
-#else
-    boost::asio::ip::tcp::socket* s
-#endif
+    sock::SocketWithContextPtr<sock::NetworkAsio> s
     )
   {
     qiLogDebug() << this << " onAccept";
+    boost::mutex::scoped_lock lock(_acceptCloseMutex);
     if (!_live)
     {
-      delete s;
+      s.reset();
       return;
     }
     if (erc)
     {
       qiLogDebug() << "accept error " << erc.message();
-      delete s;
+      s.reset();
       self->acceptError(erc.value());
       if (isFatalAcceptError(erc.value()))
       {
@@ -89,27 +80,27 @@ namespace qi
     }
     else
     {
-        qi::TransportSocketPtr socket = qi::TcpTransportSocketPtr(new TcpTransportSocket(context, _ssl, s));
-        self->newConnection(socket);
+        auto socket = boost::make_shared<qi::TcpMessageSocket<>>(*asIoServicePtr(context), _ssl, s);
+        qiLogDebug() << "New socket accepted: " << socket.get();
+
+        self->newConnection(std::pair<MessageSocketPtr, Url>{
+          socket, sock::remoteEndpoint(*s, _ssl)});
 
         if (socket.unique()) {
             qiLogError() << "bug: socket not stored by the newConnection handler (usecount:" << socket.use_count() << ")";
         }
     }
-#ifdef WITH_SSL
-    _s = new boost::asio::ssl::stream<boost::asio::ip::tcp::socket>(_acceptor->get_io_service(), _sslContext);
-#else
-    _s = new boost::asio::ip::tcp::socket(_acceptor->get_io_service());
-#endif
+    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(_acceptor->get_io_service(), _sslContext);
     _acceptor->async_accept(_s->lowest_layer(),
                            boost::bind(_onAccept, shared_from_this(), _1, _s));
   }
 
   void TransportServerAsioPrivate::close() {
     qiLogDebug() << this << " close";
+    boost::mutex::scoped_lock l(_acceptCloseMutex);
     try
     {
-      _asyncEndpoints.cancel();
+      _asyncEndpoints->cancel();
     }
     catch (const std::runtime_error& e)
     {
@@ -127,7 +118,7 @@ namespace qi
    */
   void _updateEndpoints(TransportServerImplPtr p)
   {
-    boost::shared_ptr<TransportServerAsioPrivate> ts = boost::dynamic_pointer_cast<TransportServerAsioPrivate>(p);
+    boost::shared_ptr<TransportServerAsioPrivate> ts = boost::static_pointer_cast<TransportServerAsioPrivate>(p);
     ts->updateEndpoints();
   }
 
@@ -147,15 +138,22 @@ namespace qi
     qiLogDebug() << "Checking endpoints...";
     std::vector<qi::Url> currentEndpoints;
 
+    auto updateEP = [&]
+    {
+      return context->asyncDelay(boost::bind(_updateEndpoints, shared_from_this()),
+                                 qi::MicroSeconds(ifsMonitoringTimeout));
+    };
+
     std::map<std::string, std::vector<std::string> > ifsMap = qi::os::hostIPAddrs();
     if (ifsMap.empty())
     {
       const char* s = "Cannot get host addresses";
       qiLogWarning() << s;
+      *_asyncEndpoints = updateEP();
+      return;
     }
 
     std::string protocol = _ssl ? "tcps://" : "tcp://";
-
     {
       for (std::map<std::string, std::vector<std::string> >::iterator interfaceIt = ifsMap.begin();
            interfaceIt != ifsMap.end();
@@ -188,8 +186,7 @@ namespace qi
 
     }
 
-    _asyncEndpoints = context->asyncDelay(boost::bind(_updateEndpoints, shared_from_this()),
-        qi::MicroSeconds(ifsMonitoringTimeout));
+    *_asyncEndpoints = updateEP();
   }
 
   qi::Future<void> TransportServerAsioPrivate::listen(const qi::Url& url)
@@ -224,7 +221,7 @@ namespace qi
     ip::tcp::endpoint ep(boost::asio::ip::address::from_string(url.host()), url.port());
 #endif // #ifndef ANDROID
 
-    qiLogDebug() << "Will listen on " << ep.address().to_string() << ' ' << ep.port();
+    qiLogDebug() << "Will listen on " << ep;
     _acceptor->open(ep.protocol());
 #ifdef _WIN32
     boost::asio::socket_base::reuse_address option(false);
@@ -233,7 +230,17 @@ namespace qi
     fcntl(_acceptor->native(), F_SETFD, FD_CLOEXEC);
 #endif
     _acceptor->set_option(option);
-    _acceptor->bind(ep);
+    try
+    {
+      _acceptor->bind(ep);
+    }
+    catch (const boost::system::system_error& e)
+    {
+      std::stringstream ss;
+      ss << "failed to listen on " << ep << ": " << e.what();
+      throw std::runtime_error(ss.str());
+    }
+
     boost::system::error_code ec;
     _acceptor->listen(socket_base::max_connections, ec);
     if (ec)
@@ -266,11 +273,10 @@ namespace qi
            it != _endpoints.end();
            it++)
       {
-        qiLogInfo() << "TransportServer will listen on: " << it->str();
+        qiLogVerbose() << "TransportServer will listen on: " << it->str();
       }
     }
 
-#ifdef WITH_SSL
     if (_ssl)
     {
       if (self->_identityCertificate.empty() || self->_identityKey.empty())
@@ -280,17 +286,14 @@ namespace qi
         return qi::makeFutureError<void>(s);
       }
 
-      _sslContext.set_options(
+      _sslContext->set_options(
         boost::asio::ssl::context::default_workarounds
         | boost::asio::ssl::context::no_sslv2);
-      _sslContext.use_certificate_chain_file(self->_identityCertificate.c_str());
-      _sslContext.use_private_key_file(self->_identityKey.c_str(), boost::asio::ssl::context::pem);
+      _sslContext->use_certificate_chain_file(self->_identityCertificate.c_str());
+      _sslContext->use_private_key_file(self->_identityKey.c_str(), boost::asio::ssl::context::pem);
     }
 
-    _s = new boost::asio::ssl::stream<boost::asio::ip::tcp::socket>(_acceptor->get_io_service(), _sslContext);
-#else
-    _s = new boost::asio::ip::tcp::socket(_acceptor->get_io_service());
-#endif
+    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(_acceptor->get_io_service(), _sslContext);
     _acceptor->async_accept(_s->lowest_layer(),
       boost::bind(_onAccept, shared_from_this(), _1, _s));
     _connectionPromise.setValue(0);
@@ -322,15 +325,21 @@ namespace qi
                                                                  EventLoop* ctx)
     : TransportServerImpl(self, ctx)
     , _self(self)
-    , _acceptor(new boost::asio::ip::tcp::acceptor(*(boost::asio::io_service*)ctx->nativeHandle()))
+    , _acceptor(new boost::asio::ip::tcp::acceptor(*asIoServicePtr(ctx)))
     , _live(true)
-#ifdef WITH_SSL
-    , _sslContext(*(boost::asio::io_service*)ctx->nativeHandle(), boost::asio::ssl::context::sslv23)
-#endif
-    , _s(NULL)
+    , _sslContext(sock::makeSslContextPtr<sock::NetworkAsio>(*asIoServicePtr(ctx),
+                                                             sock::SslContext<sock::NetworkAsio>::sslv23))
+    , _s()
     , _ssl(false)
     , _port(0)
   {
+  }
+
+  boost::shared_ptr<TransportServerAsioPrivate> TransportServerAsioPrivate::make(
+      TransportServer* self,
+      EventLoop* ctx)
+  {
+    return boost::shared_ptr<TransportServerAsioPrivate>{new TransportServerAsioPrivate(self, ctx)};
   }
 
   TransportServerAsioPrivate::~TransportServerAsioPrivate()

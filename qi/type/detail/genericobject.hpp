@@ -9,6 +9,7 @@
 
 #include <map>
 #include <string>
+#include <sstream>
 
 #include <boost/smart_ptr/enable_shared_from_this.hpp>
 
@@ -18,6 +19,7 @@
 #include <qi/future.hpp>
 #include <qi/signal.hpp>
 #include <qi/type/typeobject.hpp>
+#include <qi/objectuid.hpp>
 
 #ifdef _MSC_VER
 #  pragma warning( push )
@@ -41,7 +43,7 @@ class QI_API GenericObject
   , public boost::enable_shared_from_this<GenericObject>
 {
 public:
-  GenericObject(ObjectTypeInterface *type, void *value);
+  GenericObject(ObjectTypeInterface *type, void *value, const boost::optional<ObjectUid>& maybeUid = boost::none);
   ~GenericObject();
   const MetaObject &metaObject();
 
@@ -52,20 +54,35 @@ public:
   template <typename R, typename... Args>
   qi::Future<R> async(const std::string& methodName, Args&&... args);
 
-  qi::Future<AnyReference> metaCall(unsigned int method, const GenericFunctionParameters& params, MetaCallType callType = MetaCallType_Auto, Signature returnSignature = Signature());
-
-  /** Find method named name callable with arguments parameters
+  /**
+   * Call a method dynamically, using an extensible list of arguments and
+   * specific call policies. Since the underlying call may be asynchronous,
+   * these functions always return a future, which would match the underlying
+   * future result. In other words, it is already unwrapped.
    */
-  int findMethod(const std::string& name, const GenericFunctionParameters& parameters);
-
-  /** Resolve the method Id and bounces to metaCall
+  //@{
+  /**
+   * Call a method by its name or signature to deduce the method ID.
    * @param nameWithOptionalSignature method name or method signature
-   * 'name::(args)' if signature is given, an exact match is required
-   * @param params arguments to the call
-   * @param callType type of the call
-   * @param returnSignature force the method to return a type
+   * 'name::(args)' if signature is given, an exact match is required.
+   * @param params arguments to pass to the call.
+   * @param callType type of the call.
+   * @param returnSignature forces the return type if set.
    */
   qi::Future<AnyReference> metaCall(const std::string &nameWithOptionalSignature, const GenericFunctionParameters& params, MetaCallType callType = MetaCallType_Auto, Signature returnSignature = Signature());
+
+  /**
+   * Call a method dynamically, by method ID.
+   * @param method method ID.
+   * @param params arguments to pass to the call.
+   * @param callType type of the call.
+   * @param returnSignature forces the return type if set.
+   */
+  qi::Future<AnyReference> metaCall(unsigned int method, const GenericFunctionParameters& params, MetaCallType callType = MetaCallType_Auto, Signature returnSignature = Signature());
+  //@}
+
+  /// Find method named name callable with arguments parameters
+  int findMethod(const std::string& name, const GenericFunctionParameters& parameters);
 
   void post(const std::string& eventName,
             qi::AutoAnyReference p1 = qi::AutoAnyReference(),
@@ -121,13 +138,28 @@ public:
   bool isValid() { return type && value;}
   ObjectTypeInterface*  type;
   void*        value;
+  ObjectUid uid; ///< Uid of "value".
+
+private:
+  /// Common meta call algorithm, without unwrapping the returned future.
+  Future<AnyReference> metaCallNoUnwrap(
+      unsigned int method,
+      const GenericFunctionParameters& params,
+      const MetaCallType callType,
+      const Signature& returnSignature);
+
+  /// Finds a method or throws a nicely formatted error message.
+  std::string makeFindMethodErrorMessage(
+      const std::string& nameWithOptionalSignature,
+      const GenericFunctionParameters& args,
+      const int errorNo);
 };
 
 namespace detail
 {
 
 // Storage type used by Object<T>, and Proxy.
-typedef boost::shared_ptr<class GenericObject> ManagedObjectPtr;
+using ManagedObjectPtr = boost::shared_ptr<GenericObject>;
 
 }
 
@@ -170,17 +202,20 @@ R GenericObject::call(const std::string& methodName, Args&&... args)
   return detail::extractFuture<R>(fmeta);
 }
 
+/// Calls a method of the generic object asynchronously.
+/// @return a future tracking the result of the underlying method call.
+/// If the underlying call returned a future, the future is unwrapped.
 template <typename R, typename... Args>
 qi::Future<R> GenericObject::async(const std::string& methodName, Args&&... args)
 {
-  static_assert(!detail::isFuture<R>::value, "return type of async must not be a Future");
-  if (!value || !type)
-    return makeFutureError<R>("Invalid GenericObject");
-  std::vector<qi::AnyReference> params = {qi::AnyReference::from(args)...};
-  qi::Promise<R> res(&qi::PromiseNoop<R>);
-  qi::Future<AnyReference> fmeta = metaCall(methodName, params, MetaCallType_Queued, typeOf<R>()->signature());
-  qi::adaptFutureUnwrap(fmeta, res);
-  return res.future();
+  std::vector<qi::AnyReference> anyArgs = {qi::AnyReference::from(args)...};
+  int methodId = findMethod(methodName, anyArgs);
+  if (methodId < 0) // in that case, the method ID is an error number
+    return makeFutureError<R>(makeFindMethodErrorMessage(methodName, anyArgs, methodId));
+  auto futureMeta = metaCallNoUnwrap(methodId, anyArgs, MetaCallType_Queued, typeOf<R>()->signature());
+  qi::Promise<R> result;
+  qi::adaptFutureUnwrap(futureMeta, result);
+  return result.future();
 }
 
 template<typename T>
@@ -188,7 +223,11 @@ qi::FutureSync<T> GenericObject::property(const std::string& name)
 {
   int pid = metaObject().propertyId(name);
   if (pid < 0)
-    return makeFutureError<T>("Property not found");
+  {
+    std::ostringstream ss;
+    ss << "property \"" << name << "\" was not found";
+    return makeFutureError<T>(ss.str());
+  }
   qi::Future<AnyValue> f = property(pid);
   qi::Promise<T> p;
   f.connect(boost::bind(&detail::futureAdapterVal<T>,_1, p),
@@ -201,7 +240,11 @@ qi::FutureSync<void> GenericObject::setProperty(const std::string& name, const T
 {
   int pid = metaObject().propertyId(name);
   if (pid < 0)
-    return makeFutureError<void>("Property not found");
+  {
+    std::ostringstream ss;
+    ss << "property \"" << name << "\" was not found";
+    return makeFutureError<void>(ss.str());
+  }
   return setProperty(pid, AnyValue::from(val));
 }
 
@@ -210,11 +253,11 @@ qi::FutureSync<void> GenericObject::setProperty(const std::string& name, const T
  * Override backend shared_ptr<GenericObject>
 */
 template<>
-class QI_API TypeImpl<boost::shared_ptr<GenericObject> > :
+class QI_API TypeImpl<boost::shared_ptr<GenericObject>> :
   public DynamicTypeInterface
 {
 public:
-  virtual AnyReference get(void* storage)
+  AnyReference get(void* storage) override
   {
     detail::ManagedObjectPtr* val = (detail::ManagedObjectPtr*)ptrFromStorage(&storage);
     AnyReference result;
@@ -225,10 +268,14 @@ public:
     return AnyReference((*val)->type, (*val)->value);
   }
 
-  virtual void set(void** storage, AnyReference source)
+  void set(void** storage, AnyReference source) override
   {
     qiLogCategory("qitype.object");
     detail::ManagedObjectPtr* val = (detail::ManagedObjectPtr*)ptrFromStorage(storage);
+
+    if (!source.type())
+      throw std::runtime_error("cannot set object from an invalid value");
+
     if (source.type()->info() == info())
     { // source is objectptr
       detail::ManagedObjectPtr* src = source.ptr<detail::ManagedObjectPtr>(false);
@@ -238,6 +285,9 @@ public:
     }
     else if (source.kind() == TypeKind_Dynamic)
     { // try to dereference dynamic type in case it contains an object
+      auto content = source.content();
+      if (!content.isValid())
+        throw std::runtime_error("cannot set object from an invalid dynamic value");
       set(storage, source.content());
     }
     else if (source.kind() == TypeKind_Object)
@@ -251,14 +301,18 @@ public:
       PointerTypeInterface* ptype = static_cast<PointerTypeInterface*>(source.type());
       // FIXME: find a way!
       if (ptype->pointerKind() == PointerTypeInterface::Shared)
-        qiLogInfo() << "Object will *not* track original shared pointer";
+        qiLogVerbose() << "Object will *not* track original shared pointer";
       set(storage, *source);
+    }
+    else if (source.kind() == TypeKind_Optional)
+    {
+      set(storage, source.content());
     }
     else
       throw std::runtime_error((std::string)"Cannot assign non-object " + source.type()->infoString() + " to Object");
   }
 
-  typedef DefaultTypeImplMethods<detail::ManagedObjectPtr, TypeByPointerPOD<detail::ManagedObjectPtr> > Methods;
+  using Methods = DefaultTypeImplMethods<detail::ManagedObjectPtr, TypeByPointerPOD<detail::ManagedObjectPtr>>;
   _QI_BOUNCE_TYPE_METHODS(Methods);
 };
 

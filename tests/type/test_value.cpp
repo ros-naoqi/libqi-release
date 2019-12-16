@@ -5,13 +5,20 @@
 
 
 #include <map>
+#include <functional>
+#include <tuple>
 #include <gtest/gtest.h>
+#include <boost/optional.hpp>
+#include <boost/filesystem.hpp>
 #include <boost/lambda/lambda.hpp>
 #include <boost/lambda/bind.hpp>
+#include <ka/functional.hpp>
+#include <ka/testutils.hpp>
 #include <qi/application.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
 #include <qi/jsoncodec.hpp>
+#include <qi/path.hpp>
 
 using namespace qi;
 qiLogCategory("test");
@@ -112,7 +119,22 @@ TEST(Value, As)
   ASSERT_ANY_THROW(v.asInt16());
 }
 
-TEST(Value, Basic)
+TEST(Value, InvalidValue)
+{
+  AnyValue v;
+  EXPECT_FALSE(v.isValid());
+  EXPECT_EQ(AnyValue{}, v);
+}
+
+TEST(Value, InvalidReference)
+{
+  AnyValue v;
+  auto r = v.asReference();
+  EXPECT_FALSE(r.isValid());
+  EXPECT_EQ(AnyReference{}, r);
+}
+
+TEST(Value, Int)
 {
   AnyReference v;
   int twelve = 12;
@@ -122,13 +144,163 @@ TEST(Value, Basic)
   ASSERT_EQ(v.toInt(), 12);
   ASSERT_EQ(v.toFloat(), 12.0f);
   ASSERT_EQ(v.toDouble(), 12.0);
+}
+
+TEST(Value, Float)
+{
+  AnyReference v;
   double five = 5.0;
   v = AutoAnyReference(five);
   ASSERT_EQ(v.toInt(), 5);
   ASSERT_EQ(v.toFloat(), 5.0f);
   ASSERT_EQ(v.toDouble(), 5.0);
-  v = AutoAnyReference("foo");
-  ASSERT_EQ("foo", v.toString());
+}
+
+TEST(Value, String)
+{
+  AnyReference v;
+  auto foo = "foo";
+  v = AutoAnyReference(foo);
+  ASSERT_EQ(foo, v.toString());
+}
+
+TEST(Value, SizeThrowsOnIncorrectUsage)
+{
+  EXPECT_ANY_THROW(AnyValue{}.size());
+  EXPECT_ANY_THROW(AnyValue{}.asReference().size());
+  EXPECT_ANY_THROW(AnyReference(AutoAnyReference(12)).size());
+  EXPECT_ANY_THROW(AnyReference(AutoAnyReference(5.0)).size());
+  EXPECT_ANY_THROW(AnyReference(AutoAnyReference("foo")).size());
+}
+
+namespace {
+  using InstrumentedReg = ka::instrumented_regular_t<
+    int,
+    std::function<void (ka::regular_op_t)>
+  >;
+} // namespace
+
+QI_TYPE_STRUCT_REGISTER(InstrumentedReg, value);
+
+TEST(ValueCounts, CopyCopiesUnderlyingValue)
+{
+  using std::get;
+  ka::regular_counters_t counters{};
+  InstrumentedReg original;
+  init_with_counters(&original, 5, &counters);
+
+  AnyValue v0 = AnyValue::from(original);
+  ASSERT_EQ(original, v0.as<InstrumentedReg>());
+
+  // Check that a copy causes the copy count to be incremented by 1.
+  ka::reset(counters);
+  AnyValue v1{v0};
+  EXPECT_EQ(1, counters[ka::regular_op_copy]);
+  EXPECT_EQ(0, counters[ka::regular_op_move]);
+  EXPECT_EQ(0, counters[ka::regular_op_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_move_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_destroy]);
+  EXPECT_EQ(original, v0.as<InstrumentedReg>());
+  EXPECT_EQ(original, v1.as<InstrumentedReg>());
+}
+
+TEST(ValueCounts, AssignCopiesUnderlyingValue)
+{
+  using std::get;
+  ka::regular_counters_t counters{};
+  InstrumentedReg original;
+  init_with_counters(&original, 6, &counters);
+
+  AnyValue v0 = AnyValue::from(original);
+  ASSERT_EQ(original, v0.as<InstrumentedReg>());
+
+  // Check that an assignment causes the copy count to be incremented by 1
+  // (it seems it would make more sense to call the assignment operator of the
+  // contained value, but this is the current behavior).
+  ka::reset(counters);
+  AnyValue v1;
+  v1 = v0;
+  EXPECT_EQ(1, counters[ka::regular_op_copy]);
+  EXPECT_EQ(0, counters[ka::regular_op_move]);
+  EXPECT_EQ(0, counters[ka::regular_op_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_move_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_destroy]);
+  EXPECT_EQ(original, v0.as<InstrumentedReg>());
+  EXPECT_EQ(original, v1.as<InstrumentedReg>());
+}
+
+TEST(ValueCounts, MoveDoesNotAffectUnderlyingValue)
+{
+  using std::get;
+  ka::regular_counters_t counters{};
+  InstrumentedReg original;
+  init_with_counters(&original, 7, &counters);
+
+  AnyValue v0 = AnyValue::from(original);
+  ASSERT_EQ(original, v0.as<InstrumentedReg>());
+
+  auto* type0 = v0.type();
+  auto* raw0 = v0.rawValue();
+
+  // Check that a move does not perform any regular operation on the contained
+  // value. This is because, internally, `AnyValue` copies pointers only.
+  ka::reset(counters);
+  AnyValue v1{std::move(v0)};
+  EXPECT_EQ(0, counters[ka::regular_op_copy]);
+  EXPECT_EQ(0, counters[ka::regular_op_move]);
+  EXPECT_EQ(0, counters[ka::regular_op_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_move_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_destroy]);
+  EXPECT_EQ(original, v1.as<InstrumentedReg>());
+
+  // The new instance has the right value.
+  ASSERT_EQ(original, v1.as<InstrumentedReg>());
+
+  // It has the original instance resources.
+  ASSERT_EQ(type0, v1.type());
+  ASSERT_EQ(raw0, v1.rawValue());
+
+  // And the original instance resources have been nullified.
+  ASSERT_EQ(nullptr, v0.type());
+  ASSERT_EQ(nullptr, v0.rawValue());
+}
+
+TEST(ValueCounts, MoveAssignDoesNotAffectUnderlyingValue)
+{
+  using std::get;
+  ka::regular_counters_t counters{};
+  InstrumentedReg original;
+  init_with_counters(&original, 8, &counters);
+
+  AnyValue v0 = AnyValue::from(original);
+  ASSERT_EQ(original, v0.as<InstrumentedReg>());
+
+  auto* type0 = v0.type();
+  auto* raw0 = v0.rawValue();
+
+  // Check that a move assignment does not perform any regular operation on the
+  // contained value. This is because, internally, `AnyValue` copies pointers
+  // only.
+  ka::reset(counters);
+  AnyValue v1;
+  v1 = std::move(v0);
+  EXPECT_EQ(0, counters[ka::regular_op_copy]);
+  EXPECT_EQ(0, counters[ka::regular_op_move]);
+  EXPECT_EQ(0, counters[ka::regular_op_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_move_assign]);
+  EXPECT_EQ(0, counters[ka::regular_op_destroy]);
+  EXPECT_EQ(original, v1.as<InstrumentedReg>());
+
+  // The new instance has the right value.
+  ASSERT_EQ(original, v1.as<InstrumentedReg>());
+
+  // It has the original instance resources.
+  ASSERT_EQ(type0, v1.type());
+  ASSERT_EQ(raw0, v1.rawValue());
+
+  // And the original instance resources have been nullified.
+  ASSERT_EQ(nullptr, v0.type());
+  ASSERT_EQ(nullptr, v0.rawValue());
 }
 
 TEST(Value, Map)
@@ -182,6 +354,44 @@ TEST(Value, Map)
   ASSERT_ANY_THROW(v.append("foo"));
 }
 
+TEST(Value, Map_at)
+{
+  std::map<std::string, double> map;
+  map["foo"] = 1;
+  map["bar"] = 2;
+  AutoAnyReference v(map);
+  const AutoAnyReference vc(map);
+
+  // at(T)
+  {
+    AnyReference val1 = v.at("foo");
+    EXPECT_EQ(1, val1.toInt());
+    AnyReference valInvalid = v.at("nokey");
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+  // at(T) const
+  {
+    const AnyReference val1 = vc.at("bar");
+    EXPECT_EQ(2, val1.toInt());
+    const AnyReference valInvalid = vc.at("nokey");
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+  // at(AnyReference)
+  {
+    AnyReference val1 = v.at(AnyReference::from("foo"));
+    EXPECT_EQ(1, val1.toInt());
+    AnyReference valInvalid = v.at(AnyReference::from("nokey"));
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+  // at(AnyReference) const
+  {
+    const AnyReference val1 = vc.at(AnyReference::from("bar"));
+    EXPECT_EQ(2, val1.toInt());
+    const AnyReference valInvalid = vc.at(AnyReference::from("nokey"));
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+}
+
 static bool triggered = false;
 static void nothing(GenericObject*) {triggered = true;}
 
@@ -232,6 +442,28 @@ TEST(Value, list)
   EXPECT_EQ(v.as<std::vector<int> >().size(), v.size());
 }
 
+TEST(Value, list_at)
+{
+  std::vector<int> v{2, 5, 7};
+  AnyReference list = AnyReference::from(v);
+  const AnyReference listc = AnyReference::from(v);
+
+  // at(T)
+  {
+    AnyReference val = list.at(1);
+    EXPECT_EQ(5, val.toInt());
+    AnyReference valInvalid = list.at(4);
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+  // at(T) const
+  {
+    const AnyReference val = listc.at(1);
+    EXPECT_EQ(5, val.toInt());
+    const AnyReference valInvalid = listc.at(4);
+    EXPECT_EQ(nullptr, valInvalid.type());
+  }
+}
+
 TEST(Value, set)
 {
   std::vector<int> v, v2;
@@ -258,14 +490,14 @@ struct TStruct
   std::string s;
   bool operator ==(const TStruct& b) const { return d == b.d && s == b.s;}
 };
-struct Point
+struct Point2D
 {
   int x,y;
-  bool operator ==(const Point& b) const { return x==b.x && y == b.y;}
+  bool operator ==(const Point2D& b) const { return x==b.x && y == b.y;}
 };
 
 QI_TYPE_STRUCT(TStruct, d, s);
-QI_TYPE_STRUCT(Point, x, y);
+QI_TYPE_STRUCT(Point2D, x, y);
 
 TEST(Value, Tuple)
 {
@@ -289,16 +521,30 @@ TEST(Value, Tuple)
   gv = AnyReference::from(vd);
   gv.append(2);
   gtuple = gv.toTuple(true);
-  Point p;
+  Point2D p;
   p.x = 1;
   p.y = 2;
   ASSERT_TRUE(p == p);
-  ASSERT_EQ(p , gtuple.to<Point>());
+  ASSERT_EQ(p , gtuple.to<Point2D>());
   p.x = 3;
   gtuple[0].setDouble(gtuple[0].toDouble() + 2);
-  ASSERT_EQ(p, gtuple.to<Point>());
+  ASSERT_EQ(p, gtuple.to<Point2D>());
 }
 
+TEST(Value, StructFromAndToMap)
+{
+  std::map<std::string, int> asMap;
+  asMap["x"] = 1;
+  asMap["y"] = 2;
+  auto value = AnyValue::from(asMap);
+
+  Point2D expectedStruct;
+  expectedStruct.x = 1;
+  expectedStruct.y = 2;
+
+  auto asStruct = value.to<Point2D>();
+  EXPECT_EQ(expectedStruct, asStruct);
+}
 
 struct Point2
 {
@@ -512,37 +758,36 @@ TEST(Value, Convert_ListToTuple)
   qi::AnyValue gv1 = qi::decodeJSON("[42, \"plop\", 1.42, [\"a\", \"b\"]]");
   qi::AnyValue gv2 = qi::decodeJSON("[42, \"plop\", 1.42, [\"a\", 42]]");
 
-  std::pair<qi::AnyReference, bool> res1 = gv1.convert(type);
-  std::pair<qi::AnyReference, bool> res2 = gv2.convert(type);
+  auto res1 = gv1.convert(type);
+  auto res2 = gv2.convert(type);
 
-  ASSERT_FALSE(res2.first.type());
-  ASSERT_TRUE(res1.first.type() != 0);
-  ASSERT_EQ(res1.first.type()->info(), type->info());
-  ASSERT_EQ(gv1.size(), res1.first.size());
-  ASSERT_STREQ("b", res1.first[3][1].asString().c_str());
+  ASSERT_FALSE(res2->type());
+  ASSERT_TRUE(res1->type() != 0);
+  ASSERT_EQ(res1->type()->info(), type->info());
+  ASSERT_EQ(gv1.size(), res1->size());
+  ASSERT_STREQ("b", (*res1)[3][1].asString().c_str());
 
   qi::TypeInterface *dest3 = qi::TypeInterface::fromSignature("(fffI)");
   qi::AnyValue gv3 = qi::decodeJSON("[1.1, 2.2, 3.3, \"42\"]");
-  std::pair<qi::AnyReference, bool> res3 = gv3.convert(dest3);
-  ASSERT_FALSE(res3.first.type());
+  auto res3 = gv3.convert(dest3);
+  ASSERT_FALSE(res3->type());
 }
 
 TEST(Value, Convert_ListToMap)
 {
   qi::TypeInterface *type1= qi::TypeInterface::fromSignature("{if}");
   qi::AnyValue gv1 = qi::decodeJSON("[[10.10, 42.42], [20, 43], [30, 44.44]]");
-  std::pair<qi::AnyReference, bool> res1 = gv1.convert(type1);
-  ASSERT_TRUE(res1.first.type() != 0);
-  ASSERT_EQ(res1.first.type()->info(), type1->info());
-  ASSERT_EQ(gv1.size(), res1.first.size());
-  ASSERT_EQ(44.44f, res1.first[30].asFloat());
+  auto res1 = gv1.convert(type1);
+  ASSERT_TRUE(res1->type() != 0);
+  ASSERT_EQ(res1->type()->info(), type1->info());
+  ASSERT_EQ(gv1.size(), res1->size());
+  ASSERT_EQ(44.44f, (*res1)[30].asFloat());
 
   qi::TypeInterface *type2 = qi::TypeInterface::fromSignature("{if}");
   qi::AnyValue gv2 = qi::decodeJSON("[[10.10, 42.42], [20, 43], [\"plop\", 44.44]]");
-  std::pair<qi::AnyReference, bool> res2 = gv2.convert(type2);
-  ASSERT_FALSE(res2.first.type());
+  auto res2 = gv2.convert(type2);
+  ASSERT_FALSE(res2->type());
 }
-
 
 struct EasyStruct
 {
@@ -563,10 +808,17 @@ TEST(Value, Convert_StructToMap)
   EXPECT_EQ(es.strings, val["strings"].toList<std::string>());
 }
 
+namespace
+{
 struct Foo
 {
   std::string str;
   double dbl;
+
+  friend bool operator<(const Foo& a, const Foo&b)
+  {
+    return std::make_tuple(a.str, a.dbl) < std::make_tuple(b.str, b.dbl);
+  }
 };
 
 struct Oof
@@ -574,6 +826,7 @@ struct Oof
   double dbl;
   std::string str;
 };
+} // anonymous
 
 QI_TYPE_STRUCT_REGISTER(Foo, str, dbl);
 QI_TYPE_STRUCT_REGISTER(Oof, dbl, str);
@@ -752,8 +1005,407 @@ TEST(Struct, ComplexType)
   AnyValue::from(p2);
 }
 
-int main(int argc, char **argv) {
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+TEST(Append, AppendInvalid)
+{
+  std::vector<std::string> textArgs;
+  textArgs.emplace_back("real");
+  textArgs.emplace_back("magic");
+  auto args = qi::AnyValue::from(textArgs);
+
+  ASSERT_ANY_THROW(args.append(10));
+}
+
+TEST(Insert, InsertInvalid)
+{
+  std::map<int, std::string> map;
+  map[0] = "real";
+  auto anyMap = qi::AnyValue::from(map);
+
+  ASSERT_ANY_THROW(anyMap.insert("false", 0));
+  ASSERT_ANY_THROW(anyMap.insert(1, 10));
+}
+
+TEST(Reference, invalidAsReference)
+{
+  qi::AnyValue v;
+  auto r = v.asReference();
+  EXPECT_FALSE(r.isValid());
+}
+
+TEST(Reference, referenceFromInvalidWrapsIt)
+{
+  qi::AnyValue v;
+  auto r = qi::AnyReference::from(v);
+  EXPECT_TRUE(r.isValid());
+  EXPECT_FALSE(r.unwrap().isValid());
+  EXPECT_FALSE(r.content().isValid());
+}
+
+TEST(QiPath, valueIsPreserved)
+{
+  auto tmpPath = qi::Path{qi::os::tmp()} / qi::Path{boost::filesystem::unique_path()};
+  auto transformedPath = qi::AnyValue::from(tmpPath).to<std::string>();
+  EXPECT_EQ(tmpPath.str(), transformedPath);
+}
+
+TEST(QiPath, emptyValueIsPreserved)
+{
+  auto tmpPath = qi::Path{};
+  auto transformedPath = qi::AnyValue::from(tmpPath).to<std::string>();
+  EXPECT_EQ(tmpPath.str(), transformedPath);
+}
+
+template <typename T>
+struct ConvertWithTypeInterface: ::testing::Test {
+  using TypeInterface = T;
+};
+
+using TypeInterfaces = ::testing::Types<
+   ListTypeInterface,
+   StructTypeInterface,
+   MapTypeInterface,
+   IntTypeInterface,
+   FloatTypeInterface,
+   RawTypeInterface,
+   StringTypeInterface,
+   PointerTypeInterface,
+   DynamicTypeInterface>;
+
+TYPED_TEST_CASE(ConvertWithTypeInterface, TypeInterfaces);
+
+TYPED_TEST(ConvertWithTypeInterface, convertInvalidToNullTypeInterfaceYieldsInvalid)
+{
+  auto result = qi::AnyValue{}.convert(static_cast<typename TestFixture::TypeInterface*>(nullptr));
+  EXPECT_FALSE(result->isValid());
+  EXPECT_FALSE(result.ownsReference());
+}
+
+template <typename T>
+struct ConvertWithTypes: ::testing::Test {
+  using Type = T;
+};
+
+#define QI_INTERNAL_NON_ANYREFERENCE_TYPES \
+  int,                                     \
+  float,                                   \
+  double,                                  \
+  std::string,                             \
+  std::vector<int>,                        \
+  std::map<int, int>,                      \
+  Foo,                                     \
+  Foo*,                                    \
+  void*,                                   \
+  qi::AnyObject,                           \
+  boost::optional<int>,                    \
+  boost::optional<double>,                 \
+  boost::optional<std::string>,            \
+  boost::optional<std::vector<int>>,       \
+  boost::optional<std::map<int, int>>,     \
+  boost::optional<qi::Buffer>,             \
+  boost::optional<Foo>
+using NonAnyReferenceTypes = testing::Types<QI_INTERNAL_NON_ANYREFERENCE_TYPES>;
+using Types = testing::Types<QI_INTERNAL_NON_ANYREFERENCE_TYPES, qi::AnyValue>;
+#undef QI_INTERNAL_NON_ANYREFERENCE_TYPES
+
+TYPED_TEST_CASE(ConvertWithTypes, Types);
+
+TYPED_TEST(ConvertWithTypes, convertInvalidToOtherTypeInterfaceIsYieldsInvalid)
+{
+  auto result = qi::AnyValue{}.convert(qi::typeOf<typename TestFixture::Type>());
+  EXPECT_FALSE(result->isValid());
+  EXPECT_FALSE(result.ownsReference());
+}
+
+TYPED_TEST(ConvertWithTypes, convertInvalidAsReferenceToOtherTypeInterfaceYieldsInvalid)
+{
+  auto result = qi::AnyValue{}.asReference().convert(qi::typeOf<typename TestFixture::Type>());
+  EXPECT_FALSE(result->isValid());
+  EXPECT_FALSE(result.ownsReference());
+}
+
+TYPED_TEST(ConvertWithTypes, convertReferenceFromInvalidToOtherTypeInterfaceIsSafe)
+{
+  qi::AnyReference::from(qi::AnyValue{}).convert(qi::typeOf<typename TestFixture::Type>());
+  // depending on the type, the result may be invalid or not, let's not test the result
+}
+
+using boost::make_optional;
+
+TEST(Value, OptionalSetResetState)
+{
+  AnyValue v{ boost::optional<int>{} };
+  EXPECT_FALSE(v.optionalHasValue());
+  v.set(make_optional(42));
+  EXPECT_TRUE(v.optionalHasValue());
+  v.resetOptional();
+  EXPECT_FALSE(v.optionalHasValue());
+}
+
+TEST(Value, OptionalSetInvalidTypeToUnsetOptionalDoesNotSetIt)
+{
+  AnyValue v{ boost::optional<int>{} };
+  EXPECT_FALSE(v.optionalHasValue());
+  EXPECT_THROW(v.set(make_optional<std::string>("sarah connor ?")), std::exception);
+  EXPECT_FALSE(v.optionalHasValue());
+}
+
+TEST(Value, OptionalInt)
+{
+  AnyValue v{ boost::optional<int>{42} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(42, v.content().toInt());
+
+  // different type of integer is allowed
+  v.set(make_optional(static_cast<unsigned short>(4323)));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(4323, v.content().toInt());
+
+  // as long as it fits
+  EXPECT_THROW(v.set(0x100000000), std::exception);
+
+  // conversion from double is allowed
+  v.set(make_optional(33.2));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(33, v.content().toInt()); // result is rounded
+
+  // optional of same type is allowed
+  v.set(make_optional(51));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(51, v.content().toInt());
+
+  // conversion from a totally different type is not allowed
+  EXPECT_THROW(v.set(make_optional<std::string>("foo")), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(51, v.content().toInt());
+}
+
+TEST(Value, OptionalDouble)
+{
+  AnyValue v{ boost::optional<double>{3.14} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_DOUBLE_EQ(3.14, v.content().toDouble());
+
+  // conversion from float is allowed
+  v.set(make_optional(8.94f));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_DOUBLE_EQ(static_cast<double>(8.94f), v.content().toDouble());
+
+  // conversion from int is allowed
+  v.set(make_optional(67));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_DOUBLE_EQ(67., v.content().toDouble());
+
+  // conversion from a totally different type is not allowed
+  EXPECT_THROW(v.set(make_optional<std::string>("cupcakes")), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_DOUBLE_EQ(67., v.content().toDouble());
+}
+
+TEST(Value, OptionalBool)
+{
+  AnyValue v{ boost::optional<bool>{true} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_TRUE(v.content().to<bool>());
+
+  v.set(make_optional(false));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_FALSE(v.content().to<bool>());
+
+  // optional with a different type of int is allowed as long as it's 0 or 1.
+  EXPECT_NO_THROW(v.set(make_optional(0)));
+  EXPECT_NO_THROW(v.set(make_optional(1)));
+  EXPECT_THROW(v.set(make_optional(1337)), std::exception);
+
+  // conversion from a float is technically allowed as long as it's (close to) 0 or 1.
+  EXPECT_NO_THROW(v.set(make_optional(1.f)));
+  EXPECT_NO_THROW(v.set(make_optional(0.f)));
+  EXPECT_THROW(v.set(make_optional(3.14f)), std::exception);
+
+  // conversion from a non numeric type is not allowed
+  EXPECT_THROW(v.set(make_optional<std::string>("cookies")), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_FALSE(v.content().to<bool>());
+}
+
+TEST(Value, OptionalString)
+{
+  AnyValue v{ boost::optional<std::string>{"foo"} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ("foo", v.content().toString());
+
+  v.set(make_optional<std::string>("lolcats"));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ("lolcats", v.content().toString());
+
+  // conversion from a totally different type is not allowed
+  EXPECT_THROW(v.set(make_optional(67)), std::exception);
+  EXPECT_THROW(v.set(make_optional(33.2)), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ("lolcats", v.content().toString());
+}
+
+TEST(Value, OptionalList)
+{
+  AnyValue v{ boost::optional<std::vector<int>>{{1, 1, 2, 3, 5}} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(5u, v.content().size());
+  EXPECT_EQ(3, v.content().element<int>(3));
+
+  v.content().append(8);
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(6u, v.content().size());
+  EXPECT_EQ(8, v.content().element<int>(5));
+
+  // conversion from a totally different type is not allowed
+  EXPECT_THROW(v.set(make_optional(67)), std::exception);
+  EXPECT_THROW(v.set(make_optional(33.2)), std::exception);
+  EXPECT_THROW(v.set(make_optional<std::string>("muffins")), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+
+  // can be converted to list
+  const std::vector<int> expected{1, 1, 2, 3, 5, 8};
+  EXPECT_EQ(v.content().toList<int>(), expected);
+}
+
+TEST(Value, OptionalMap)
+{
+  AnyValue v{ boost::optional<std::map<int, std::string>>{
+      { { 1, "one" }, { 3, "three" }, { 42, "the answer" } } } };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(3u, v.content().size());
+  EXPECT_EQ("the answer", v.content().element<std::string>(42));
+
+  v.content().insert(8, "31ght");
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(4u, v.content().size());
+  EXPECT_EQ("31ght", v.content().element<std::string>(8));
+
+  // conversion from a totally different type is not allowed
+  EXPECT_THROW(v.set(make_optional(67)), std::exception);
+  EXPECT_THROW(v.set(make_optional(33.2)), std::exception);
+  EXPECT_THROW(v.set(make_optional<std::string>("donuts")), std::exception);
+
+  // it did not affect the value
+  ASSERT_TRUE(v.optionalHasValue());
+
+  // can be converted to map
+  const auto convertedSize = v.content().toMap<int, std::string>().size();
+  EXPECT_EQ(4u, convertedSize);
+}
+
+TEST(Value, OptionalTuple)
+{
+  AnyValue v{ boost::optional<Foo>{Foo()} };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(2u, v.content().size());
+  EXPECT_EQ(2u, v.content().membersType().size());
+
+  AnyReferenceVector refVec;
+  std::string str("cornflakes");
+  refVec.push_back(AutoAnyReference(str)); // has to explicitly be a std::string, a string literal won't do
+  refVec.push_back(AutoAnyReference(6.9847));
+  v.content().setTuple(refVec);
+  EXPECT_EQ(str, v.content().element<std::string>(0));
+
+  Foo foo = v.content().to<Foo>();
+  EXPECT_DOUBLE_EQ(6.9847, foo.dbl);
+  EXPECT_EQ(str, foo.str);
+}
+
+TEST(Value, OptionalToOptional)
+{
+  AnyValue v{ make_optional<std::string>("cupcakes") };
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ("cupcakes", *v.toOptional<std::string>());
+  EXPECT_EQ("cupcakes", *v.to<boost::optional<std::string>>());
+}
+
+TEST(Value, OptionalRawBuffer)
+{
+  const std::string data = "kikoolol";
+  qi::Buffer buffer;
+  buffer.write(data.c_str(), data.size() + 1);
+
+  AnyValue v{ make_optional(buffer) };
+  ASSERT_TRUE(v.optionalHasValue());
+
+  auto readBuffer = v.toOptional<qi::Buffer>();
+  ASSERT_TRUE(readBuffer);
+  EXPECT_EQ(*readBuffer, buffer);
+}
+
+TEST(Value, OptionalAnyValue)
+{
+  AnyValue v{ boost::optional<AnyValue>() };
+
+  ASSERT_NO_THROW(v.set(make_optional(AnyValue{ "marshmallows" })));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ("marshmallows", v.toOptional<AnyValue>()->to<std::string>());
+  EXPECT_EQ("marshmallows", v.toOptional<std::string>().value());
+
+  ASSERT_NO_THROW(v.set(make_optional(AnyValue{ 42329 })));
+  ASSERT_TRUE(v.optionalHasValue());
+  EXPECT_EQ(42329, v.toOptional<AnyValue>()->to<int>());
+  EXPECT_EQ(42329, v.toOptional<int>().value());
+  EXPECT_ANY_THROW(v.toOptional<std::string>());
+}
+
+class TypeParameterizedAutoAnyReference : public ::testing::TestWithParam<TypeInterface*> {};
+INSTANTIATE_TEST_CASE_P(
+    MostCommonInterfaces,
+    TypeParameterizedAutoAnyReference,
+    ::testing::Values(
+      makeTypeOfKind(TypeKind_Void),
+      makeTypeOfKind(TypeKind_Int),
+      makeTypeOfKind(TypeKind_Float),
+      makeTypeOfKind(TypeKind_String),
+      makeTypeOfKind(TypeKind_Object),
+      typeOf<AnyValue>(),
+      makeListType(typeOf<AnyValue>()),
+      makeMapType(typeOf<AnyValue>(), typeOf<AnyValue>()),
+      makeTupleType({ typeOf<AnyValue>() }),
+      makeOptionalType(typeOf<AnyValue>())
+   )
+);
+
+TEST_P(TypeParameterizedAutoAnyReference, AutoAnyReferenceFromAnyReferenceSharesItsType)
+{
+  const auto itf = GetParam();
+
+  { // From AnyReference
+    AnyReference ref{ itf };
+    AutoAnyReference autoRef{ ref };
+    EXPECT_EQ(itf->kind(), autoRef.kind());
+  }
+  { // From AnyValue
+    AnyValue value{ itf };
+    AutoAnyReference autoRef{ value };
+    EXPECT_EQ(itf->kind(), autoRef.kind());
+  }
+  { // From AutoAnyReference
+    AnyReference ref{ itf };
+    AutoAnyReference autoRef{ ref };
+    AutoAnyReference autoAutoRef{ autoRef };
+    EXPECT_EQ(itf->kind(), autoAutoRef.kind());
+  }
+}
+
+template<typename T>
+class TypedAutoAnyReference : public ::testing::Test {};
+TYPED_TEST_CASE(TypedAutoAnyReference, NonAnyReferenceTypes);
+
+TYPED_TEST(TypedAutoAnyReference, AutoAnyReferenceFromValueSharesItsType)
+{
+  AutoAnyReference autoRef{ TypeParam{} };
+  EXPECT_EQ(typeOf<TypeParam>()->kind(), autoRef.kind());
 }

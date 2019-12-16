@@ -7,20 +7,21 @@
 #ifndef _SRC_REMOTEOBJECT_P_HPP_
 #define _SRC_REMOTEOBJECT_P_HPP_
 
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include <qi/anyobject.hpp>
 #include <qi/type/dynamicobject.hpp>
 #include <qi/signal.hpp>
+#include <qi/messaging/messagesocket_fwd.hpp>
 
 #include "messagedispatcher.hpp"
 #include "objecthost.hpp"
 
 #include <boost/thread/mutex.hpp>
+#include <boost/thread/synchronized_value.hpp>
 #include <string>
 
 namespace qi {
 
-  class TransportSocket;
   class ServerClient;
 
   struct RemoteSignalLinks {
@@ -33,20 +34,40 @@ namespace qi {
     qi::Future<qi::SignalLink>  future;
   };
 
-  class RemoteObject : public qi::DynamicObject, public ObjectHost, public Trackable<RemoteObject> {
+  /// This class represents the interface to a remote (potentially in a different process or host)
+  /// `qi::Object`.
+  ///
+  /// Remote objects are proxies of the concrete objects and are responsible for transmitting them
+  /// requests (and receiving responses).
+  ///
+  /// Remote objects are created when:
+  ///   - A user requests the object representing a service (those live in the user's process).
+  ///   - An object is received as the result of an outgoing remote procedure call (those live in
+  /// the process sending the call).
+  ///   - An object is received as a parameter of an incoming procedure call (those live in
+  /// the process receiving the call).
+  class RemoteObject
+    : public DynamicObject
+    , public ObjectHost
+    , public Trackable<RemoteObject>
+  {
   public:
     RemoteObject();
-    RemoteObject(unsigned int service, qi::TransportSocketPtr socket = qi::TransportSocketPtr());
+    RemoteObject(unsigned int service, qi::MessageSocketPtr socket = qi::MessageSocketPtr());
     //deprecated
-    RemoteObject(unsigned int service, unsigned int object, qi::MetaObject metaObject, qi::TransportSocketPtr socket = qi::TransportSocketPtr());
-    ~RemoteObject();
+    RemoteObject(unsigned int service,
+                 unsigned int object,
+                 qi::MetaObject metaObject,
+                 qi::MessageSocketPtr socket = qi::MessageSocketPtr());
 
-    unsigned int nextId() { return ++_nextId; }
+    ~RemoteObject() override;
+
+    unsigned int nextId() override { return ++_nextId; }
 
     //must be called to make the object valid.
     qi::Future<void> fetchMetaObject();
 
-    void setTransportSocket(qi::TransportSocketPtr socket);
+    void setTransportSocket(qi::MessageSocketPtr socket);
     // Set fromSignal if close is invoked from disconnect signal callback
     void close(const std::string& reason, bool fromSignal = false);
     unsigned int service() const { return _service; }
@@ -54,7 +75,7 @@ namespace qi {
 
   protected:
     //TransportSocket.messagePending
-    void onMessagePending(const qi::Message &msg);
+    DispatchStatus onMessagePending(const qi::Message &msg);
     //TransportSocket.disconnected
     void onSocketDisconnected(std::string error);
 
@@ -72,14 +93,12 @@ namespace qi {
     virtual qi::Future<void> metaSetProperty(qi::AnyObject context, unsigned int id, AnyValue val);
 
   protected:
-    typedef std::map<qi::uint64_t, RemoteSignalLinks>  LocalToRemoteSignalLinkMap;
+    using LocalToRemoteSignalLinkMap = std::map<qi::uint64_t, RemoteSignalLinks>;
 
-    TransportSocketPtr                              _socket;
-    boost::mutex                                    _socketMutex;
+    boost::synchronized_value<MessageSocketPtr>   _socket;
     unsigned int                                    _service;
     unsigned int                                    _object;
-    std::map<int, qi::Promise<AnyReference> >       _promises;
-    boost::mutex                                    _promisesMutex;
+    boost::synchronized_value<std::map<int, qi::Promise<AnyReference>>> _promises;
     qi::SignalLink                                  _linkMessageDispatcher;
     qi::SignalLink                                  _linkDisconnected;
     qi::AnyObject                                   _self;

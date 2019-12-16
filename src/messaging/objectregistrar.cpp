@@ -12,6 +12,7 @@
 #include <boost/thread/mutex.hpp>
 #include "servicedirectoryclient.hpp"
 #include "session_p.hpp"
+#include <ka/scoped.hpp>
 
 qiLogCategory("qimessaging.objectregistrar");
 
@@ -31,14 +32,14 @@ namespace qi {
     , _sdClient(sdClient)
     , _id(qi::os::generateUuid())
   {
-    _server.endpointsChanged.connect(boost::bind(&ObjectRegistrar::updateServiceInfo, this));
+    _server.endpointsChanged.connect(
+      track(boost::bind(&ObjectRegistrar::updateServiceInfo, this), &_tracker));
   }
-
 
   ObjectRegistrar::~ObjectRegistrar()
   {
-    _dying = true;
-    qi::Trackable<Server>::destroy();
+    _tracker.destroy();
+    close();
   }
 
   void ObjectRegistrar::close()
@@ -81,8 +82,13 @@ namespace qi {
     }
   }
 
-  void ObjectRegistrar::onFutureFinished(qi::Future<unsigned int> fut, long id, qi::Promise<unsigned int> result)
+  void ObjectRegistrar::onFutureFinished(qi::Future<unsigned int> fut, int id, qi::Promise<unsigned int> result)
   {
+    auto eraseRequest = ka::scoped([id, this]{
+      boost::mutex::scoped_lock sl(_registerServiceRequestMutex);
+      _registerServiceRequest.erase(id);
+    });
+
     if (fut.hasError()) {
       result.setError(fut.error());
       return;
@@ -95,11 +101,6 @@ namespace qi {
       it = _registerServiceRequest.find(id);
       if (it != _registerServiceRequest.end())
         si = it->second.second;
-      if (fut.hasError()) {
-        _registerServiceRequest.erase(id);
-        result.setError(fut.error());
-        return;
-      }
     }
     unsigned int idx = fut.value();
     si.setServiceId(idx);
@@ -126,10 +127,6 @@ namespace qi {
       boost::mutex::scoped_lock sl(_serviceNameToIndexMutex);
       _serviceNameToIndex[si.name()] = idx;
     }
-    {
-      boost::mutex::scoped_lock sl(_registerServiceRequestMutex);
-      _registerServiceRequest.erase(it);
-    }
 
     // ack the Service directory to tell that we are ready
     qi::Future<void> fut2 = _sdClient->serviceReady(idx);
@@ -149,7 +146,7 @@ namespace qi {
     si.setEndpoints(Server::endpoints());
     si.setSessionId(_id);
 
-    long id = ++_registerServiceRequestIndex;
+    int id = ++_registerServiceRequestIndex;
     {
       boost::mutex::scoped_lock sl(_registerServiceRequestMutex);
       _registerServiceRequest[id] = std::make_pair(obj, si);
@@ -158,7 +155,8 @@ namespace qi {
     qi::Promise<unsigned int> prom;
     qi::Future<unsigned int>  future;
     future = _sdClient->registerService(si);
-    future.connect(boost::bind<void>(&ObjectRegistrar::onFutureFinished, this, _1, id, prom));
+    future.connect(
+      track(boost::bind<void>(&ObjectRegistrar::onFutureFinished, this, _1, id, prom), &_tracker));
 
     return prom.future();
   };
@@ -169,21 +167,30 @@ namespace qi {
 
     std::string name;
     {
+      // Create a local variable to keep the underlying bound anyobject alive outside the map.
+      // It allows us to remove the iterator map without deleting the underlying anyobject
+      BoundService serviceToRemove;
       boost::mutex::scoped_lock sl(_servicesMutex);
       BoundServiceMap::iterator it = _services.find(idx);
-      if (it != _services.end()) {
+      if (it != _services.end())
+      {
         name = it->second.name;
         if (!it->second.object.unique())
         {
           qiLogVerbose() << "Some references to service #" << idx
                                              << " are still held!";
         }
+        serviceToRemove = std::move(it->second);
         _services.erase(it);
-      } else {
+      }
+      else
+      {
         qiLogVerbose() << "Can't find name associated to id:" << idx;
       }
-      Server::removeObject(idx);
     }
+
+    Server::removeObject(idx);
+
     if (!name.empty())
     {
       boost::mutex::scoped_lock sl(_serviceNameToIndexMutex);
@@ -251,11 +258,6 @@ namespace qi {
         return it->second.object;
     }
     return AnyObject();
-  }
-
-  void ObjectRegistrar::registerSocket(TransportSocketPtr socket)
-  {
-    onTransportServerNewConnection(socket, false);
   }
 
   void ObjectRegistrar::open()

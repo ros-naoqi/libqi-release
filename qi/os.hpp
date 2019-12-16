@@ -12,10 +12,14 @@
 # include <string>
 # include <map>
 # include <vector>
+# include <csignal>
+# include <type_traits>
 # include <qi/api.hpp>
 # include <qi/types.hpp>
 # include <qi/path.hpp>
 # include <qi/clock.hpp>
+# include <qi/uuid.hpp>
+# include <qi/ptruid.hpp>
 
 # include <boost/lexical_cast.hpp>
 
@@ -23,6 +27,34 @@
 #ifndef SIGKILL
 #define SIGKILL 9
 #endif
+#endif
+
+// `PTRDIFF_MIN` and `PTRDIFF_MAX` may not be defined on some platforms (e.g.
+// android arm32). As a first step we define the values by hard-coding them, to
+// avoid relying on another constant. This guarantees that it will work whatever
+// the presence or absence of other constants (INT32_MAX, etc.).
+//
+// TODO: Remove this when alternatively
+//  - qibuild is modified to generate a libqi user CMakeLists.txt that defines
+//    correct constants (`#define __STDC_LIMIT_MACROS`)
+//  - Android NDK is upgraded to use at least Android API level 21.
+//
+// The following values are taken from the Android NDK file
+// 'platforms/android-21/arch-arm/usr/include/stdint.h'.
+#if !defined(PTRDIFF_MIN)
+#   if defined(__LP64__) && __LP64__
+#     define PTRDIFF_MIN -9223372036854775808LL
+#   else
+#     define PTRDIFF_MIN -2147483648
+#   endif
+#endif
+
+#if !defined(PTRDIFF_MAX)
+#   if defined(__LP64__) && __LP64__
+#     define PTRDIFF_MAX 9223372036854775807LL
+#   else
+#     define PTRDIFF_MAX 2147483647
+#   endif
 #endif
 
 struct stat;
@@ -180,7 +212,8 @@ namespace qi {
      * \brief Change or add an environment variable.
      * \param var The variable name.
      * \param value The value of the variable.
-     * \return 0 on success, or -1 on error.
+     * \return 0 on success, or another unspecified value on error, in which case `errno` is set to
+     *   indicate the cause of the error.
      *
      * \verbatim
      * Adds the variable name to the environment with the value in argument if name
@@ -190,6 +223,22 @@ namespace qi {
      * \endverbatim
      */
     QI_API int setenv(const char *var, const char *value);
+
+    /**
+     * \brief Remove an environment variable.
+     * \param var The variable name. If null, the behavior is unspecified.
+     * \return 0 on success, or another unspecified value on error, in which case `errno` is set to
+     *   indicate the cause of the error.
+     *
+     * \verbatim
+     * Removes the variable name from the environment. If the variable did not already exist or was
+     * unset, the environment is unchanged and the function returns with a success.
+     * \endverbatim
+     * \post `getenv(var).empty()`
+     *
+     */
+    QI_API int unsetenv(const char *var);
+
     /**
      * \brief Return the timezone.
      * \return A string with the timezone.
@@ -218,7 +267,9 @@ namespace qi {
      * .. versionadded:: 1.12
      * \endverbatim
      */
+    QI_API_DEPRECATED_MSG(please use std::this_thread::sleep_for instead)
     QI_API void sleep(unsigned int seconds);
+
     /**
      * \brief Sleep for the specified number of milliseconds.
      * \param milliseconds Number of milliseconds to sleep.
@@ -233,7 +284,9 @@ namespace qi {
      * .. versionadded:: 1.12
      * \endverbatim
      */
+    QI_API_DEPRECATED_MSG(please use std::this_thread::sleep_for instead)
     QI_API void msleep(unsigned int milliseconds);
+
     /**
      * \brief struct similar to POSIX timeval
      */
@@ -478,6 +531,18 @@ namespace qi {
     QI_API int kill(int pid, int sig);
 
     /**
+     * \brief Check whether a process is running, given its file name and pid.
+     * \warning On Linux, since the command line of the process takes a little
+     * time to be made available, the file name check may fail if the process
+     * was spawned too recently.
+     * \param pid The PID to check.
+     * \param fileName The name of the process: the executable file name
+     * with no .exe or _d.exe extension.
+     * \return true if the process is running and has the expected name.
+     */
+    QI_API bool isProcessRunning(int pid, const std::string& fileName = std::string());
+
+    /**
      * \brief Find the first available port starting at port number in parameter.
      * \param port First port tested, then each port following it is tested
      *             one by one until one available is found.
@@ -529,8 +594,7 @@ namespace qi {
      */
     class QI_API ScopedThreadName {
     public:
-      ScopedThreadName(const std::string& newName) {
-        _oldName = currentThreadName();
+      ScopedThreadName(const std::string& newName) : _oldName(currentThreadName()) {
         setCurrentThreadName(newName);
       };
       ~ScopedThreadName() {
@@ -570,6 +634,15 @@ namespace qi {
      */
     QI_API std::string getMachineId();
     /**
+     * \brief Same as getMachineId but return a uuid and not its string representation.
+     */
+    QI_API const Uuid& getMachineIdAsUuid();
+    /**
+     * \brief Returns an unique uuid for the process.
+     * \return The uuid of the process.
+     */
+    QI_API const Uuid& getProcessUuid();
+    /**
      * \brief Generate a universally unique identifier.
      * \return The uuid.
      * .. versionadded:: 1.20
@@ -583,6 +656,9 @@ namespace qi {
      */
     QI_API size_t memoryUsage(unsigned int pid);
 
+    /** Constructs a PtrUid using process and machine ids provided by qi::os implementation.
+    */
+    QI_API PtrUid ptrUid(void* address);
 
     /**
      * \brief Returns the value of the environment variableif set, the defaultVal otherwise.
@@ -602,6 +678,26 @@ namespace qi {
         return boost::lexical_cast<T>(sval);
     }
 
+    /// (Arithmetic or Enum) N
+    template<typename N>
+    std::string to_string(N n)
+    {
+      // Prevent the Android version to behave differently than other platforms.
+      // Enums are implicitly convertible to integral types, so we accept them.
+      static_assert(std::is_arithmetic<N>::value || std::is_enum<N>::value,
+        "to_string() accepts only arithmetic types (i.e. integral types and "
+        "floating-point types) and enum types.");
+
+#if BOOST_OS_ANDROID && BOOST_COMP_GNUC
+      // workaround android gcc missing std::to_string on arm
+      // http://stackoverflow.com/questions/17950814/how-to-use-stdstoul-and-stdstoull-in-android/18124627#18124627
+      std::ostringstream stream;
+      stream << n;
+      return stream.str();
+#else
+      return std::to_string(n);
+#endif
+    }
   }
 }
 

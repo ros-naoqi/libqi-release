@@ -7,6 +7,8 @@
 #ifndef _QITYPE_DETAIL_ANYVALUE_HPP_
 #define _QITYPE_DETAIL_ANYVALUE_HPP_
 
+#include <ka/macro.hpp>
+
 namespace qi {
 
   /** Represent any value supported by the typesystem.
@@ -20,8 +22,13 @@ namespace qi {
   {
   public:
 
+    /**
+     * A default-constructed AnyValue is invalid, and equivalent to an unset optional value.
+     * It cannot be converted to any other type, and will yield exceptions instead.
+     */
     AnyValue();
     AnyValue(const AnyValue& b);
+    AnyValue(AnyValue&& b) KA_NOEXCEPT(true);
     explicit AnyValue(const AnyReference& b, bool copy, bool free);
     explicit AnyValue(const AutoAnyReference& b);
     explicit AnyValue(qi::TypeInterface *type);
@@ -62,9 +69,13 @@ namespace qi {
     static AnyValue makeGenericMap(const std::map<AnyReference, AnyReference>& values);
     /// @}
 
+    /// Construct a void AnyValue: defined, but with no data.
+    static AnyValue makeVoid();
+
     ~AnyValue();
     AnyValue& operator=(const AnyReference& b);
     AnyValue& operator=(const AnyValue& b);
+    AnyValue& operator=(AnyValue&& b);
 
     void reset();
     void reset(qi::TypeInterface *type);
@@ -90,6 +101,11 @@ namespace qi {
     }
 
   private:
+    // It is "unsafe" because it invalidates internal pointers without
+    // nullifying them. Caller is expected to set them afterwards to valid
+    // values.
+    void resetUnsafe();
+
     //hide AnyReference::destroy
     //simply assign an empty AnyValue.
     void destroy() { return detail::AnyReferenceBase::destroy(); }
@@ -106,7 +122,7 @@ namespace qi {
   QI_API bool operator==(const AnyValue& a, const AnyValue& b);
   QI_API bool operator!=(const AnyValue& a, const AnyValue& b);
 
-  typedef std::vector<AnyValue> AnyValueVector;
+  using AnyValueVector = std::vector<AnyValue>;
 
   inline AnyReferenceVector asAnyReferenceVector(const AnyValueVector& vect);
 

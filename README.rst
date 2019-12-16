@@ -5,6 +5,24 @@ libqi is a middle-ware framework that provides RPC, type-erasure,
 cross-language interoperability, OS abstractions, logging facilities,
 asynchronous task management, dynamic module loading.
 
+Compilation
+-----------
+
+To compile libqi you need qibuild which give some cmake functions used
+in libqi's CMakeLists.txt.
+
+.. code-block:: sh
+
+  pip2 install --user qibuild
+
+  git clone git@github.com:aldebaran/libqi.git
+  cd libqi
+
+  mkdir BUILD && cd BUILD
+  cmake .. -DQI_WITH_TESTS=OFF
+  make
+  make install DESTDIR=./output
+
 Example
 -------
 
@@ -76,13 +94,15 @@ Links
 git repository:
 http://github.com/aldebaran/libqi
 
-Mailing list:
-https://groups.google.com/a/aldebaran-robotics.com/group/qibuild-dev/topics
-
 Documentation:
 http://doc.aldebaran.com/libqi/
 
+IRC Channel:
+#qi on freenode.
+
 Maintainers:
 
-- Philippe DAOUADI <pdaouadi@aldebaran.com>
-- Cedric GESTES <gestes@aldebaran.com>
+- Joël Lamotte <jlamotte@aldebaran.com>
+- Jérémy Monnon <jmonnon@aldebaran.com>
+- Matthieu Paindavoine <matthieu.paindavoine@softbankrobotics.com>
+- Vincent Palancher <vincent.palancher@external.softbankrobotics.com>

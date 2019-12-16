@@ -11,12 +11,17 @@
 
 #include "remoteobject_p.hpp"
 #include "message.hpp"
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include <qi/log.hpp>
 #include <boost/thread/mutex.hpp>
 #include <qi/eventloop.hpp>
 
 qiLogCategory("qimessaging.remoteobject");
+
+// Helper for debug logs of the class. Can only be called from non static member functions of
+// `qi::RemoteObject`.
+#define QI_LOG_DEBUG_REMOTEOBJECT() \
+  qiLogDebug() << this << " (service=" << _service << ", object=" << _object << ") - "
 
 namespace qi {
 
@@ -30,15 +35,15 @@ namespace qi {
     mob.addMethod("L", "registerEventWithSignature", "(IILs)", qi::Message::BoundObjectFunction_RegisterEventWithSignature);
     *mo = mob.metaObject();
 
-    assert(mo->methodId("registerEvent::(IIL)") == qi::Message::BoundObjectFunction_RegisterEvent);
-    assert(mo->methodId("unregisterEvent::(IIL)") == qi::Message::BoundObjectFunction_UnregisterEvent);
-    assert(mo->methodId("metaObject::(I)") == qi::Message::BoundObjectFunction_MetaObject);
-    assert(mo->methodId("registerEventWithSignature::(IILs)") == qi::Message::BoundObjectFunction_RegisterEventWithSignature);
+    QI_ASSERT(mo->methodId("registerEvent::(IIL)") == qi::Message::BoundObjectFunction_RegisterEvent);
+    QI_ASSERT(mo->methodId("unregisterEvent::(IIL)") == qi::Message::BoundObjectFunction_UnregisterEvent);
+    QI_ASSERT(mo->methodId("metaObject::(I)") == qi::Message::BoundObjectFunction_MetaObject);
+    QI_ASSERT(mo->methodId("registerEventWithSignature::(IILs)") == qi::Message::BoundObjectFunction_RegisterEventWithSignature);
 
     return mo;
   }
 
-  RemoteObject::RemoteObject(unsigned int service, qi::TransportSocketPtr socket)
+  RemoteObject::RemoteObject(unsigned int service, qi::MessageSocketPtr socket)
     : ObjectHost(service)
     , _socket()
     , _service(service)
@@ -53,11 +58,12 @@ namespace qi {
     static qi::MetaObject* mo = nullptr;
     QI_ONCE(mo = createRemoteObjectSpecialMetaObject());
     setMetaObject(*mo);
-    setTransportSocket(socket);
+    if (socket)
+      setTransportSocket(socket);
     //fetchMetaObject should be called to make sure the metaObject is valid.
   }
 
-  RemoteObject::RemoteObject(unsigned int service, unsigned int object, qi::MetaObject metaObject, TransportSocketPtr socket)
+  RemoteObject::RemoteObject(unsigned int service, unsigned int object, qi::MetaObject metaObject, MessageSocketPtr socket)
     : ObjectHost(service)
     , _socket()
     , _service(service)
@@ -65,13 +71,15 @@ namespace qi {
     , _linkMessageDispatcher(0)
     , _self(makeDynamicAnyObject(this, false))
   {
+    QI_LOG_DEBUG_REMOTEOBJECT() << "Constructing a RemoteObject for socket " << socket;
     setMetaObject(metaObject);
-    setTransportSocket(socket);
+    if (socket)
+      setTransportSocket(socket);
   }
 
   RemoteObject::~RemoteObject()
   {
-    qiLogDebug() << "~RemoteObject " << this;
+    QI_LOG_DEBUG_REMOTEOBJECT() << "~RemoteObject " << this;
     //close may already have been called. (by Session_Service.close)
     close("RemoteObject destroyed");
     destroy();
@@ -79,27 +87,23 @@ namespace qi {
 
   //### RemoteObject
 
-  void RemoteObject::setTransportSocket(qi::TransportSocketPtr socket) {
-    if (socket == _socket)
+  void RemoteObject::setTransportSocket(qi::MessageSocketPtr socket) {
+    MessageSocketPtr sock = *_socket;
+    if (socket == sock)
       return;
-    if (_socket) {
+    if (sock) {
       close("Socket invalidated");
     }
-
-    boost::mutex::scoped_lock lock(_socketMutex);
-    _socket = socket;
+    auto syncSocket = _socket.synchronize();
+    *syncSocket = socket;
     //do not set the socket on the remote object
     if (socket) {
-      qiLogDebug() << "Adding connection to socket" << (void*)_socket.get();
-      // We must hook on ALL_OBJECTS in case our objectHost gets filled, even
-      // if we are a sub-object.
-      // We have no mechanism to bounce objectHost registration
-      // to a 'parent' object.
-      _linkMessageDispatcher = _socket->messagePendingConnect(_service,
-        TransportSocket::ALL_OBJECTS,
-        boost::bind<void>(&RemoteObject::onMessagePending, this, _1));
-      _linkDisconnected      = _socket->disconnected.connect (
-         &RemoteObject::onSocketDisconnected, this, _1);
+      QI_LOG_DEBUG_REMOTEOBJECT() << "Adding connection to socket " << socket;
+      _linkMessageDispatcher = socket->messagePendingConnect(_service,
+        _object,
+        track(boost::bind(&RemoteObject::onMessagePending, this, _1), this));
+      _linkDisconnected = socket->disconnected.connect(
+          track([=](const std::string& reason) { onSocketDisconnected(reason); }, this));
     }
   }
 
@@ -129,21 +133,19 @@ namespace qi {
     qi::Promise<void> prom(qi::FutureCallbackType_Sync);
     qi::Future<qi::MetaObject> fut =
       _self.async<qi::MetaObject>("metaObject", 0U);
-    fut.connect(boost::bind<void>(&RemoteObject::onMetaObject, this, _1, prom));
+    fut.connect(track(boost::bind<void>(&RemoteObject::onMetaObject, this, _1, prom), this));
     return prom.future();
   }
 
   //should be done in the object thread
-  void RemoteObject::onMessagePending(const qi::Message &msg)
+  DispatchStatus RemoteObject::onMessagePending(const qi::Message &msg)
   {
-    qiLogDebug() << this << "(" << _service << '/' << _object << ") msg " << msg.address() << " " << msg.buffer().size();
-    if (msg.object() != _object)
-    {
-      qiLogDebug() << "Passing message " << msg.address() << " to host " ;
-      ObjectHost::onMessage(msg, _socket);
-      return;
-    }
+    MessageSocketPtr sock = *_socket;
+    QI_LOG_DEBUG_REMOTEOBJECT() << "msg " << msg.address()
+                                << " type=" << msg.type()
+                                << " size=" << msg.buffer().size();
 
+    QI_ASSERT_TRUE(msg.object() == _object);
 
     if (msg.type() == qi::Message::Type_Event) {
       SignalBase* sb = signal(msg.event());
@@ -159,7 +161,8 @@ namespace qi {
           // Remove top-level tuple
           //sig = sig.substr(1, sig.length()-2);
           //TODO: Optimise
-          AnyReference value = msg.value((msg.flags()&Message::TypeFlag_DynamicPayload)? "m":sig, _socket);
+          AnyValue value(msg.value((msg.flags() & Message::TypeFlag_DynamicPayload) ? "m" : sig,
+                                   sock));
 
           {
             GenericFunctionParameters args;
@@ -167,10 +170,10 @@ namespace qi {
               args = value.content().asTupleValuePtr();
             else
               args = value.asTupleValuePtr();
-            qiLogDebug() << "Triggering local event listeners with args : " << args.size();
+            QI_LOG_DEBUG_REMOTEOBJECT()
+              << "Triggering local event listeners with args : " << args.size();
             sb->trigger(args);
           }
-          value.destroy();
         }
         catch (const std::exception& e)
         {
@@ -180,40 +183,44 @@ namespace qi {
       else
       {
         qiLogWarning() << "Event message on unknown signal " << msg.event();
-        qiLogDebug() << metaObject().signalMap().size();
       }
-      return;
+      return DispatchStatus::MessageHandled_WithError;
     }
 
 
     if (msg.type() != qi::Message::Type_Reply
       && msg.type() != qi::Message::Type_Error
       && msg.type() != qi::Message::Type_Canceled) {
-      qiLogError() << "Message " << msg.address() << " type not handled: " << msg.type();
-      return;
+      qiLogError() << "Message " << msg.address()
+                   << " type not handled: " << msg.type() << " ("
+                   << msg.type() << ")";
+
+      return DispatchStatus::MessageNotHandled;
     }
 
     qi::Promise<AnyReference> promise;
     {
-      boost::mutex::scoped_lock lock(_promisesMutex);
-      std::map<int, qi::Promise<AnyReference> >::iterator it;
-      it = _promises.find(msg.id());
-      if (it != _promises.end()) {
-        promise = _promises[msg.id()];
-        _promises.erase(it);
-        qiLogDebug() << "Handling promise id:" << msg.id();
-      } else  {
-        qiLogError() << "no promise found for req id:" << msg.id()
-                     << "  obj: " << msg.service() << "  func: " << msg.function() << " type: " << Message::typeToString(msg.type());
-        return;
+      auto syncPromises = _promises.synchronize();
+      auto it = syncPromises->find(msg.id());
+      if (it != syncPromises->end()) {
+        promise = (*syncPromises)[msg.id()];
+        syncPromises->erase(it);
+        QI_LOG_DEBUG_REMOTEOBJECT() << "Handling promise id:" << msg.id();
+      }
+      else
+      {
+        qiLogError() << "no promise found for req id:" << msg.id() << "  obj: " << msg.service()
+                     << "  func: " << msg.function()
+                     << "  type: " << msg.type();
+        return DispatchStatus::MessageHandled_WithError;
       }
     }
 
     switch (msg.type()) {
       case qi::Message::Type_Canceled: {
-        qiLogDebug() << "Message " << msg.address() << " has been cancelled.";
+        QI_LOG_DEBUG_REMOTEOBJECT() << "Message " << msg.address() << " has been cancelled.";
         promise.setCanceled();
-        return;
+        return DispatchStatus::MessageHandled;
       }
       case qi::Message::Type_Reply: {
         // Get call signature
@@ -223,38 +230,39 @@ namespace qi {
           qiLogError() << "Result for unknown function "
            << msg.function();
            promise.setError("Result for unknown function");
-           return;
+           return DispatchStatus::MessageHandled_WithError;
         }
         try {
-          qi::AnyReference val = msg.value(
-            (msg.flags() & Message::TypeFlag_DynamicPayload) ?
-              "m" : mm->returnSignature(),
-            _socket);
-          promise.setValue(val);
+          AnyValue value(msg.value((msg.flags() & Message::TypeFlag_DynamicPayload) ?
+                                     "m" :
+                                     mm->returnSignature(),
+                                   sock));
+          promise.setValue(value.release());
         } catch (std::runtime_error &err) {
           promise.setError(err.what());
+          return DispatchStatus::MessageHandled_WithError;
         }
 
-        qiLogDebug() << "Message " << msg.address() << " passed to promise";
-        return;
+        QI_LOG_DEBUG_REMOTEOBJECT() << "Message " << msg.address() << " passed to promise";
+        return DispatchStatus::MessageHandled;
       }
 
       case qi::Message::Type_Error: {
         try {
           static std::string sigerr("m");
-          qi::AnyReference gvp = msg.value(sigerr, _socket).content();
-          std::string err = gvp.asString();
+          const std::string err = msg.value(sigerr, sock).content().asString();
           qiLogVerbose() << "Received error message"  << msg.address() << ":" << err;
           promise.setError(err);
         } catch (std::runtime_error &e) {
           //houston we have an error about the error..
           promise.setError(e.what());
+          return DispatchStatus::MessageHandled_WithError;
         }
-        return;
+        return DispatchStatus::MessageHandled;
       }
       default:
         //not possible
-        return;
+        return DispatchStatus::MessageNotHandled;
     }
   }
 
@@ -267,11 +275,13 @@ namespace qi {
       ss << "Method " << method << " not found on service " << _service;
       return makeFutureError<AnyReference>(ss.str());
     }
+    QI_LOG_DEBUG_REMOTEOBJECT() << "Metacall method id=" << method << " (" << mm->name() << ")";
+
     float canConvert = 1;
     if (returnSignature.isValid())
     {
       canConvert = mm->returnSignature().isConvertibleTo(returnSignature);
-      qiLogDebug() << "return type conversion score: " << canConvert;
+      QI_LOG_DEBUG_REMOTEOBJECT() << "Return type conversion score: " << canConvert;
       if (canConvert == 0)
       {
         // last chance for dynamics and adventurous users
@@ -287,39 +297,31 @@ namespace qi {
             + " to " + returnSignature.toString();
       }
     }
-    /* The promise will be set:
-     - From here in case of error
-     - From a network callback, called asynchronously in thread pool
-     So it is safe to use a sync promise.
-     */
-    qi::Promise<AnyReference> out(&PromiseNoop<AnyReference>, FutureCallbackType_Sync);
+
+    qi::Promise<AnyReference> out;
     qi::Message msg;
-    TransportSocketPtr sock;
-    // qiLogDebug() << this << " metacall " << msg.service() << " " << msg.function() <<" " << msg.id();
+    MessageSocketPtr sock;
     {
-      boost::mutex::scoped_lock lock(_socketMutex);
-      boost::mutex::scoped_lock lock2(_promisesMutex);
+      auto syncSock = _socket.synchronize();
+      sock = *syncSock;
       // Check socket while holding the lock to avoid a race with close()
       // where we would add a promise to the map after said map got cleared
-      if (!_socket || !_socket->isConnected())
+      if (!sock || !sock->isConnected())
       {
         return makeFutureError<AnyReference>("Socket is not connected");
       }
-      // The remote object can be concurrently closed / other operation that modifies _socket
-      // (even set it to null). We store the current socket locally so that the behavior
-      // of metacall stays consistent throughout the function's execution.
-      sock = _socket;
-      if (_promises.find(msg.id()) != _promises.end())
+      auto syncPromises = _promises.synchronize();
+      if (syncPromises->find(msg.id()) != syncPromises->end())
       {
         qiLogError() << "There is already a pending promise with id "
                                    << msg.id();
       }
-      qiLogDebug() << "Adding promise id:" << msg.id();
-      _promises[msg.id()] = out;
+      QI_LOG_DEBUG_REMOTEOBJECT() << "Adding promise of message response id:" << msg.id();
+      (*syncPromises)[msg.id()] = out;
     }
     qi::Signature funcSig = mm->parametersSignature();
     try {
-      msg.setValues(in, funcSig, this, sock.get());
+      msg.setValues(in, funcSig, weakPtr(), sock);
     }
     catch(const std::exception& e)
     {
@@ -328,7 +330,7 @@ namespace qi {
         throw e;
       // Delegate conversion to the remote end.
       msg.addFlags(Message::TypeFlag_DynamicPayload);
-      msg.setValues(in, "m", this, sock.get());
+      msg.setValues(in, "m", weakPtr(), sock);
     }
     if (canConvert < 0.2)
     {
@@ -341,7 +343,8 @@ namespace qi {
     msg.setFunction(method);
 
     //error will come back as a error message
-    if (!sock->isConnected() || !sock->send(msg)) {
+    const auto msgId = msg.id();
+    if (!sock->isConnected() || !sock->send(std::move(msg))) {
       qi::MetaMethod*   meth = metaObject().method(method);
       std::stringstream ss;
       if (meth) {
@@ -358,26 +361,18 @@ namespace qi {
         qiLogError() << ss.str();
       }
       out.setError(ss.str());
-
-      {
-        boost::mutex::scoped_lock lock(_promisesMutex);
-        qiLogDebug() << "Removing promise id:" << msg.id();
-        _promises.erase(msg.id());
-      }
+      QI_LOG_DEBUG_REMOTEOBJECT() << "Removing promise id:" << msgId;
+      _promises->erase(msgId);
     }
     else
-      out.setOnCancel(qi::bind(&RemoteObject::onFutureCancelled, this, msg.id()));
+      out.setOnCancel(qi::bind(&RemoteObject::onFutureCancelled, this, msgId));
     return out.future();
   }
 
   void RemoteObject::onFutureCancelled(unsigned int originalMessageId)
   {
-    qiLogDebug() << "Cancel request for message " << originalMessageId;
-    TransportSocketPtr sock;
-    {
-      boost::mutex::scoped_lock lock(_socketMutex);
-      sock = _socket;
-    }
+    QI_LOG_DEBUG_REMOTEOBJECT() << "Cancel request for message " << originalMessageId;
+    MessageSocketPtr sock = *_socket;
     Message cancelMessage;
 
     if (!sock)
@@ -386,7 +381,7 @@ namespace qi {
                    << _service << " is disconnected.";
       return;
     }
-    if (!sock->sharedCapability<bool>("RemoteCancelableCalls", false))
+    if (!sock->sharedCapability<bool>(capabilityname::remoteCancelableCalls, false))
     {
       qiLogWarning() << "Remote end does not support cancelable calls.";
       return;
@@ -395,7 +390,7 @@ namespace qi {
     cancelMessage.setType(Message::Type_Cancel);
     cancelMessage.setValue(AnyReference::from(originalMessageId), "I");
     cancelMessage.setObject(_object);
-    sock->send(cancelMessage);
+    sock->send(std::move(cancelMessage));
   }
 
   void RemoteObject::metaPost(AnyObject, unsigned int event, const qi::GenericFunctionParameters &in)
@@ -419,24 +414,24 @@ namespace qi {
         throw std::runtime_error("Post target id does not exist");
       funcSig = ms->parametersSignature();
     }
-     try {
-      msg.setValues(in, funcSig, this, _socket.get());
+    MessageSocketPtr sock = *_socket;
+    try {
+      msg.setValues(in, funcSig, weakPtr(), sock);
     }
     catch(const std::exception& e)
     {
       qiLogVerbose() << "setValues exception: " << e.what();
-      if (!_socket->remoteCapability("MessageFlags", false))
+      if (!sock->remoteCapability("MessageFlags", false))
         throw e;
       // Delegate conversion to the remote end.
       msg.addFlags(Message::TypeFlag_DynamicPayload);
-      msg.setValues(in, "m", this, _socket.get());
+      msg.setValues(in, "m", weakPtr(), sock);
     }
     msg.setType(Message::Type_Post);
     msg.setService(_service);
     msg.setObject(_object);
     msg.setFunction(event);
-    TransportSocketPtr sock = _socket;
-    if (!sock || !sock->send(msg)) {
+    if (!sock || !sock->send(std::move(msg))) {
       qiLogVerbose() << "error while emitting event";
       return;
     }
@@ -455,7 +450,7 @@ namespace qi {
     qi::Promise<SignalLink> prom(qi::FutureCallbackType_Sync);
 
     // Bind the subscriber locally.
-    SignalLink uid = DynamicObject::metaConnect(event, sub);
+    SignalLink uid = DynamicObject::metaConnect(event, sub).value();
 
     boost::recursive_mutex::scoped_lock _lock(_localToRemoteSignalLinkMutex);
     // maintain a map of localsignal -> remotesignal
@@ -483,8 +478,9 @@ namespace qi {
         if (!ms)
           return makeFutureError<SignalLink>("Signal not found");
         score = ms->parametersSignature().isConvertibleTo(subSignature);
-        qiLogDebug() << "Conversion score " << score << " " << ms->parametersSignature().toString() << " -> "
-                     << subSignature.toString();
+        QI_LOG_DEBUG_REMOTEOBJECT()
+          << "Conversion score " << score << " " << ms->parametersSignature().toString() << " -> "
+          << subSignature.toString();
         if (!score)
         {
           std::ostringstream ss;
@@ -494,7 +490,8 @@ namespace qi {
         }
       }
       rsl.remoteSignalLink = uid;
-      qiLogDebug() << "connect() to " << event << " gave " << uid << " (new remote connection)";
+      QI_LOG_DEBUG_REMOTEOBJECT() << "connect() to " << event << " gave " << uid
+                                  << " (new remote connection)";
       if (score >= 0.2)
         rsl.future = _self.async<SignalLink>("registerEvent", _service, event, uid);
       else // we might or might not be capable to convert, ask the remote end to try also
@@ -503,10 +500,10 @@ namespace qi {
     }
     else
     {
-      qiLogDebug() << "connect() to " << event << " gave " << uid << " (reusing remote connection)";
+      QI_LOG_DEBUG_REMOTEOBJECT() << "connect() to " << event << " gave " << uid << " (reusing remote connection)";
     }
 
-    rsl.future.connect(boost::bind<void>(&onEventConnected, this, _1, prom, uid));
+    rsl.future.connect(track(boost::bind<void>(&onEventConnected, this, _1, prom, uid), this));
     return prom.future();
   }
 
@@ -514,76 +511,80 @@ namespace qi {
   {
     unsigned int event = linkId >> 32;
     //disconnect locally
-    qi::Future<void> fut = DynamicObject::metaDisconnect(linkId);
-    if (fut.hasError())
+    Future<void> fut = DynamicObject::metaDisconnect(linkId);
+    return fut.then(track([=](Future<void> f) -> Future<void>
     {
-      std::stringstream ss;
-      ss << "Disconnection failure for " << linkId << ", error:" << fut.error();
-      qiLogWarning() << ss.str();
-      return qi::makeFutureError<void>(ss.str());
-    }
-
-    boost::recursive_mutex::scoped_lock _lock(_localToRemoteSignalLinkMutex);
-    LocalToRemoteSignalLinkMap::iterator it;
-    it = _localToRemoteSignalLink.find(event);
-    if (it == _localToRemoteSignalLink.end()) {
-      qiLogWarning() << "Cant find " << event << " in the localtoremote signal map";
-      return fut;
-    }
-    qi::SignalLink toDisco = qi::SignalBase::invalidSignalLink;
-    {
-      RemoteSignalLinks &rsl = it->second;
-      std::vector<SignalLink>::iterator vslit;
-      vslit = std::find(rsl.localSignalLink.begin(), rsl.localSignalLink.end(), linkId);
-
-      if (vslit != rsl.localSignalLink.end()) {
-        rsl.localSignalLink.erase(vslit);
-      } else {
-        qiLogWarning() << "Cant find " << linkId << " in the remote signal vector (event:" << event << ")";
+      if (f.hasError())
+      {
+        std::stringstream ss;
+        ss << "Disconnection failure for " << linkId << ", error:" << fut.error();
+        qiLogWarning() << ss.str();
+        throw std::runtime_error(ss.str());
       }
 
-      //only drop the remote connection when no more local connection are registered
-      if (rsl.localSignalLink.size() == 0) {
-        toDisco = rsl.remoteSignalLink;
-        _localToRemoteSignalLink.erase(it);
+      boost::recursive_mutex::scoped_lock _lock(_localToRemoteSignalLinkMutex);
+      LocalToRemoteSignalLinkMap::iterator it;
+      it = _localToRemoteSignalLink.find(event);
+      if (it == _localToRemoteSignalLink.end()) {
+        qiLogWarning() << "Cant find " << event << " in the localtoremote signal map";
+        return f;
       }
-    }
-    if (toDisco != qi::SignalBase::invalidSignalLink) {
-      TransportSocketPtr sock = _socket;
-      if (sock && sock->isConnected())
-        return _self.async<void>("unregisterEvent", _service, event, toDisco);
-    }
-    return fut;
+
+      qi::SignalLink toDisco = qi::SignalBase::invalidSignalLink;
+      {
+        RemoteSignalLinks &rsl = it->second;
+        std::vector<SignalLink>::iterator vslit;
+        vslit = std::find(rsl.localSignalLink.begin(), rsl.localSignalLink.end(), linkId);
+
+        if (vslit != rsl.localSignalLink.end()) {
+          rsl.localSignalLink.erase(vslit);
+        } else {
+          qiLogWarning() << "Cant find " << linkId << " in the remote signal vector (event:" << event << ")";
+        }
+
+        //only drop the remote connection when no more local connection are registered
+        if (rsl.localSignalLink.size() == 0) {
+          toDisco = rsl.remoteSignalLink;
+          _localToRemoteSignalLink.erase(it);
+        }
+      }
+
+      if (toDisco != qi::SignalBase::invalidSignalLink) {
+        MessageSocketPtr sock = *_socket;
+        if (sock && sock->isConnected())
+          return _self.async<void>("unregisterEvent", _service, event, toDisco);
+      }
+      return f;
+    }, this)).unwrap();
   }
 
   void RemoteObject::close(const std::string& reason, bool fromSignal)
   {
-    qiLogDebug() << "Socket disconnection";
-    TransportSocketPtr socket;
+    QI_LOG_DEBUG_REMOTEOBJECT() << "Closing remote object";
+    MessageSocketPtr socket;
     {
-       boost::mutex::scoped_lock lock(_socketMutex);
-       socket = _socket;
-       _socket.reset();
+       auto syncSock = _socket.synchronize();
+       socket = *syncSock;
+       syncSock->reset();
     }
     if (socket)
     { // Do not hold any lock when invoking signals.
-        qiLogDebug() << "Removing connection from socket" << (void*)socket.get();
-        socket->messagePendingDisconnect(_service, TransportSocket::ALL_OBJECTS, _linkMessageDispatcher);
-        if (!fromSignal)
-          socket->disconnected.disconnect(_linkDisconnected);
+      QI_LOG_DEBUG_REMOTEOBJECT() << "Removing connection from socket " << socket;
+      socket->messagePendingDisconnect(_service, _object, _linkMessageDispatcher);
+      if (!fromSignal)
+        socket->disconnected.disconnectAsync(_linkDisconnected);
     }
     std::map<int, qi::Promise<AnyReference> > promises;
     {
-      boost::mutex::scoped_lock lock(_promisesMutex);
-      promises = _promises;
-      _promises.clear();
+      auto syncPromises = _promises.synchronize();
+      promises = *syncPromises;
+      syncPromises->clear();
     }
     // Nobody should be able to add anything to promises at this point.
-    std::map<int, qi::Promise<AnyReference> >::iterator it;
-    for (it = promises.begin(); it != promises.end(); ++it)
+    for (auto& pair: promises)
     {
-      qiLogVerbose() << "Reporting error for request " << it->first << "(" << reason << ")";
-      it->second.setError(reason);
+      qiLogVerbose() << "Reporting error for request " << pair.first << "(" << reason << ")";
+      pair.second.setError(reason);
     }
 
     //@warning: remove connection are not removed
@@ -593,14 +594,14 @@ namespace qi {
 
  qi::Future<AnyValue> RemoteObject::metaProperty(qi::AnyObject context, unsigned int id)
  {
-   qiLogDebug() << "bouncing property";
+   QI_LOG_DEBUG_REMOTEOBJECT() << "bouncing property";
    // FIXME: perform some validations on this end?
    return _self.async<AnyValue>("property", id);
  }
 
  qi::Future<void> RemoteObject::metaSetProperty(qi::AnyObject context, unsigned int id, AnyValue val)
  {
-   qiLogDebug() << "bouncing setProperty";
+   QI_LOG_DEBUG_REMOTEOBJECT() << "bouncing setProperty";
    return _self.async<void>("setProperty", id, val);
  }
 

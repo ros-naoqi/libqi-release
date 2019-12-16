@@ -3,28 +3,33 @@
 #include <qi/application.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
 #include <qi/path.hpp>
+#include <ka/scoped.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/cxx11/all_of.hpp>
 #include <boost/filesystem/fstream.hpp>
+
+#ifdef _WIN32
+  #include <Windows.h>
+#endif
 
 qiLogCategory("qitype.package");
 
 namespace qi
 {
   // function called to init a module
-  typedef void (*moduleInitFn)(ModuleBuilder*);
+  using moduleInitFn = void (*)(ModuleBuilder*);
 
   // function called to init a module factory
-  typedef void(*moduleFactoryPluginFn)(void);
+  using moduleFactoryPluginFn = void(*)(void);
 
-  typedef std::map<std::string, AnyModule> AnyModuleMap;
+  using AnyModuleMap = std::map<std::string, AnyModule>;
 
   static boost::recursive_mutex* gMutexPkg      = NULL;
   static boost::recursive_mutex* gMutexLoading  = NULL;
   static AnyModuleMap*           gReadyPackages = NULL;
 
   /// Language -> Factory Function
-  typedef std::map<std::string, ModuleFactoryFunctor> ModuleFactoryMap;
+  using ModuleFactoryMap = std::map<std::string, ModuleFactoryFunctor>;
   ModuleFactoryMap               gModuleFactory;
 
   static void loadModuleFactoryPlugins() {
@@ -37,6 +42,13 @@ namespace qi
       qiLogVerbose() << "found module factory: '" << vs.at(i) << "'";
       void* lib;
       try {
+#ifdef _WIN32
+        auto errorMode = ka::scoped(GetErrorMode(), [](UINT oldErrorMode)
+        {
+          SetErrorMode(oldErrorMode);
+        });
+        SetErrorMode(errorMode.value | SEM_FAILCRITICALERRORS);
+#endif
         lib = qi::Application::loadModule(vs.at(i));
       }
       catch (std::exception& e)

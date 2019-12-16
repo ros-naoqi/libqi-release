@@ -25,14 +25,15 @@ namespace qi
   class MapTypeInterface;
   class StructTypeInterface;
   class DynamicTypeInterface;
+  class OptionalTypeInterface;
 
   class AutoAnyReference;
 
   class AnyReference;
-  typedef std::vector<AnyReference> AnyReferenceVector;
+  using AnyReferenceVector = std::vector<AnyReference>;
 
   class AnyValue;
-  typedef std::vector<AnyValue> AnyValueVector;
+  using AnyValueVector = std::vector<AnyValue>;
 
   class AnyIterator;
 
@@ -41,9 +42,9 @@ namespace qi
   class Empty;
   class Proxy;
   template<typename T=Empty> class Object;
-  typedef Object<Empty> AnyObject;
+  using AnyObject = Object<Empty>;
   template<typename T=Empty> class WeakObject;
-  typedef WeakObject<Empty> AnyWeakObject;
+  using AnyWeakObject = WeakObject<Empty>;
 
   class GenericObject;
 
@@ -69,6 +70,7 @@ namespace qi
     TypeKind_Signal   = 15,
     TypeKind_Property = 16,
     TypeKind_VarArgs  = 17,
+    TypeKind_Optional = 18,
   };
 
 }

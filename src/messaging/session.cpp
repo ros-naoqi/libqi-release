@@ -9,9 +9,11 @@
 # pragma warning(disable: 4355)
 #endif
 
+#include <sstream>
 #include <qi/session.hpp>
+#include <ka/scoped.hpp>
 #include "message.hpp"
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include <qi/anyobject.hpp>
 #include <qi/messaging/serviceinfo.hpp>
 #include "remoteobject_p.hpp"
@@ -21,16 +23,22 @@
 #include "authprovider_p.hpp"
 #include "clientauthenticator_p.hpp"
 
+#include <boost/range/adaptor/transformed.hpp>
+#include <boost/algorithm/string/join.hpp>
+
 qiLogCategory("qimessaging.session");
 
 namespace qi {
-
-  SessionPrivate::SessionPrivate(qi::Session* session, bool enforceAuth)
+  SessionPrivate::SessionPrivate(qi::Session* session,
+                                 bool enforceAuth,
+                                 SessionConfig config)
     : _sdClient(enforceAuth)
     , _serverObject(&_sdClient, enforceAuth)
     , _serviceHandler(&_socketsCache, &_sdClient, &_serverObject, enforceAuth)
     , _servicesHandler(&_sdClient, &_serverObject)
     , _sd(&_serverObject)
+    , _sdClientClosedByThis{ false }
+    , _config(std::move(config))
   {
     session->connected.setCallType(qi::MetaCallType_Queued);
     session->disconnected.setCallType(qi::MetaCallType_Queued);
@@ -46,12 +54,28 @@ namespace qi {
     setClientAuthenticatorFactory(ClientAuthenticatorFactoryPtr(new NullClientAuthenticatorFactory));
   }
 
-  SessionPrivate::~SessionPrivate() {
+  SessionPrivate::~SessionPrivate()
+  {
     destroy();
-    close();
+    try
+    {
+      close();
+    }
+    catch (const std::exception& ex)
+    {
+      qiLogError() << "Exception caught during session destruction: " << ex.what();
+    }
+    catch (...)
+    {
+      qiLogError() << "Unknown exception caught during session destruction";
+    }
   }
 
-  void SessionPrivate::onServiceDirectoryClientDisconnected(std::string error) {
+  void SessionPrivate::onServiceDirectoryClientDisconnected(std::string /*error*/)
+  {
+    if (_sdClientClosedByThis)
+      return;
+
     /*
      * Remove all proxies to services if the SD is fallen.
      */
@@ -81,13 +105,14 @@ namespace qi {
     if (f.hasError())
     {
       qiLogDebug() << "addSdSocketToCache: connect reported failure";
-      _serviceHandler.removeService("ServiceDirectory");
+      _serviceHandler.removeService(Session::serviceDirectoryServiceName());
       p.setError(f.error());
       return;
     }
 
     // Allow the SD process to use the existing socket to talk to our services
-    _serverObject.registerSocket(_sdClient.socket());
+    MessageSocketPtr sdSocket = _sdClient.socket();
+    _serverObject.addOutgoingSocket(sdSocket);
 
     /* Allow reusing the SD socket for communicating with services.
      * To do this, we must add it to our socket cache, and for this we need
@@ -96,18 +121,17 @@ namespace qi {
      std::string mid;
      try
      {
-       mid = _sdClient.machineId();
+       mid = _sdClient.machineId().value();
      }
      catch (const std::exception& e)
      { // Provide a nice message for backward compatibility
        qiLogVerbose() << e.what();
        qiLogWarning() << "Failed to obtain machineId, connection to service directory will not be reused for other services.";
-       p.setValue(0);
+       p.setError(e.what());
        return;
      }
-     TransportSocketPtr s = _sdClient.socket();
-     qiLogVerbose() << "Inserting sd to cache for " << mid <<" " << url.str() << std::endl;
-     _socketsCache.insert(mid, s->remoteEndpoint(), s);
+     qiLogVerbose() << "Inserting sd to cache for " << mid <<" " << url.str();
+     _socketsCache.insert(mid, sdSocket->remoteEndpoint().value(), sdSocket);
      p.setValue(0);
   }
 
@@ -115,52 +139,101 @@ namespace qi {
   {
     if (isConnected()) {
       const char* s = "Session is already connected";
-      qiLogInfo() << s;
+      qiLogVerbose() << s;
       return qi::makeFutureError<void>(s);
     }
     _serverObject.open();
     //add the servicedirectory object into the service cache (avoid having
     // two remoteObject registered on the same transportSocket)
-    _serviceHandler.addService("ServiceDirectory", _sdClient.object());
+    _serviceHandler.addService(Session::serviceDirectoryServiceName(), _sdClient.object());
     _socketsCache.init();
 
     qi::Future<void> f = _sdClient.connect(serviceDirectoryURL);
     qi::Promise<void> p;
 
-    // go through hoops to get shared_ptr on this
-    f.connect(&SessionPrivate::addSdSocketToCache, this, _1, serviceDirectoryURL, p);
+    f.then([=](Future<void> f) {
+      _sdClientClosedByThis = false;
+      addSdSocketToCache(f, serviceDirectoryURL, p);
+    });
     return p.future();
   }
 
 
   qi::FutureSync<void> SessionPrivate::close()
   {
+    _sdClientClosedByThis = true;
     _serviceHandler.close();
     _serverObject.close();
     _socketsCache.close();
-    return _sdClient.close();
+    return _sdClient.close().async();
   }
 
   bool SessionPrivate::isConnected() const {
     return _sdClient.isConnected();
   }
 
+  SessionConfig::SessionConfig() = default;
+
+  Url SessionConfig::defaultConnectUrl()
+  {
+    static const Url url("tcp://127.0.0.1:9559");
+    QI_ASSERT_TRUE(url.isValid());
+    return url;
+  }
+
+  Url SessionConfig::defaultListenUrl()
+  {
+    static const Url url("tcp://127.0.0.1:0");
+    QI_ASSERT_TRUE(url.isValid());
+    return url;
+  }
 
   // ###### Session
-  Session::Session(bool enforceAuthentication)
-    : _p(new SessionPrivate(this, enforceAuthentication))
+  Session::Session(bool enforceAuthentication, SessionConfig config)
+    : _p(new SessionPrivate(this, enforceAuthentication, std::move(config)))
   {
 
+  }
+
+  Session::Session(SessionConfig defaultConfig)
+    : Session(false, std::move(defaultConfig))
+  {
   }
 
   Session::~Session()
   {
-    //nothing to do here, the _p is shared between multiples sessions
-    //so we should not touch it.
+    // Reset the pointer before the end of the destructor in case it is tracked by callbacks that
+    // might use other members of Session.
+    _p.reset();
   }
 
+  const char* Session::serviceDirectoryServiceName()
+  {
+    static const auto sdServiceName = "ServiceDirectory";
+    return sdServiceName;
+  }
+
+  const SessionConfig& Session::config() const
+  {
+    return _p->_config;
+  }
 
   // ###### Client
+  qi::FutureSync<void> Session::connect()
+  {
+    // If no connect URL was specified in the configuration, fallback on the hardcoded default
+    // connect URL. This is to have an homogeneous behavior with `listen`.
+    const auto& connectUrl = _p->_config.connectUrl;
+    if (!connectUrl)
+    {
+      const auto defaultConnectUrl = SessionConfig::defaultConnectUrl();
+      qiLogVerbose() << "No connect URL configured, using the hardcoded default value '"
+                     << defaultConnectUrl << "'";
+      return listen(defaultConnectUrl);
+    }
+    return connect(*connectUrl);
+  }
+
   qi::FutureSync<void> Session::connect(const char* serviceDirectoryURL)
   {
     return _p->connect(qi::Url(serviceDirectoryURL, "tcp", 9559));
@@ -212,34 +285,109 @@ namespace qi {
     return _p->_servicesHandler.services(locality);
   }
 
-  qi::FutureSync< qi::AnyObject > Session::service(const std::string &service,
-                                               const std::string &protocol)
+  qi::FutureSync< qi::AnyObject > Session::service(
+    const std::string& service, const std::string& protocol, qi::MilliSeconds timeout)
   {
     if (!isConnected()) {
       return qi::makeFutureError< qi::AnyObject >("Session not connected.");
     }
-    return _p->_serviceHandler.service(service, protocol);
+    return cancelOnTimeout(_p->_serviceHandler.service(service, protocol), timeout);
   }
 
-
-  qi::FutureSync<void> Session::listen(const qi::Url &address)
+  qi::FutureSync<void> Session::listen()
   {
-    qiLogInfo() << "Session listener created on " << address.str();
+    // If no listen URL was specified in the configuration, then the list is empty and the `listen`
+    // overload will use the hardcoded default value.
+    return listen(_p->_config.listenUrls);
+  }
+
+  qi::FutureSync<void> Session::listen(const qi::Url& address)
+  {
+    qiLogVerbose() << "Session listener created on " << address.str();
     return _p->_serverObject.listen(address);
+  }
+
+  qi::FutureSync<void> Session::listen(const std::vector<Url>& addresses)
+  {
+    if (addresses.empty())
+    {
+      const auto defaultListenUrl = SessionConfig::defaultListenUrl();
+      qiLogWarning() << "No listen URL specified, using the hardcoded default value '"
+                     << defaultListenUrl << "', consider specifying a value.";
+      return listen(defaultListenUrl);
+    }
+
+    qiLogVerbose() << "Session listener created on "
+                << boost::join(boost::adaptors::transform(addresses,
+                                                          [](const Url& address) {
+                                                            return address.str();
+                                                          }),
+                               ", ");
+    std::vector<Future<void>> futs;
+    futs.reserve(addresses.size());
+    std::transform(addresses.cbegin(), addresses.cend(), std::back_inserter(futs),
+                   [&](const Url& listenUrl) { return listen(listenUrl).async(); });
+
+    Promise<void> prom;
+    waitForAll(futs).async().andThen([prom](const std::vector<Future<void>>& futs) mutable {
+      std::ostringstream oss;
+      bool failure = false;
+      for (const auto& fut : futs)
+      {
+        if (fut.hasValue())
+          continue;
+
+        const auto wasFailure = ka::exchange(failure, true);
+        if (wasFailure)
+          oss << ", ";
+        if (fut.hasError())
+          oss << fut.error();
+        else
+        {
+          QI_ASSERT_TRUE(fut.isCanceled());
+          oss << "listen request was canceled";
+        }
+      }
+      if (failure)
+        prom.setError("Failed to listen on all URLs: " + oss.str());
+      else
+        prom.setValue(nullptr);
+    });
+    return prom.future();
+  }
+
+  qi::FutureSync<void> Session::listenStandalone()
+  {
+    // If no listen URL was specified in the configuration, fallback on the hardcoded default
+    // listen URL. This is to have an homogeneous behavior with `listen`.
+    const auto& listenUrls = _p->_config.listenUrls;
+    if (listenUrls.empty())
+    {
+      const auto defaultListenUrl = SessionConfig::defaultListenUrl();
+      qiLogWarning() << "No listen URL configured, using the hardcoded default value '"
+                     << defaultListenUrl << "', consider specifying a value.";
+      return listenStandalone(defaultListenUrl);
+    }
+    return listenStandalone(listenUrls);
   }
 
   qi::FutureSync<void> Session::listenStandalone(const qi::Url &address)
   {
-    return _p->listenStandalone(address);
+    return _p->listenStandalone({address});
   }
 
-  qi::FutureSync<void> SessionPrivate::listenStandalone(const qi::Url& address)
+  qi::FutureSync<void> Session::listenStandalone(const std::vector<qi::Url> &addresses)
+  {
+    return _p->listenStandalone(addresses);
+  }
+
+  qi::FutureSync<void> SessionPrivate::listenStandalone(const std::vector<qi::Url>& addresses)
   {
     _serverObject.open();
     qi::Promise<void> p;
     //will listen and connect
-    qi::Future<void> f = _sd.listenStandalone(address);
-    f.connect(&SessionPrivate::listenStandaloneCont, this, p, _1);
+    qi::Future<void> f = _sd.listenStandalone(addresses);
+    f.then(std::bind(&SessionPrivate::listenStandaloneCont, this, p, std::placeholders::_1));
     return p.future();
   }
 
@@ -249,7 +397,7 @@ namespace qi {
       p.setError(f.error());
     else
     {
-      _sdClient.setServiceDirectory(boost::static_pointer_cast<ServiceBoundObject>(_sd._serviceBoundObject)->object());
+      _sdClient.setServiceDirectory(_sd._serviceBoundObject->object());
       // _sdClient will trigger its connected, which will trigger our connected
 
       p.setValue(0);
@@ -265,11 +413,12 @@ namespace qi {
   {
     if (!obj)
       return makeFutureError<unsigned int>("registerService: Object is empty");
-    if (endpoints().empty()) {
-      qi::Url listeningAddress("tcp://0.0.0.0:0");
-      qiLogVerbose() << listeningAddress.str() << "." << std::endl;
-      listen(listeningAddress);
-    }
+
+    // Compatibility: Exposing a service means the session must be a server (it must be listening
+    // for connections). A better solution would probably be to raise an error, but since a lot of
+    // code relies on the following behavior, we're keeping it that way.
+    if (endpoints().empty())
+      listen();
 
     if (!isConnected()) {
       return qi::makeFutureError< unsigned int >("Session not connected.");
@@ -292,7 +441,7 @@ namespace qi {
     return _p->_serverObject.endpoints();
   }
 
-  void Session::loadService(const std::string &moduleName, const std::string& renameModule, const AnyReferenceVector& args)
+  qi::FutureSync<unsigned int> Session::loadService(const std::string &moduleName, const std::string& renameModule, const AnyReferenceVector& args)
   {
     size_t separatorPos = moduleName.find_last_of(".");
     std::string function = moduleName.substr(separatorPos + 1);
@@ -302,7 +451,7 @@ namespace qi {
       rename = function;
 
     qi::AnyValue retval = _callModule(moduleName, args, qi::MetaCallType_Direct).value();
-    registerService(rename, retval.to<qi::AnyObject>());
+    return registerService(rename, retval.to<qi::AnyObject>());
   }
 
   qi::Future<AnyValue> Session::_callModule(const std::string &moduleName,
@@ -327,71 +476,94 @@ namespace qi {
     else
       ret = p.metaCall(function, args, metacallType);
 
-    qi::Promise<AnyValue> promise(qi::PromiseNoop<AnyValue>);
-    qi::detail::futureAdapter(ret, promise);
+    qi::Promise<AnyValue> promise;
+    promise.setOnCancel([ret](qi::Promise<AnyValue>&) mutable { ret.cancel(); });
+    ret.then(qi::bind(qi::detail::futureAdapter<qi::AnyValue>, _1, promise));
     return promise.future();
   }
 
-  void SessionPrivate::onTrackedServiceAdded(const std::string& actual,
-      const std::string& expected,
-      qi::Promise<void> promise,
-      boost::shared_ptr<qi::Atomic<int> > link)
+  FutureSync<void> Session::waitForService(const std::string& servicename)
   {
-    if (actual != expected)
-      return;
-
-    // only do it once in case of multiple calls
-    SignalLink link2 = link->swap(0);
-
-    if (link2 == 0)
-      return;
-
-    _sdClient.serviceAdded.disconnect(link2);
-
-    promise.setValue(0);
+    return waitForService(servicename, defaultWaitForServiceTimeout());
   }
 
-  void SessionPrivate::onServiceTrackingCanceled(qi::Promise<void> promise,
-      boost::shared_ptr<qi::Atomic<int> > link)
+  FutureSync<void> Session::waitForService(const std::string& servicename, MilliSeconds timeout)
   {
-    SignalLink link2 = link->swap(0);
-
-    if (link2 == 0)
-      return;
-
-    _sdClient.serviceAdded.disconnect(link2);
-    promise.setCanceled();
+    return cancelOnTimeout(waitForServiceImpl(servicename).async(), timeout);
   }
 
-  qi::FutureSync<void> Session::waitForService(const std::string& servicename)
+  qi::FutureSync<void> Session::waitForServiceImpl(const std::string& servicename)
   {
-    boost::shared_ptr<qi::Atomic<int> > link =
-      boost::make_shared<qi::Atomic<int> >(0);
+    qi::Promise<void> promise(
+          [](qi::Promise<void> &promise)
+          {
+            try
+            {
+              promise.setCanceled();
+            }
+            catch (...) {} // promise already set
+          });
 
-    qi::Promise<void> promise(qi::bindSilent(
-          &SessionPrivate::onServiceTrackingCanceled,
-          boost::weak_ptr<SessionPrivate>(_p),
-          _1,
-          link));
-    *link = (int)_p->_sdClient.serviceAdded.connect(
-          &SessionPrivate::onTrackedServiceAdded,
-          boost::weak_ptr<SessionPrivate>(_p),
-          _2,
-          servicename,
-          promise,
-          link);
+    auto onServiceAdded =
+          [promise, servicename](unsigned int, const std::string &name) mutable
+          {
+            if (name != servicename)
+              return;
+            try
+            {
+              promise.setValue(nullptr);
+            }
+            catch (...) {} // promise already set
+          };
 
-    qi::Future<qi::AnyObject> s = service(servicename);
-    if (!s.hasError())
-      // service is already available, trigger manually (it's ok if it's
-      // triggered multiple time)
-      _p->onTrackedServiceAdded(servicename, servicename, promise, link);
+    auto futureLink = _p->_sdClient.serviceAdded.connectAsync(
+          qi::AnyFunction::from(onServiceAdded)).andThen( // TODO avoid qi::AnyFunction. see #42091
+          [](const SignalSubscriber &sub) { return sub.link(); });
 
+    // check if the service is already there *after* connecting to the signal,
+    // to avoid a race.
+    auto privSession = _p.get(); //< raw pointer to a Trackable
+    auto futureService = futureLink.andThen(track(
+          [privSession, servicename](qi::SignalLink) mutable
+          {
+            // Do not use the `Session_Service::service` method that returns an object for the
+            // service, instead use the service directory client `service` method that returns the
+            // service info. The reason behind this choice is that to construct a full object, we
+            // need to first get the service info from the service directory, then connect to the
+            // service (by authentifying this session to it) and get the meta object of the service,
+            // meaning at least 3 RPC to finally discard the object because all we need to know is
+            // if the service already exists or not.
+            return privSession->_sdClient.service(servicename);
+          }, privSession)).unwrap();
+
+    futureService.connect(
+          [promise](qi::Future<ServiceInfo> futureService) mutable
+          {
+             if (futureService.hasValue())
+             {
+               try
+               {
+                 promise.setValue(nullptr);
+               }
+               catch (...) {} // promise already set
+             }
+          });
+
+    // schedule some clean up
+    promise.future().connect(
+          track([futureLink, privSession] (qi::Future<void>) mutable
+          {
+            futureLink.cancel();
+            futureLink.andThen(track(
+                  [privSession](qi::SignalLink link)
+                  {
+                    privSession->_sdClient.serviceAdded.disconnectAsync(link);
+                  }, privSession));
+          }, privSession));
     return promise.future();
   }
 
 }
-
 
 #ifdef _MSC_VER
 # pragma warning( pop )

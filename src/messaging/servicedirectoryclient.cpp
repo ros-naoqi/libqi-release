@@ -5,7 +5,7 @@
 #include "servicedirectoryclient.hpp"
 #include <qi/type/objecttypebuilder.hpp>
 #include "servicedirectory_p.hpp"
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include "server.hpp"
 #include "authprovider_p.hpp"
 
@@ -13,16 +13,31 @@ qiLogCategory("qimessaging.servicedirectoryclient");
 
 namespace qi {
 
+  ServiceDirectoryClient::StateData::StateData(StateData&& o)
+  {
+    // Avoid repeating code by using the operator=. The performance impact should be negligible.
+    *this = std::move(o);
+  }
+
+  ServiceDirectoryClient::StateData&
+  ServiceDirectoryClient::StateData::operator=(StateData&& o)
+  {
+    sdSocket = ka::exchange(o.sdSocket, nullptr);
+    sdSocketDisconnectedSignalLink =
+      ka::exchange(o.sdSocketDisconnectedSignalLink, SignalBase::invalidSignalLink);
+    sdSocketSocketEventSignalLink =
+      ka::exchange(o.sdSocketSocketEventSignalLink, SignalBase::invalidSignalLink);
+    addSignalLink = ka::exchange(o.addSignalLink, SignalBase::invalidSignalLink);
+    removeSignalLink = ka::exchange(o.removeSignalLink, SignalBase::invalidSignalLink);
+    localSd = ka::exchange(o.localSd, false);
+    return *this;
+  }
 
   ServiceDirectoryClient::ServiceDirectoryClient(bool enforceAuth)
-    : _sdSocketDisconnectedSignalLink(0)
-    , _remoteObject(new RemoteObject(qi::Message::Service_ServiceDirectory))
-    , _addSignalLink(0)
-    , _removeSignalLink(0)
-    , _localSd(false)
+    : _remoteObject(new RemoteObject(qi::Message::Service_ServiceDirectory))
     , _enforceAuth(enforceAuth)
   {
-    _object = makeDynamicAnyObject(_remoteObject, true);
+    _object = makeDynamicAnyObject(_remoteObject.get(), false);
 
     connected.setCallType(MetaCallType_Direct);
     disconnected.setCallType(MetaCallType_Direct);
@@ -43,18 +58,18 @@ namespace qi {
     }
     if (future.hasError())
     {
-      qi::Future<void> fdc = onSocketDisconnected(future.error());
-      fdc.connect(&qi::Promise<void>::setError, promise, future.error());
+      qi::Future<void> fdc = onSocketFailure(_stateData.sdSocket, future.error());
+      fdc.then(std::bind(&qi::Promise<void>::setError, promise, future.error()));
       return;
     }
     bool ready = false;
     {
       boost::mutex::scoped_lock lock(_mutex);
       if (isAdd)
-        _addSignalLink = future.value();
+        _stateData.addSignalLink = future.value();
       else
-        _removeSignalLink = future.value();
-      ready = _addSignalLink && _removeSignalLink;
+        _stateData.removeSignalLink = future.value();
+      ready = _stateData.addSignalLink && _stateData.removeSignalLink;
     }
     if (ready)
     {
@@ -63,10 +78,96 @@ namespace qi {
     }
   }
 
-  void ServiceDirectoryClient::onMetaObjectFetched(qi::Future<void> future, qi::Promise<void> promise) {
-    if (future.hasError()) {
-      qi::Future<void> fdc = onSocketDisconnected(future.error());
-      fdc.connect(&qi::Promise<void>::setError, promise, future.error());
+  bool ServiceDirectoryClient::isPreviousSdSocket(const MessageSocketPtr& socket)
+  {
+    boost::mutex::scoped_lock lock(_mutex);
+    return socket != _stateData.sdSocket;
+  }
+
+  void ServiceDirectoryClient::cleanupPreviousSdSocket(const MessageSocketPtr& socket,
+                                                qi::Promise<void> connectionPromise) const
+  {
+    boost::mutex::scoped_lock lock(_mutex);
+    if (socket)
+      socket->disconnect().async();
+    connectionPromise.setError("Socket has been reset");
+  }
+
+  Future<void> ServiceDirectoryClient::closeImpl(const std::string& reason,
+                                                 bool sendSignalDisconnected)
+  {
+    // In order to hold the mutex for the shortest time, we swap the member variables with local
+    // variables (thus resetting the member variables to 0).
+    StateData stateData;
+    {
+      boost::mutex::scoped_lock lock(_mutex);
+      stateData = std::move(_stateData);
+    }
+
+    Future<void> fut = futurize(); // if there was nothing asynchronous to do, return a future with
+                                   // a value already set
+
+    using std::placeholders::_1;
+    if (stateData.sdSocket)
+    {
+      static const auto logSocketSignalDisc = [](const char* prefix, Future<bool> discFut) {
+        if (discFut.hasError())
+          qiLogDebug() << prefix << discFut.error();
+        else if (!discFut.value())
+          qiLogDebug() << prefix << "unknown error";
+      };
+
+      // Unlink from socket signal before disconnecting it.
+      if (stateData.sdSocketDisconnectedSignalLink != 0)
+        stateData.sdSocket->disconnected.disconnectAsync(stateData.sdSocketDisconnectedSignalLink)
+            .then(std::bind(logSocketSignalDisc, "Failed to disconnect Socket::disconnected: ", _1));
+      if (stateData.sdSocketSocketEventSignalLink != 0)
+        stateData.sdSocket->socketEvent.disconnectAsync(stateData.sdSocketSocketEventSignalLink)
+            .then(std::bind(logSocketSignalDisc, "Failed to disconnect Socket::socketEvent: ", _1));
+      fut = stateData.sdSocket->disconnect().async();
+
+      if (sendSignalDisconnected)
+        disconnected(reason);
+    }
+
+    {
+      static const auto logObjectSignalDisc = [](const char* prefix, Future<void> discFut) {
+        if (discFut.hasError())
+          qiLogDebug() << prefix << discFut.error();
+      };
+
+      if (stateData.addSignalLink != SignalBase::invalidSignalLink)
+        _object.disconnect(stateData.addSignalLink).async().then(
+              std::bind(logObjectSignalDisc, "Failed to disconnect SDC::serviceAdded: ", _1));
+
+      if (stateData.removeSignalLink != SignalBase::invalidSignalLink)
+        _object.disconnect(stateData.removeSignalLink).async().then(
+              std::bind(logObjectSignalDisc, "Failed to disconnect SDC::serviceRemoved: ", _1));
+    }
+
+    if (stateData.localSd)
+    {
+      boost::mutex::scoped_lock lock(_mutex);
+      _object = makeDynamicAnyObject(_remoteObject.get(), false);
+    }
+
+    return fut;
+  }
+
+  void ServiceDirectoryClient::onMetaObjectFetched(MessageSocketPtr socket,
+                                                   qi::Future<void> future,
+                                                   qi::Promise<void> promise)
+  {
+    if (isPreviousSdSocket(socket))
+    {
+      cleanupPreviousSdSocket(socket, promise);
+      return;
+    }
+
+    if (future.hasError())
+    {
+      qi::Future<void> fdc = onSocketFailure(socket, future.error());
+      fdc.then(std::bind(&qi::Promise<void>::setError, promise, future.error()));
       return;
     }
 
@@ -79,30 +180,43 @@ namespace qi {
         boost::function<void(unsigned int, const std::string&)>(
           qi::bind(&ServiceDirectoryClient::onServiceRemoved, this, _1, _2)));
 
-    fut1.connect(&ServiceDirectoryClient::onSDEventConnected, this, _1, promise, true);
-    fut2.connect(&ServiceDirectoryClient::onSDEventConnected, this, _1, promise, false);
+    fut1.then(track(
+      boost::bind(&ServiceDirectoryClient::onSDEventConnected, this, _1, promise, true), this));
+    fut2.then(track(
+      boost::bind(&ServiceDirectoryClient::onSDEventConnected, this, _1, promise, false), this));
   }
 
-  static void sendCapabilities(TransportSocketPtr sock)
+  namespace service_directory_client_private
   {
-    Message msg;
-    msg.setType(Message::Type_Capability);
-    msg.setService(Message::Service_Server);
-    msg.setValue(sock->localCapabilities(), typeOf<CapabilityMap>()->signature());
-    sock->send(msg);
-  }
+    static void sendCapabilities(MessageSocketPtr sock)
+    {
+      Message msg;
+      msg.setType(Message::Type_Capability);
+      msg.setService(Message::Service_Server);
+      msg.setValue(sock->localCapabilities(), typeOf<CapabilityMap>()->signature());
+      sock->send(std::move(msg));
+    }
+  } // service_directory_client_private
 
-  void ServiceDirectoryClient::onAuthentication(const TransportSocket::SocketEventData& data, qi::Promise<void> prom, ClientAuthenticatorPtr authenticator, SignalSubscriberPtr old)
+  void ServiceDirectoryClient::onAuthentication(MessageSocketPtr socket,
+                                                const MessageSocket::SocketEventData& data,
+                                                qi::Promise<void> prom,
+                                                ClientAuthenticatorPtr authenticator)
   {
     static const std::string cmsig = typeOf<CapabilityMap>()->signature().toString();
-    TransportSocketPtr sdSocket = _sdSocket;
-    if (data.which() == TransportSocket::Event_Error)
+    if (isPreviousSdSocket(socket))
     {
-      if (sdSocket)
-        sdSocket->socketEvent.disconnect(*old);
+      cleanupPreviousSdSocket(socket, prom);
+      return;
+    }
+
+    if (data.which() == MessageSocket::Event_Error)
+    {
+      if (socket)
+        socket->socketEvent.disconnect(_stateData.sdSocketSocketEventSignalLink);
       const std::string& err = boost::get<std::string>(data);
-      qi::Future<void> fdc = onSocketDisconnected(err);
-      fdc.connect(&qi::Promise<void>::setError, prom, err);
+      qi::Future<void> fdc = onSocketFailure(socket, err);
+      fdc.then(std::bind(&qi::Promise<void>::setError, prom, err));
       return;
     }
 
@@ -114,49 +228,50 @@ namespace qi {
 
     if (failure)
     {
-      if (sdSocket)
-        sdSocket->socketEvent.disconnect(*old);
+      if (socket)
+        socket->socketEvent.disconnect(_stateData.sdSocketSocketEventSignalLink);
       if (_enforceAuth)
       {
         std::stringstream error;
         if (msg.type() == Message::Type_Error)
-          error << "Authentication failed: " << msg.value("s", _sdSocket).to<std::string>();
+          error << "Authentication failed: " << msg.value("s", socket).to<std::string>();
         else
-          error << "Expected a message for function #" << Message::ServerFunction_Authenticate << " (authentication), received a message for function " << msg.function();
-        qi::Future<void> fdc = onSocketDisconnected(error.str());
-        fdc.connect(&qi::Promise<void>::setError, prom, error.str());
+          error << "Expected a message for function #" << Message::ServerFunction_Authenticate
+                << " (authentication), received a message for function " << msg.function();
+        qi::Future<void> fdc = onSocketFailure(socket, error.str());
+        fdc.then(std::bind(&qi::Promise<void>::setError, prom, error.str()));
       }
       else
       {
-        sendCapabilities(sdSocket);
+        service_directory_client_private::sendCapabilities(socket);
         qi::Future<void> future = _remoteObject->fetchMetaObject();
-        future.connect(&ServiceDirectoryClient::onMetaObjectFetched, this, _1, prom);
+        future.connect(track(
+          boost::bind(&ServiceDirectoryClient::onMetaObjectFetched, this, socket, _1, prom), this));
       }
       return;
     }
 
-    AnyReference cmref = msg.value(typeOf<CapabilityMap>()->signature(), _sdSocket);
-    CapabilityMap authData = cmref.to<CapabilityMap>();
-    cmref.destroy();
+    CapabilityMap authData = msg.value(typeOf<CapabilityMap>()->signature(), socket).to<CapabilityMap>();
     CapabilityMap::iterator authStateIt = authData.find(AuthProvider::State_Key);
 
     if (authStateIt == authData.end() || authStateIt->second.to<unsigned int>() < AuthProvider::State_Error
         || authStateIt->second.to<unsigned int>() > AuthProvider::State_Done)
     {
-      if (sdSocket)
-        sdSocket->socketEvent.disconnect(*old);
+      if (socket)
+        socket->socketEvent.disconnect(_stateData.sdSocketSocketEventSignalLink);
       std::string error = "Invalid authentication state token.";
-      qi::Future<void> fdc = onSocketDisconnected(error);
-      fdc.connect(&qi::Promise<void>::setError, prom, error);
+      qi::Future<void> fdc = onSocketFailure(socket, error);
+      fdc.then(std::bind(&qi::Promise<void>::setError, prom, error));
       qiLogError() << error;
       return;
     }
     if (authData[AuthProvider::State_Key].to<unsigned int>() == AuthProvider::State_Done)
     {
-      if (sdSocket)
-        sdSocket->socketEvent.disconnect(*old);
+      if (socket)
+        socket->socketEvent.disconnect(_stateData.sdSocketSocketEventSignalLink);
       qi::Future<void> future = _remoteObject->fetchMetaObject();
-      future.connect(&ServiceDirectoryClient::onMetaObjectFetched, this, _1, prom);
+      future.connect(track(
+        boost::bind(&ServiceDirectoryClient::onMetaObjectFetched, this, socket, _1, prom), this));
       return;
     }
 
@@ -166,18 +281,25 @@ namespace qi {
     authMsg.setType(Message::Type_Call);
     authMsg.setValue(nextData, cmsig);
     authMsg.setFunction(Message::ServerFunction_Authenticate);
-    _sdSocket->send(authMsg);
+    socket->send(std::move(authMsg));
   }
 
-  void ServiceDirectoryClient::onSocketConnected(qi::FutureSync<void> future, qi::Promise<void> promise) {
-    TransportSocketPtr sdSocket = _sdSocket;
-
-    if (future.hasError()) {
-      qi::Future<void> fdc = onSocketDisconnected(future.error());
-      fdc.connect(&qi::Promise<void>::setError, promise, future.error());
+  void ServiceDirectoryClient::onSocketConnected(MessageSocketPtr socket,
+                                                 qi::Future<void> future,
+                                                 qi::Promise<void> promise)
+  {
+    if (isPreviousSdSocket(socket))
+    {
+      cleanupPreviousSdSocket(socket, promise);
       return;
     }
-    if (!sdSocket)
+
+    if (future.hasError()) {
+      qi::Future<void> fdc = onSocketFailure(socket, future.error(), false);
+      fdc.then(std::bind(&qi::Promise<void>::setError, promise, future.error()));
+      return;
+    }
+    if (!socket)
       return;
 
     ClientAuthenticatorPtr authenticator = _authFactory->newAuthenticator();
@@ -185,12 +307,18 @@ namespace qi {
     {
       CapabilityMap tmp = authenticator->initialAuthData();
       for (CapabilityMap::iterator it = tmp.begin(), end = tmp.end(); it != end; ++it)
+      {
         authCaps[AuthProvider::UserAuthPrefix + it->first] = it->second;
+      }
     }
-    SignalSubscriberPtr protocolSubscriber(new SignalSubscriber);
-    *protocolSubscriber = sdSocket->socketEvent.connect(&ServiceDirectoryClient::onAuthentication, this, _1, promise, authenticator, protocolSubscriber);
 
-    CapabilityMap socketCaps = sdSocket->localCapabilities();
+    _stateData.sdSocketSocketEventSignalLink = socket->socketEvent.connect(track(
+        [=](const MessageSocket::SocketEventData& data) {
+          onAuthentication(socket, data, promise, authenticator);
+        },
+        this));
+
+    CapabilityMap socketCaps = socket->localCapabilities();
     socketCaps.insert(authCaps.begin(), authCaps.end());
 
     Message msgCapabilities;
@@ -198,7 +326,7 @@ namespace qi {
     msgCapabilities.setService(Message::Service_Server);
     msgCapabilities.setType(Message::Type_Call);
     msgCapabilities.setValue(socketCaps, typeOf<CapabilityMap>()->signature());
-    sdSocket->send(msgCapabilities);
+    socket->send(std::move(msgCapabilities));
   }
 
   //we ensure in that function that connect to all events are already setup when we said we are connect.
@@ -206,60 +334,83 @@ namespace qi {
   qi::FutureSync<void> ServiceDirectoryClient::connect(const qi::Url &serviceDirectoryURL) {
     if (isConnected()) {
       const char* s = "Session is already connected";
-      qiLogInfo() << s;
+      qiLogVerbose() << s;
       return qi::makeFutureError<void>(s);
     }
-    _sdSocket = qi::makeTransportSocket(serviceDirectoryURL.protocol());
-
-    if (!_sdSocket)
-      return qi::makeFutureError<void>(std::string("unrecognized protocol '") + serviceDirectoryURL.protocol() + "' in url '" + serviceDirectoryURL.str() + "'");
-    _sdSocketDisconnectedSignalLink = _sdSocket->disconnected.connect(&ServiceDirectoryClient::onSocketDisconnected, this, _1);
-    _remoteObject->setTransportSocket(_sdSocket);
-
     qi::Promise<void> promise;
-    qi::Future<void> fut = _sdSocket->connect(serviceDirectoryURL);
-    fut.connect(&ServiceDirectoryClient::onSocketConnected, this, _1, promise);
+    qi::Future<void> connecting;
+    {
+      boost::mutex::scoped_lock lock(_mutex);
+
+      if (_stateData.sdSocket)
+        _stateData.sdSocket->disconnect().async();
+      _stateData.sdSocket = qi::makeMessageSocket(serviceDirectoryURL.protocol());
+
+      if (!_stateData.sdSocket)
+        return qi::makeFutureError<void>(std::string("unrecognized protocol '") + serviceDirectoryURL.protocol() + "' in url '" + serviceDirectoryURL.str() + "'");
+      auto socket = _stateData.sdSocket;
+      _stateData.sdSocketDisconnectedSignalLink = _stateData.sdSocket->disconnected.connect(track(
+          [=](const std::string& reason) mutable {
+            auto fdc = onSocketFailure(socket, reason, true).async();
+            fdc.andThen([=](void*) mutable {
+              if (promise.future().isRunning())
+              {
+                promise.setError(reason);
+              }
+            });
+            fdc.wait();
+          },
+          this));
+      _remoteObject->setTransportSocket(_stateData.sdSocket);
+
+      connecting = _stateData.sdSocket->connect(serviceDirectoryURL);
+    }
+
+    connecting.connect(
+      track(boost::bind(&ServiceDirectoryClient::onSocketConnected, this, _stateData.sdSocket,
+                              _1, promise), this));
     return promise.future();
   }
 
   void ServiceDirectoryClient::setServiceDirectory(AnyObject serviceDirectoryService)
   {
     _object = serviceDirectoryService;
-    _localSd = true;
+    _stateData.localSd = true;
 
-    _addSignalLink = _object.connect(
-        "serviceAdded",
-        boost::function<void(unsigned int, const std::string&)>(
-          qi::bind(&ServiceDirectoryClient::onServiceAdded, this, _1, _2)));
-    _removeSignalLink = _object.connect(
-        "serviceRemoved",
-        boost::function<void(unsigned int, const std::string&)>(
-          qi::bind(&ServiceDirectoryClient::onServiceRemoved, this, _1, _2)));
+    {
+      boost::mutex::scoped_lock lock(_mutex);
+      _stateData.addSignalLink = _object.connect(
+          "serviceAdded",
+          boost::function<void(unsigned int, const std::string&)>(
+            qi::bind(&ServiceDirectoryClient::onServiceAdded, this, _1, _2))).value();
+      _stateData.removeSignalLink = _object.connect(
+          "serviceRemoved",
+          boost::function<void(unsigned int, const std::string&)>(
+            qi::bind(&ServiceDirectoryClient::onServiceRemoved, this, _1, _2))).value();
+    }
 
     connected();
   }
 
-  static void sharedPtrHolder(TransportSocketPtr* ptr)
-  {
-    delete ptr;
-  }
-
   qi::FutureSync<void> ServiceDirectoryClient::close() {
-    return onSocketDisconnected("User closed the connection");
+    return closeImpl("User closed the connection", true);
   }
 
-  bool                 ServiceDirectoryClient::isConnected() const {
-    if (_localSd)
+  bool ServiceDirectoryClient::isConnected() const
+  {
+    if (_stateData.localSd)
       return true;
-    return _sdSocket == 0 ? false : _sdSocket->isConnected();
+    boost::mutex::scoped_lock lock(_mutex);
+    return _stateData.sdSocket == 0 ? false : _stateData.sdSocket->isConnected();
   }
 
   qi::Url              ServiceDirectoryClient::url() const {
-    if (_localSd)
+    if (_stateData.localSd)
       throw std::runtime_error("Service directory is local, url() unknown.");
-    if (!_sdSocket)
+    boost::mutex::scoped_lock lock(_mutex);
+    if (!_stateData.sdSocket)
       throw std::runtime_error("Session disconnected");
-    return _sdSocket->url();
+    return _stateData.sdSocket->url();
   }
 
   void                  ServiceDirectoryClient::setClientAuthenticatorFactory(ClientAuthenticatorFactoryPtr authFactory)
@@ -268,78 +419,37 @@ namespace qi {
   }
 
   void ServiceDirectoryClient::onServiceRemoved(unsigned int idx, const std::string &name) {
-    qiLogVerbose() << "ServiceDirectoryClient: Service Removed #" << idx << ": " << name << std::endl;
+    qiLogVerbose() << "ServiceDirectoryClient: Service Removed #" << idx << ": " << name;
     serviceRemoved(idx, name);
   }
 
   void ServiceDirectoryClient::onServiceAdded(unsigned int idx, const std::string &name) {
-    qiLogVerbose() << "ServiceDirectoryClient: Service Added #" << idx << ": " << name << std::endl;
+    qiLogVerbose() << "ServiceDirectoryClient: Service Added #" << idx << ": " << name;
     serviceAdded(idx, name);
   }
 
-  qi::FutureSync<void> ServiceDirectoryClient::onSocketDisconnected(std::string error) {
-    qi::Future<void> fut;
+  qi::FutureSync<void> ServiceDirectoryClient::onSocketFailure(MessageSocketPtr socket,
+                                                               std::string error,
+                                                               bool sendSignalDisconnected)
+  {
+    if (isPreviousSdSocket(socket))
     {
-      qi::TransportSocketPtr socket;
-      { // can't hold lock while disconnecting signals, so swap _sdSocket.
-        boost::mutex::scoped_lock lock(_mutex);
-        std::swap(socket, _sdSocket);
-      }
-      if (!socket)
-        return qi::Future<void>(0);
-      // We just manually triggered onSocketDisconnected, so unlink
-      // from socket signal before disconnecting it.
-      socket->disconnected.disconnect(_sdSocketDisconnectedSignalLink);
-      // Manually trigger close on our remoteobject or it will be called
-      // asynchronously from socket.disconnected signal, and we would need to
-      // wait fo it.
-      _remoteObject->close("Socket disconnected");
-      fut = socket->disconnect();
-
-      // Hold the socket shared ptr alive until the future returns.
-      // otherwise, the destructor will block us until disconnect terminates
-      // Nasty glitch: socket is reusing promises, so this future hook will stay
-      // So pass shared pointer by pointer: that way a single delete statement
-      // will end all copies.
-      fut.connect(&sharedPtrHolder, new TransportSocketPtr(socket));
+      cleanupPreviousSdSocket(socket, qi::Promise<void>{});
+      return futurize();
     }
 
-    qi::SignalLink add=0, remove=0;
-    qi::AnyObject object;
-    {
-      boost::mutex::scoped_lock lock(_mutex);
-      std::swap(add, _addSignalLink);
-      std::swap(remove, _removeSignalLink);
-    }
-    try {
-      if (add != 0)
-      {
-        _object.disconnect(add);
-      }
-    } catch (std::runtime_error &e) {
-      qiLogDebug() << "Cannot disconnect SDC::serviceAdded: " << e.what();
-    }
-    try {
-      if (remove != 0)
-      {
-        _object.disconnect(remove);
-      }
-    } catch (std::runtime_error &e) {
-        qiLogDebug() << "Cannot disconnect SDC::serviceRemoved: " << e.what();
-    }
-    disconnected(error);
-
-    return fut;
+    return closeImpl(error, sendSignalDisconnected);
   }
 
-  TransportSocketPtr ServiceDirectoryClient::socket()
+  MessageSocketPtr ServiceDirectoryClient::socket()
   {
-    return _sdSocket;
+    boost::mutex::scoped_lock lock(_mutex);
+    return _stateData.sdSocket;
   }
 
   bool ServiceDirectoryClient::isLocal()
   {
-    return _localSd;
+    return _stateData.localSd;
   }
 
   qi::Future< std::vector<ServiceInfo> > ServiceDirectoryClient::services() {
@@ -370,7 +480,7 @@ namespace qi {
     return _object.async<std::string>("machineId");
   }
 
-  qi::Future<qi::TransportSocketPtr>   ServiceDirectoryClient::_socketOfService(unsigned int id) {
-    return _object.async<TransportSocketPtr>("_socketOfService", id);
+  qi::Future<qi::MessageSocketPtr>   ServiceDirectoryClient::_socketOfService(unsigned int id) {
+    return _object.async<MessageSocketPtr>("_socketOfService", id);
   }
 }

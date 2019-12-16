@@ -9,6 +9,15 @@
 
 namespace qi
 {
+  namespace capabilityname
+  {
+    char const * const clientServerSocket    = "ClientServerSocket";
+    char const * const metaObjectCache       = "MetaObjectCache";
+    char const * const messageFlags          = "MessageFlags";
+    char const * const remoteCancelableCalls = "RemoteCancelableCalls";
+    char const * const objectPtrUid          = "ObjectPtrUID";
+  }
+
 
 StreamContext::StreamContext()
 {
@@ -29,18 +38,19 @@ void StreamContext::advertiseCapabilities(const CapabilityMap &map)
   _localCapabilityMap.insert(map.begin(), map.end());
 }
 
-boost::optional<AnyValue> StreamContext::remoteCapability(const std::string& key)
+boost::optional<AnyValue> StreamContext::remoteCapability(const std::string& key) const
 {
   boost::mutex::scoped_lock loc(_contextMutex);
-  CapabilityMap::iterator it = _remoteCapabilityMap.find(key);
+  const auto it = _remoteCapabilityMap.find(key);
   if (it != _remoteCapabilityMap.end())
     return it->second;
   else
-    return boost::optional<AnyValue>();
+    return {};
 }
 
 bool StreamContext::hasReceivedRemoteCapabilities() const
 {
+  boost::mutex::scoped_lock lock(_contextMutex);
   return _remoteCapabilityMap.size() != 0;
 }
 
@@ -55,21 +65,21 @@ const CapabilityMap& StreamContext::localCapabilities() const
   return _localCapabilityMap;
 }
 
-boost::optional<AnyValue> StreamContext::localCapability(const std::string& key)
+boost::optional<AnyValue> StreamContext::localCapability(const std::string& key) const
 {
   boost::mutex::scoped_lock loc(_contextMutex);
-  CapabilityMap::iterator it = _localCapabilityMap.find(key);
+  const auto it = _localCapabilityMap.find(key);
   if (it != _localCapabilityMap.end())
     return it->second;
   else
-    return boost::optional<AnyValue>();
+    return {};
 }
 
-MetaObject StreamContext::receiveCacheGet(unsigned int uid)
+MetaObject StreamContext::receiveCacheGet(unsigned int uid) const
 {
   // Return by value, as map is by value.
   boost::mutex::scoped_lock lock(_contextMutex);
-  ReceiveMetaObjectCache::iterator it = _receiveMetaObjectCache.find(uid);
+  const auto it = _receiveMetaObjectCache.find(uid);
   if (it == _receiveMetaObjectCache.end())
     throw std::runtime_error("MetaObject not found in cache");
   return it->second;
@@ -98,23 +108,16 @@ std::pair<unsigned int, bool> StreamContext::sendCacheSet(const MetaObject& mo)
 static CapabilityMap* _defaultCapabilities = nullptr;
 static void initCapabilities()
 {
-  _defaultCapabilities  = new CapabilityMap();
-  /* ClientServerSocket : A client socket has the capability to accept and
-   * dispatch Type_Call messages (& friends).
-   * If set, stream used to register a service to the SD can be reused
-   * to communicate with said service, for instance.
-   */
-  (*_defaultCapabilities)["ClientServerSocket"] = AnyValue::from(true);
-  /* MetaObjectCache: Object serialization protocol supports the
-  * caching of MetaObjects (binary protocol change).
-  */
-  (*_defaultCapabilities)["MetaObjectCache"] = AnyValue::from(true);
-  /* MessageFlags: remote ends support Message flags (flags in 'type' header field)
-  */
-  (*_defaultCapabilities)["MessageFlags"] = AnyValue::from(true);
-  /* RemoteCancelableCalls: remote end supports call cancelations.
-   */
-  (*_defaultCapabilities)["RemoteCancelableCalls"] = AnyValue::from(true);
+  static const CapabilityMap defaultCaps =
+  { { capabilityname::clientServerSocket   , AnyValue::from(true)  }
+  , { capabilityname::messageFlags         , AnyValue::from(true)  }
+  , { capabilityname::metaObjectCache      , AnyValue::from(false) }
+  , { capabilityname::remoteCancelableCalls, AnyValue::from(true)  }
+  , { capabilityname::objectPtrUid         , AnyValue::from(true)  }
+  };
+
+  _defaultCapabilities = new CapabilityMap(defaultCaps);
+
   // Process override from environment
   std::string capstring = qi::os::getenv("QI_TRANSPORT_CAPABILITIES");
   std::vector<std::string> caps;

@@ -41,7 +41,7 @@ namespace qi
   };
 }
 class noSigForThis;
-typedef std::map<int, int> MapInt;
+using MapInt = std::map<int, int>;
 
 TEST(TestSignature, BasicTypeSignature) {
   EXPECT_EQ("b",    qi::signatureFromType<bool>::value());
@@ -164,22 +164,22 @@ TEST(TestSignature, NamedTuple) {
 
 TEST(TestSignature, ComplexTypeSignature) {
   //{ii}
-  typedef std::map<int,int> MapInt;
+  using MapInt = std::map<int, int>;
   //{{ii}{ii}}
-  typedef std::map<MapInt,MapInt>        MapInt2;
-  typedef std::vector<MapInt2>           VectorMapInt2;
+  using MapInt2 = std::map<MapInt, MapInt>;
+  using VectorMapInt2 = std::vector<MapInt2>;
 
   // MapInt2& Does not works
-  typedef MapInt2                        MapInt2Ref;
+  using MapInt2Ref = MapInt2;
 
-  typedef std::vector<MapInt2Ref>        VectMapInt2Ref;
+  using VectMapInt2Ref = std::vector<MapInt2Ref>;
 
-  //const VectMapInt2Ref does not works
-  typedef VectMapInt2Ref                 VectMapInt2RefConst;
+  // const VectMapInt2Ref does not works
+  using VectMapInt2RefConst = VectMapInt2Ref;
 
-  typedef std::vector< VectMapInt2RefConst > VectVectMapInt2ConstRef;
+  using VectVectMapInt2ConstRef = std::vector<VectMapInt2RefConst>;
 
-  typedef std::map<VectorMapInt2, VectVectMapInt2ConstRef> FuckinMap;
+  using FuckinMap = std::map<VectorMapInt2, VectVectMapInt2ConstRef>;
 
   //{[{{ii}{ii}}][[{{ii}{ii}}&]#]}
   //and obama said: Yes We Can!
@@ -652,6 +652,30 @@ QI_TYPE_STRUCT(Point, x, y, name);
 TEST(TestSignature, AnnotationStruct)
 {
   EXPECT_EQ("(dds)<Point,x,y,name>", qi::typeOf<Point>()->signature().toString());
+}
+
+TEST(TestSignature, AnnotatedStructCompatibleWithStringStringMap)
+{
+  qi::Signature s("(s)<Phrase,text>");
+  EXPECT_EQ(0., s.isConvertibleTo("{ss}"));
+}
+
+TEST(TestSignature, AnnotatedStructCompatibleWithStringIntMap)
+{
+  qi::Signature s("(ii)<Locale,language,region>");
+  EXPECT_EQ(0., s.isConvertibleTo("{si}"));
+}
+
+TEST(TestSignature, SeveralAnnotatedStructsCompatibleWithSeveralMaps)
+{
+  qi::Signature s("((s)<Phrase,text>(ii)<Locale,language,region>)");
+  EXPECT_EQ(0., s.isConvertibleTo("({ss}{si})"));
+}
+
+TEST(TestSignature, ObjectAndSeveralAnnotatedStructsCompatibleWithObjectAndSeveralMaps)
+{
+  qi::Signature s("(o(s)<Phrase,text>(ii)<Locale,language,region>)");
+  EXPECT_EQ(0., s.isConvertibleTo("(o{ss}{si})"));
 }
 
 std::string trimall(const std::string& s)

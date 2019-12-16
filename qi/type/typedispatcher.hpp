@@ -15,7 +15,7 @@ namespace qi {
    * Dispatcher must implement TypeDispatcher.
    */
   template<typename Dispatcher>
-  Dispatcher& typeDispatch(const Dispatcher& dispatcher, AnyReference value);
+  Dispatcher& typeDispatch(Dispatcher& dispatcher, AnyReference value);
 
 
   // class QI_API TypeDispatcher
@@ -35,6 +35,7 @@ namespace qi {
   //   void visitRaw(qi::AnyReference value);
   //   void visitIterator(qi::AnyReference value);
   //   void visitAnyObject(qi::AnyObject& ptr);
+  //   void visitOptional(qi::AnyReference value);
   // };
 
 }

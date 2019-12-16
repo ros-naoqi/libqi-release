@@ -37,8 +37,8 @@ namespace qi
     template<typename T>
     struct TypeTraitCreate<T, false>
     {
-      static void* create() { typeFail(typeid(T).name(), "default constructor"); return 0;}
-      static void createInPlace(void* ptr) {typeFail(typeid( T).name(), "default constructor");}
+      static void* create() { typeFail(qi::typeId<T>().name(), "default constructor"); return 0;}
+      static void createInPlace(void* ptr) {typeFail(qi::typeId<T>().name(), "default constructor");}
     };
 
     template<typename T, bool b>
@@ -53,9 +53,9 @@ namespace qi
     struct TypeTraitCopy<T, false>
     {
       template<typename T1, typename T2>
-      static void copy(const T1& d, const T2&s) {typeFail(typeid(T).name(), "copy operator");}
-      static void* clone(void* src) { typeFail(typeid(T).name(), "clone"); return 0;}
-      static void cloneInPlace(void* ptr, void* src) { typeFail(typeid(T).name(), "clone");}
+      static void copy(const T1& d, const T2&s) {typeFail(qi::typeId<T>().name(), "copy operator");}
+      static void* clone(void* src) { typeFail(qi::typeId<T>().name(), "clone"); return 0;}
+      static void cloneInPlace(void* ptr, void* src) { typeFail(qi::typeId<T>().name(), "clone");}
     };
 
     template<typename T, bool b>
@@ -68,7 +68,7 @@ namespace qi
     struct TypeTraitDestroy<T, false>
     {
       template<typename U>
-      static void destroy(const U& ptr) {typeFail(typeid(T).name(), "destructor");}
+      static void destroy(const U& ptr) {typeFail(qi::typeId<T>().name(), "destructor");}
     };
 
     /* Use a two-stage override mechanism.
@@ -136,7 +136,7 @@ namespace qi
   class TypeByPointer
   {
   public:
-    typedef T type;
+    using type = T;
 
     static void* ptrFromStorage(void** storage)
     {
@@ -153,7 +153,7 @@ namespace qi
       // in your code.
       void* res = Manager::create();
       if (!res)
-        qiLogError("qitype.bypointer") << "initializeStorage error on " << typeid(T).name();
+        qiLogError("qitype.bypointer") << "initializeStorage error on " << qi::typeId<T>().name();
       return res;
     }
 
@@ -184,7 +184,7 @@ namespace qi
   class TypeByValue
   {
   public:
-    typedef T type;
+    using type = T;
     static void* ptrFromStorage(void** storage)
     {
       return storage;
@@ -228,7 +228,7 @@ namespace qi
   class DefaultTypeImplMethods
   {
   public:
-    typedef _Access Access;
+    using Access = _Access;
 
     static void* initializeStorage(void* ptr=0)
     {
@@ -242,10 +242,8 @@ namespace qi
 
     static const TypeInfo&  info()
     {
-      static TypeInfo* result = 0;
-      if (!result)
-        result = new TypeInfo(typeid(T));
-      return *result;
+      static const TypeInfo result(qi::typeId<T>());
+      return result;
     }
 
     static void* clone(void* src)
@@ -265,32 +263,32 @@ namespace qi
   };
 
   ///Implement all methods of Type except clone/destroy as bouncers to Bouncer
-#define _QI_BOUNCE_TYPE_METHODS_NOCLONE(Bounce)                                          \
-  virtual const ::qi::TypeInfo& info() { return Bounce::info();}                           \
-  virtual void* initializeStorage(void* ptr=0) { return Bounce::initializeStorage(ptr);}   \
-  virtual void* ptrFromStorage(void**s) { return Bounce::ptrFromStorage(s);}               \
-  virtual bool  less(void* a, void* b) { return Bounce::less(a, b);}
+#define _QI_BOUNCE_TYPE_METHODS_NOCLONE(Bounce)                                                     \
+  const ::qi::TypeInfo& info() override { return Bounce::info();}                                   \
+  void* initializeStorage(void* ptr=0) override { return Bounce::initializeStorage(ptr);}           \
+  void* ptrFromStorage(void**s) override { return Bounce::ptrFromStorage(s);}                       \
+  bool  less(void* a, void* b) override { return Bounce::less(a, b);}
 
   ///Implement all methods of Type as bouncers to Bouncer
-#define _QI_BOUNCE_TYPE_METHODS(Bounce)  \
-  _QI_BOUNCE_TYPE_METHODS_NOCLONE(Bounce) \
-  virtual void* clone(void* ptr) { return Bounce::clone(ptr);}    \
-  virtual void destroy(void* ptr) { Bounce::destroy(ptr);}
+#define _QI_BOUNCE_TYPE_METHODS(Bounce)                                                             \
+  _QI_BOUNCE_TYPE_METHODS_NOCLONE(Bounce)                                                           \
+  void* clone(void* ptr) override { return Bounce::clone(ptr);}                                     \
+  void destroy(void* ptr) override { Bounce::destroy(ptr);}
 
   ///Implement all methods of Type except info() as bouncers to Bouncer.
-#define _QI_BOUNCE_TYPE_METHODS_NOINFO(Bounce) \
-  virtual void* initializeStorage(void* ptr=0) { return Bounce::initializeStorage(ptr);} \
-  virtual void* ptrFromStorage(void**s) { return Bounce::ptrFromStorage(s);}             \
-  virtual void* clone(void* ptr) { return Bounce::clone(ptr);}    \
-  virtual void  destroy(void* ptr) { Bounce::destroy(ptr);}       \
-  virtual bool  less(void* a, void* b) { return Bounce::less(a, b);}
+#define _QI_BOUNCE_TYPE_METHODS_NOINFO(Bounce)                                                    \
+  void* initializeStorage(void* ptr=0) override { return Bounce::initializeStorage(ptr);}         \
+  void* ptrFromStorage(void**s) override { return Bounce::ptrFromStorage(s);}                     \
+  void* clone(void* ptr) override { return Bounce::clone(ptr);}                                   \
+  void  destroy(void* ptr) override { Bounce::destroy(ptr);}                                      \
+  bool  less(void* a, void* b) override { return Bounce::less(a, b);}
 
   template < typename T, typename _Access = TypeByPointer<T> >
   class DefaultTypeImpl
       : public TypeInterface
   {
   public:
-    typedef DefaultTypeImplMethods<T, _Access> MethodsImpl;
+    using MethodsImpl = DefaultTypeImplMethods<T, _Access>;
     _QI_BOUNCE_TYPE_METHODS(MethodsImpl);
   };
 
@@ -307,19 +305,19 @@ namespace qi
   class TypeImpl<void>: public TypeInterface
   {
   public:
-    const TypeInfo& info()
+    const TypeInfo& info() override
     {
-      static TypeInfo result = TypeInfo(typeid(void));
+      static TypeInfo result = TypeInfo(qi::typeId<void>());
       return result;
     }
     // do not return 0 everywhere and provide a correct impl
     // this may be used as void*, that's why we need to keep storage
-    void* initializeStorage(void* ptr) { return ptr; }
-    void* ptrFromStorage(void** storage) { return (void*)storage; }
-    void* clone(void* storage) { return storage; }
-    void destroy(void* ptr) {}
-    TypeKind kind() { return TypeKind_Void; }
-    bool less(void* a, void* b) { return false; }
+    void* initializeStorage(void* ptr) override { return ptr; }
+    void* ptrFromStorage(void** storage) override { return (void*)storage; }
+    void* clone(void* storage) override { return storage; }
+    void destroy(void* ptr) override {}
+    TypeKind kind() override { return TypeKind_Void; }
+    bool less(void* a, void* b) override { return false; }
   };
 
   //reference

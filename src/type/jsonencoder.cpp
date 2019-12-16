@@ -12,6 +12,7 @@
 #include <qi/jsoncodec.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/type/typedispatcher.hpp>
+#include <qi/numeric.hpp>
 
 qiLogCategory("qitype.jsonencoder");
 
@@ -22,7 +23,7 @@ namespace qi {
   //Taken from boost::json
   inline char to_hex_char(unsigned int c)
   {
-    assert( c <= 0xF );
+    QI_ASSERT( c <= 0xF );
     const char ch = static_cast<char>( c );
     if( ch < 10 )
       return '0' + ch;
@@ -71,8 +72,8 @@ namespace qi {
   //Taken from boost::json
   std::string add_esc_chars(const std::wstring& s, JsonOption jsonPrintOption)
   {
-    typedef std::wstring::const_iterator Iter_type;
-    typedef std::wstring::value_type     Char_type;
+    using Iter_type = std::wstring::const_iterator;
+    using Char_type = std::wstring::value_type;
 
     std::string result;
     const Iter_type end( s.end() );
@@ -80,13 +81,14 @@ namespace qi {
     for(Iter_type i = s.begin(); i != end; ++i)
     {
       const Char_type c(*i);
-      if(add_esc_char(c, result, jsonPrintOption))
+      if (qi::numericIsInRange<char>(c) &&
+          add_esc_char(static_cast<char>(c), result, jsonPrintOption))
         continue;
-      const wint_t unsigned_c((c >= 0) ? c : 256 + c);
+      const wint_t unsigned_c = qi::numericConvert<wint_t>(c);
 
       // 127 is the end of printable characters in ASCII table.
       if(iswprint(unsigned_c) && unsigned_c < 127)
-        result += c;
+        result += static_cast<char>(c);
       else
         result += non_printable_to_string(unsigned_c);
     }
@@ -171,11 +173,19 @@ namespace qi {
     void visitFloat(double value, int byteSize)
     {
       if (byteSize == 4)
+      {
+        out.precision(std::numeric_limits<float>::max_digits10);
         out << ((float)value);
+      }
       else if (byteSize == 8)
+      {
+        out.precision(std::numeric_limits<double>::max_digits10);
         out << ((double)value);
+      }
       else
+      {
         qiLogError() << "serialize on unknown float type " << byteSize;
+      }
     }
 
     void visitString(const char* data, size_t size)
@@ -304,6 +314,18 @@ namespace qi {
     {
       qiLogError() << "JSON Error: no serialization for iterator!!!";
       out << "\"Error: no serialization for iterator\"";
+    }
+
+    void visitOptional(AnyReference value)
+    {
+      if (value.optionalHasValue())
+      {
+        serialize(value.content(), out, jsonPrintOption, indent);
+      }
+      else
+      {
+        out << "null";
+      }
     }
 
     std::stringstream& out;

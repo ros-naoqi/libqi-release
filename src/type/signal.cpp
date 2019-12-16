@@ -2,8 +2,9 @@
 **  Copyright (C) 2012 Aldebaran Robotics
 **  See COPYING for the license
 */
+#include <atomic>
 #include <map>
-#include <qi/atomic.hpp>
+#include <numeric>
 
 #include <boost/thread/recursive_mutex.hpp>
 #include <boost/make_shared.hpp>
@@ -11,6 +12,10 @@
 #include <qi/signal.hpp>
 #include <qi/anyvalue.hpp>
 #include <qi/anyobject.hpp>
+#include <qi/assert.hpp>
+#include <qi/numeric.hpp>
+#include <ka/algorithm.hpp>
+#include <ka/src.hpp>
 
 #include "signal_p.hpp"
 
@@ -18,68 +23,117 @@ qiLogCategory("qitype.signal");
 
 namespace qi {
 
+  SignalBasePrivate::~SignalBasePrivate()
+  {
+    {
+      boost::recursive_mutex::scoped_lock lock(mutex);
+      onSubscribers = SignalBase::OnSubscribers();
+    }
+    disconnectAll();
+  }
+
+  Future<bool> SignalBasePrivate::disconnect(const SignalLink& l)
+  {
+    SignalSubscriber subscriber;
+    Future<void> callingOnSubscribers{nullptr};
+    SignalBase::OnSubscribers onSubscribersToCall;
+    {
+      // Acquire signal mutex
+      boost::recursive_mutex::scoped_lock sigLock(mutex);
+      SignalSubscriberMap::iterator it = subscriberMap.find(l);
+      if (it == subscriberMap.end())
+      {
+        qiLogWarning() << "disconnect: No subscription found for SignalLink " << l << ".";
+        return Future<bool>{false};
+      }
+      subscriber = it->second;
+      // Remove from map (but SignalSubscriber object still good)
+      subscriberMap.erase(it);
+      if (subscriberMap.empty() && onSubscribers)
+        onSubscribersToCall = onSubscribers;
+      // Ensure no call on subscriber occurs once this function returns
+      subscriber._p->enabled = false;
+    }
+    if (onSubscribersToCall)
+      callingOnSubscribers = onSubscribersToCall(false);
+
+    return callingOnSubscribers.andThen([](void*) { return true; });
+  }
+
+  Future<bool> SignalBasePrivate::disconnectAll()
+  {
+    return disconnectAllStep(true);
+  }
+
+  Future<bool> SignalBasePrivate::disconnectAllStep(bool overallSuccess)
+  {
+    SignalLink link;
+    FutureBarrier<bool> barrier;
+    while (true)
+    {
+      {
+        boost::recursive_mutex::scoped_lock sl(mutex);
+        SignalSubscriberMap::iterator it = subscriberMap.begin();
+        if (it == subscriberMap.end())
+          break;
+        link = it->first;
+      }
+      // allow for multiple disconnects to occur at the same time, we must not
+      // keep the lock
+      barrier.addFuture(disconnect(link));
+    }
+    return barrier.future().andThen([](const std::vector<Future<bool>>& successes)
+    {
+      for (const auto& success: successes)
+        if (!success.value()) return false;
+      return true;
+    });
+  }
+
+  SignalSubscriberPrivate::SignalSubscriberPrivate() = default;
+  SignalSubscriberPrivate::~SignalSubscriberPrivate() = default;
+
+QI_WARNING_PUSH()
+QI_WARNING_DISABLE(4996, deprecated-declarations) // ignore linkId deprecation warnings
   SignalSubscriber::SignalSubscriber()
-    : source(0)
-    , linkId(SignalBase::invalidSignalLink)
-    , target(0)
-    , method(0)
-    , enabled(true)
+    : _p(std::make_shared<SignalSubscriberPrivate>())
+    , linkId(_p->linkId)
   {
   }
 
+  SignalSubscriber::SignalSubscriber(const SignalSubscriber& other) = default;
+  SignalSubscriber& SignalSubscriber::operator=(const SignalSubscriber& other) = default;
+QI_WARNING_POP()
+
   SignalSubscriber::SignalSubscriber(const AnyObject& target, unsigned int method)
-    : threadingModel(MetaCallType_Direct)
-    , target(new AnyWeakObject(target))
-    , method(method)
-    , enabled(true)
-    , executionContext(0)
-  { // The slot has its own threading model: be synchronous
+    : SignalSubscriber()
+  { // The slot has its own threading model: use sync call type (default)
+    _p->target.reset(new AnyWeakObject(target));
+    _p->method = method;
   }
 
   SignalSubscriber::SignalSubscriber(AnyFunction func, MetaCallType model)
-     : handler(func), threadingModel(model), target(0), method(0), enabled(true), executionContext(0)
+     : SignalSubscriber()
   {
+    _p->handler = func;
+    _p->threadingModel = model;
   }
 
   SignalSubscriber::SignalSubscriber(AnyFunction func, ExecutionContext* ec)
-     : handler(func), threadingModel(MetaCallType_Direct), target(0), method(0), enabled(true), executionContext(ec)
-  {
+    : SignalSubscriber()
+  { // The execution context will reschedule the call like it wants, use sync call type
+    _p->handler = func;
+    _p->executionContext = ec;
   }
 
-  SignalSubscriber::~SignalSubscriber()
-  {
-  }
+  SignalSubscriber::~SignalSubscriber() = default;
 
-  SignalSubscriber::SignalSubscriber(const SignalSubscriber& b)
-  : enable_shared_from_this()
-  , target(0)
-  {
-    *this = b;
-  }
-
-  void SignalSubscriber::operator=(const SignalSubscriber& b)
-  {
-    if (this == &b)
-      return;
-
-    source = b.source;
-    linkId = b.linkId;
-    handler = b.handler;
-    threadingModel = b.threadingModel;
-    target.reset(b.target ? new AnyWeakObject(*b.target) : 0);
-    method = b.method;
-    enabled = b.enabled;
-    executionContext = b.executionContext;
-  }
-
-  static qi::Atomic<int> linkUid = 1;
+  static std::atomic<SignalLink> linkUid{1};
 
   void SignalBase::setCallType(MetaCallType callType)
   {
-    if (!_p)
-    {
-      _p = boost::make_shared<SignalBasePrivate>();
-    }
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock lock(_p->mutex);
     _p->defaultCallType = callType;
   }
 
@@ -100,293 +154,262 @@ namespace qi {
         params.push_back(*vals[i]);
     qi::Signature signature = qi::makeTupleSignature(params);
 
-    if (signature != _p->signature)
-    {
-      qiLogError() << "Dropping emit: signature mismatch: " << signature.toString() <<" " << _p->signature.toString();
-      return;
-    }
-    trigger(params, _p->defaultCallType);
+    auto mct = [&] () {
+      QI_ASSERT(_p);
+      boost::recursive_mutex::scoped_lock lock(_p->mutex);
+      if (signature != _p->signature)
+      {
+        qiLogError() << "Dropping emit: signature mismatch: "
+                     << signature.toString() << " " << _p->signature.toString();
+        return MetaCallType_Auto;
+      }
+      return _p->defaultCallType;
+    }();
+
+    trigger(params, mct);
   }
 
   void SignalBase::trigger(const GenericFunctionParameters& params, MetaCallType callType)
   {
-    if (!_p)
-      return;
-    if (_p->triggerOverride)
-      _p->triggerOverride(params, callType);
+    QI_ASSERT(_p);
+    SignalBase::Trigger trigger;
+    {
+      boost::recursive_mutex::scoped_lock lock(_p->mutex);
+      trigger = _p->triggerOverride;
+    }
+    if (trigger)
+      trigger(params, callType);
     else
       callSubscribers(params, callType);
   }
 
   void SignalBase::setTriggerOverride(Trigger t)
   {
-    if (!_p)
-      _p = boost::make_shared<SignalBasePrivate>();
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock lock(_p->mutex);
     _p->triggerOverride = t;
   }
 
   void SignalBase::setOnSubscribers(OnSubscribers onSubscribers)
   {
-    if (!_p)
-      _p = boost::make_shared<SignalBasePrivate>();
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock lock(_p->mutex);
     _p->onSubscribers = onSubscribers;
   }
+
+  namespace {
+    template<typename Params>
+    void callSubscribersImpl(const SignalBase& x, SignalSubscriberMap& subscribers,
+                             const Params& params, MetaCallType callType)
+    {
+      for (auto& i: subscribers)
+      {
+        qiLogDebug() << &x << " Invoking signal subscriber";
+        SignalSubscriber s = i.second; // holds the subscription alive
+        s.call(params, callType);
+      }
+    }
+  } // namespace
 
   void SignalBase::callSubscribers(const GenericFunctionParameters& params, MetaCallType callType)
   {
     MetaCallType mct = callType;
+    QI_ASSERT(_p);
 
-    if (!_p)
-      return;
-
-    if (mct == qi::MetaCallType_Auto)
-      mct = _p->defaultCallType;
     SignalSubscriberMap copy;
     {
-      boost::recursive_mutex::scoped_lock sl(_p->mutex);
+      boost::recursive_mutex::scoped_lock lock(_p->mutex);
+      if (mct == qi::MetaCallType_Auto)
+        mct = _p->defaultCallType;
+
       copy = _p->subscriberMap;
     }
-    qiLogDebug() << (void*)this << " Invoking signal subscribers: " << copy.size();
-    for (auto& i: copy)
+    qiLogDebug() << this << " Invoking signal subscribers: " << copy.size();
+
+    // If any subscriber is going to use an execution context, it's going to
+    // need a copy of the arguments, so that it can post a task to the execution
+    // context. We want to avoid each such subscriber making its own copy,
+    // because it would be inefficient. We therefore detect here if a copy is
+    // needed, and if so make this copy once for all.
+
+    using V = SignalSubscriberMap::value_type;
+    const bool mustCopyParams = std::any_of(copy.begin(), copy.end(), [mct](const V& v) {
+      const SignalSubscriber& s = v.second;
+      return static_cast<bool>(s.executionContextFor(mct)); // Has a context.
+    });
+
+    if (mustCopyParams)
     {
-      qiLogDebug() << (void*)this << " Invoking signal subscriber";
-      SignalSubscriberPtr s = i.second; // hold s alive
-      s->call(params, mct);
+      std::shared_ptr<GenericFunctionParameters> paramsCopy{
+        new auto(params.copy()),
+        [](GenericFunctionParameters* object) {
+          object->destroy(); // see GenericFunctionParameters::copy() for details
+          delete object;
+        }
+      };
+      callSubscribersImpl(*this, copy, std::move(paramsCopy), mct);
     }
-    qiLogDebug() << (void*)this << " done invoking signal subscribers";
+    else
+    {
+      callSubscribersImpl(*this, copy, params, mct);
+    }
+    qiLogDebug() << this << " done invoking signal subscribers";
   }
 
-  class FunctorCall
+  void SignalSubscriber::callImpl(const GenericFunctionParameters& args)
   {
-  public:
-    FunctorCall(GenericFunctionParameters* params, SignalSubscriberPtr* sub)
-    : params(params)
-    , sub(sub)
+    if (!_p->enabled)
+      return;
+
+    // do not throw
+    bool mustDisconnect = false;
+    try
     {
+      _p->handler(args);
+    }
+    catch (const qi::PointerLockException&)
+    {
+      qiLogDebug() << "PointerLockFailure excepton, will disconnect";
+      mustDisconnect = true;
+    }
+    catch (const std::exception& e)
+    {
+      qiLogWarning() << "Exception caught from signal subscriber: " << e.what();
+    }
+    catch (...)
+    {
+      qiLogWarning() << "Unknown exception caught from signal subscriber";
     }
 
-    FunctorCall(const FunctorCall& b)
+    if (mustDisconnect)
     {
-      *this = b;
-    }
-
-    void operator=(const FunctorCall& b)
-    {
-      params = b.params;
-      sub = b.sub;
-    }
-
-    void operator() ()
-    {
-      try
+      // if enabled is false, we are already disconnected
+      if (_p->enabled)
       {
-        {
-          SignalSubscriberPtr s;
-          boost::mutex::scoped_lock sl((*sub)->mutex);
-          // verify-enabled-then-register-active op must be locked
-          if (!(*sub)->enabled)
-          {
-            s = *sub; // delay destruction until after we leave the scoped_lock
-            delete sub;
-            params->destroy();
-            delete params;
-            return;
-          }
-          (*sub)->addActive(false);
-        } // end mutex-protected scope
-        (*sub)->handler(*params);
+        auto sbp = _p->source.lock();
+        if(sbp)
+          sbp->disconnect(_p->linkId).wait();
       }
-      catch(const qi::PointerLockException&)
-      {
-        qiLogDebug() << "PointerLockFailure excepton, will disconnect";
-      }
-      catch(const std::exception& e)
-      {
-        qiLogWarning() << "Exception caught from signal subscriber: " << e.what();
-      }
-      catch (...) {
-        qiLogWarning() << "Unknown exception caught from signal subscriber";
-      }
-
-      (*sub)->removeActive(true);
-      params->destroy();
-      delete params;
-      delete sub;
     }
+  }
 
-  public:
-    GenericFunctionParameters* params;
-    SignalSubscriberPtr*         sub;
-  };
-
-  void SignalSubscriber::call(const GenericFunctionParameters& args, MetaCallType callType)
+  boost::optional<ExecutionContext*> SignalSubscriber::executionContextFor(MetaCallType callType) const
   {
-    // this is held alive by caller
-    if (handler)
+    if (!_p->handler)
     {
-      bool async = true;
-      if (threadingModel != MetaCallType_Auto)
-        async = (threadingModel == MetaCallType_Queued);
-      else if (callType != MetaCallType_Auto)
-        async = (callType == MetaCallType_Queued);
+      return {};
+    }
+    bool async = true;
+    if (_p->threadingModel != MetaCallType_Auto)
+    {
+      async = (_p->threadingModel == MetaCallType_Queued);
+    }
+    else if (callType != MetaCallType_Auto)
+    {
+      async = (callType == MetaCallType_Queued);
+    }
 
-      qiLogDebug() << "subscriber call async=" << async <<" ct " << callType <<" tm " << threadingModel;
-      if (executionContext || async)
+    ExecutionContext* executionContext = _p->executionContext;
+    if (executionContext == nullptr && !async)
+    {
+      return {};
+    }
+    return {executionContext != nullptr ? executionContext : getEventLoop()};
+  }
+
+  template<typename Args>
+  void SignalSubscriber::callWithValueOrPtr(const Args& args, MetaCallType callType)
+  {
+    if (_p->handler)
+    {
+      if (auto maybeExec = executionContextFor(callType))
       {
-        GenericFunctionParameters* copy = new GenericFunctionParameters(args.copy());
-        // We will check enabled when we will be scheduled in the target
-        // thread, and we hold this SignalSubscriber alive, so no need to
-        // explicitly track the asynccall
-
-        // courtesy-check of el, but it should be kept alive longuer than us
-        qi::ExecutionContext* ec = executionContext;
-        if (!ec)
+        ExecutionContext* executionContext = maybeExec.value();
+        if (executionContext == nullptr)
         {
-          ec = getEventLoop();
-          if (!ec) // this is an assert basicaly, no sense trying to do something clever.
-            throw std::runtime_error("Event loop was destroyed");
+          throw std::runtime_error("Event loop was destroyed");
         }
-        ec->post(FunctorCall(copy, new SignalSubscriberPtr(shared_from_this())));
+        auto subscriberCopy = *this;
+        executionContext->post([subscriberCopy, args] () mutable {
+          subscriberCopy.callImpl(ka::src(args));
+        });
       }
       else
       {
-        // verify-enabled-then-register-active op must be locked
+        callImpl(ka::src(args));
+      }
+    }
+    else if (_p->target)
+    {
+      AnyObject lockedTarget = _p->target->lock();
+      if (!lockedTarget)
+      {
+        if (_p->enabled)
         {
-          boost::mutex::scoped_lock sl(mutex);
-          if (!enabled)
-            return;
-          addActive(false);
-        }
-        //do not throw
-        bool mustDisconnect = false;
-        try
-        {
-          handler(args);
-        }
-        catch(const qi::PointerLockException&)
-        {
-          qiLogDebug() << "PointerLockFailure excepton, will disconnect";
-          mustDisconnect = true;
-        }
-        catch(const std::exception& e)
-        {
-          qiLogWarning() << "Exception caught from signal subscriber: " << e.what();
-        }
-        catch (...)
-        {
-          qiLogWarning() << "Unknown exception caught from signal subscriber";
-        }
-        removeActive(true);
-
-        if (mustDisconnect)
-        {
-          boost::mutex::scoped_lock sl(mutex);
-          // if enabled is false, we are already disconnected
-          if (enabled)
+          auto sbp = _p->source.lock();
+          if (sbp)
           {
-            // asyncDisconnect tries to lock us, so we need to get a shared_ptr
-            // of signalbase (to be sure it won't be deleted) and release
-            // our lock before calling asyncDisconnect
-            boost::shared_ptr<SignalBasePrivate> sbp = source->_p;
-            sl.unlock();
-            sbp->disconnect(linkId, false);
+            sbp->disconnect(_p->linkId).wait();
           }
         }
       }
-    }
-    else if (target)
-    {
-      AnyObject lockedTarget = target->lock();
-      if (!lockedTarget)
+      else // No need to keep anything locked, whatever happens this is not used.
       {
-        boost::mutex::scoped_lock sl(mutex);
-        if (enabled)
-        {
-          // see above
-          boost::shared_ptr<SignalBasePrivate> sbp = source->_p;
-          sl.unlock();
-          sbp->disconnect(linkId, false);
-        }
-      }
-      else // no need to keep anything locked, whatever happens this is not used
-        lockedTarget.metaPost(method, args);
-    }
-  }
-
-  //check if we are called from the same thread that triggered us.
-  //in that case, do not wait.
-  void SignalSubscriber::waitForInactive()
-  {
-    boost::thread::id tid = boost::this_thread::get_id();
-    while (true)
-    {
-      boost::mutex::scoped_lock sl(mutex);
-      if (activeThreads.empty())
-        return;
-      // There cannot be two activeThreads entry for the same tid
-      // because activeThreads is not set at the post() stage
-      if (activeThreads.size() == 1
-        && *activeThreads.begin() == tid)
-      { // One active callback in this thread, means above us in call stack
-        // So we cannot wait for it
-        return;
-      }
-      inactiveThread.wait(sl);
-    }
-  }
-
-  void SignalSubscriber::addActive(bool acquireLock, boost::thread::id id)
-  {
-    if (acquireLock)
-    {
-      boost::mutex::scoped_lock sl(mutex);
-      activeThreads.push_back(id);
-    }
-    else
-      activeThreads.push_back(id);
-  }
-
-  void SignalSubscriber::removeActive(bool acquireLock, boost::thread::id id)
-  {
-
-    boost::mutex::scoped_lock sl(mutex, boost::defer_lock_t());
-    if (acquireLock)
-      sl.lock();
-
-    for (unsigned i=0; i<activeThreads.size(); ++i)
-    {
-      if (activeThreads[i] == id)
-      { // fast remove by swapping with last and then pop_back
-        activeThreads[i] = activeThreads[activeThreads.size() - 1];
-        activeThreads.pop_back();
+        lockedTarget.metaPost(_p->method, ka::src(args));
       }
     }
-    inactiveThread.notify_all();
   }
 
-  SignalSubscriber& SignalBase::connect(AnyObject o, unsigned int slot)
+  void SignalSubscriber::call(const GenericFunctionParameters& args, MetaCallType callType)
+  {
+    callWithValueOrPtr(args, callType);
+  }
+
+  void SignalSubscriber::call(const std::shared_ptr<GenericFunctionParameters>& args,
+      MetaCallType callType)
+  {
+    callWithValueOrPtr(args, callType);
+  }
+
+  SignalSubscriber SignalSubscriber::setCallType(MetaCallType ct)
+  {
+    _p->threadingModel = ct;
+    return *this;
+  }
+
+  SignalLink SignalSubscriber::link() const
+  {
+    return _p->linkId;
+  }
+
+  SignalSubscriber::operator SignalLink() const
+  {
+    return _p->linkId;
+  }
+
+  SignalSubscriber SignalBase::connect(AnyObject o, unsigned int slot)
   {
     return connect(SignalSubscriber(o, slot));
   }
 
   Signature SignalSubscriber::signature() const
   {
-    if (handler)
+    if (_p->handler)
     {
-      if (handler.functionType() == dynamicFunctionTypeInterface())
+      if (_p->handler.functionType() == dynamicFunctionTypeInterface())
         return Signature(); // no arity checking is possible
       else
-        return handler.parametersSignature();
+        return _p->handler.parametersSignature();
     }
-    else if (target)
+    else if (_p->target)
     {
-      AnyObject locked = target->lock();
+      AnyObject locked = _p->target->lock();
       if (!locked)
         return Signature();
-      const MetaMethod* ms = locked.metaObject().method(method);
+      const MetaMethod* ms = locked.metaObject().method(_p->method);
       if (!ms)
       {
-        qiLogWarning() << "Method " << method <<" not found.";
+        qiLogWarning() << "Method " << _p->method <<" not found.";
         return Signature();
       }
       else
@@ -396,48 +419,70 @@ namespace qi {
       return Signature();
   }
 
-  SignalSubscriber& SignalBase::connect(const SignalSubscriber& src)
+  SignalSubscriber SignalBase::connect(const SignalSubscriber& src)
   {
-    qiLogDebug() << (void*)this << " connecting new subscriber";
-    if (!_p)
-    {
-      _p = boost::make_shared<SignalBasePrivate>();
-    }
-    // Check arity. Does not require to acquire weakLock.
-    int sigArity = signature().children().size();
-    int subArity = -1;
-    Signature subSignature = src.signature();
-    if (subSignature.isValid())
-      subArity = subSignature.children().size();
+    return connectAsync(src).value();
+  }
 
-    if (signature() != "m" && subSignature.isValid())
+  Future<SignalSubscriber> SignalBase::connectAsync(const SignalSubscriber& src)
+  {
+    qiLogDebug() << this << " connecting new subscriber";
+    QI_ASSERT(_p);
+    // Check arity. Does not require to acquire weakLock.
+    // We assume the number of children to int will never be bigger than INT_MAX.
+    QI_ASSERT_TRUE(signature().children().size() <= std::numeric_limits<int>::max());
+    const auto signalArity = qi::numericConvert<int>(signature().children().size());
+    auto subscriberArity = -1;
+    Signature subscriberSignature = src.signature();
+    if (subscriberSignature.isValid())
+      subscriberArity = static_cast<int>(subscriberSignature.children().size());
+
+    if (signature() != "m" && subscriberSignature.isValid())
     {
-      if (sigArity != subArity)
+      if (signalArity != subscriberArity)
       {
         std::stringstream s;
-        s << "Subscriber has incorrect arity (expected "
-          << sigArity << " , got " << subArity << ")";
+        s << "Subscriber has incorrect arity (expected maximum "
+          << signalArity << " , got " << subscriberArity << ")";
         throw std::runtime_error(s.str());
       }
-      if (!signature().isConvertibleTo(subSignature))
+      if (signature().isConvertibleTo(subscriberSignature) == 0.f)
       {
         std::stringstream s;
         s << "Subscriber is not compatible to signal : "
-          << signature().toString() << " vs " << subSignature.toString();
+          << signature().toString() << " vs " << subscriberSignature.toString();
         throw std::runtime_error(s.str());
       }
     }
 
     boost::recursive_mutex::scoped_lock sl(_p->mutex);
-    SignalLink res = ++linkUid;
-    SignalSubscriberPtr s = boost::make_shared<SignalSubscriber>(src);
-    s->linkId = res;
-    s->source = this;
     bool first = _p->subscriberMap.empty();
-    _p->subscriberMap[res] = s;
+    SignalLink res = ++linkUid;
+    SignalSubscriber& subscriberInMap = _p->subscriberMap[res];
+    subscriberInMap = src;
+    subscriberInMap._p->linkId = res;
+    subscriberInMap._p->source = this->_p;
+    Future<void> callingOnSubscribers{nullptr};
     if (first && _p->onSubscribers)
-      _p->onSubscribers(true);
-    return *s.get();
+    {
+      qiLogDebug() << this << " calling onSubscribers";
+      callingOnSubscribers = _p->onSubscribers(true).andThen([&](void*)
+      {
+        qiLogDebug() << this << " onSubscribers called";
+      });
+    }
+    else
+    {
+      qiLogDebug() << this << " not calling onSubscribers";
+    }
+
+    // Return a copy asynchronously. Too bad it makes few allocations.
+    SignalSubscriber subscriberToReturn = subscriberInMap;
+    return callingOnSubscribers.andThen([=](void*)
+    {
+      qiLogDebug() << this << " connected";
+      return subscriberToReturn;
+    });
   }
 
   void SignalBase::createNewTrackLink(int& id, SignalLink*& pLink)
@@ -460,21 +505,39 @@ namespace qi {
     _p->trackMap.erase(it);
   }
 
-  bool SignalBase::disconnectAll()
+  ExecutionContext* SignalBase::executionContext() const
   {
-    if (_p)
-      return _p->disconnectAll(true);
-    return false;
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock sl(_p->mutex);
+    return _p->execContext;
   }
 
-  bool SignalBase::asyncDisconnectAll()
+  void SignalBase::clearExecutionContext()
   {
-    if (_p)
-      return _p->disconnectAll(false);
-    return false;
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock sl(_p->mutex);
+    _p->execContext = nullptr;
+  }
+
+  bool SignalBase::disconnectAll()
+  {
+    QI_ASSERT(_p);
+    return _p->disconnectAll().value();
+  }
+
+  Future<bool> SignalBase::disconnectAllAsync()
+  {
+    QI_ASSERT(_p);
+    return _p->disconnectAll();
   }
 
   SignalBase::SignalBase(const qi::Signature& sig, OnSubscribers onSubscribers)
+    : SignalBase(sig, nullptr, std::move(onSubscribers))
+  {
+  }
+
+  SignalBase::SignalBase(const Signature& sig, ExecutionContext* execContext,
+                         SignalBase::OnSubscribers onSubscribers)
     : _p(new SignalBasePrivate)
   {
     //Dynamic mean AnyArguments here.
@@ -482,127 +545,65 @@ namespace qi {
       throw std::runtime_error("Signal signature should be tuple, or AnyArguments");
     _p->onSubscribers = onSubscribers;
     _p->signature = sig;
+    _p->execContext = execContext;
   }
 
   SignalBase::SignalBase(OnSubscribers onSubscribers)
-  : _p(new SignalBasePrivate)
+    : SignalBase(nullptr, std::move(onSubscribers))
   {
-    _p->onSubscribers = onSubscribers;
   }
 
+  SignalBase::SignalBase(ExecutionContext* execContext, OnSubscribers onSubscribers)
+    : _p(new SignalBasePrivate)
+  {
+    _p->onSubscribers = onSubscribers;
+    _p->execContext = execContext;
+  }
 
   qi::Signature SignalBase::signature() const
   {
-    return _p ? _p->signature : qi::Signature();
+    QI_ASSERT(_p);
+    boost::recursive_mutex::scoped_lock lock(_p->mutex);
+    return _p->signature;
   }
 
   void SignalBase::_setSignature(const qi::Signature& s)
   {
+    boost::recursive_mutex::scoped_lock lock(_p->mutex);
     _p->signature = s;
   }
 
-  bool SignalBasePrivate::disconnect(const SignalLink& l, bool wait)
-  {
-    SignalSubscriberPtr s;
-    {
-      // Acquire signal mutex
-      boost::recursive_mutex::scoped_lock sigLock(mutex);
-      SignalSubscriberMap::iterator it = subscriberMap.find(l);
-      if (it == subscriberMap.end())
-        return false;
-      s = it->second;
-      // Remove from map (but SignalSubscriber object still good)
-      subscriberMap.erase(it);
-      // Acquire subscriber mutex before releasing mutex
-      boost::mutex::scoped_lock subLock(s->mutex);
-      // Release signal mutex
-      sigLock.release()->unlock();
-      // Ensure no call on subscriber occurrs once this function returns
-      s->enabled = false;
-      if (subscriberMap.empty() && onSubscribers)
-        onSubscribers(false);
-      if (s->activeThreads.empty()
-          || (s->activeThreads.size() == 1
-            && *s->activeThreads.begin() == boost::this_thread::get_id()))
-      { // One active callback in this thread, means above us in call stack
-        // So we cannot trash s right now
-        return true;
-      }
-      // More than one active callback, or one in a state that prevent us
-      // from knowing in which thread it will run
-      subLock.release()->unlock();
-    }
-    if (wait)
-      s->waitForInactive();
-    return true;
-  }
 
   bool SignalBase::disconnect(const SignalLink &link) {
-    if (!_p)
-      return false;
-    else
-      return _p->disconnect(link, true);
+    QI_ASSERT(_p);
+    return _p->disconnect(link).value();
   }
 
-  bool SignalBase::asyncDisconnect(const SignalLink &link) {
-    if (!_p)
-      return false;
-    else
-      return _p->disconnect(link, false);
+  Future<bool> SignalBase::disconnectAsync(const SignalLink &link) {
+    QI_ASSERT(_p);
+    return _p->disconnect(link);
   }
 
-  SignalBase::~SignalBase()
-  {
-  }
-
-  SignalBasePrivate::~SignalBasePrivate()
-  {
-    onSubscribers = SignalBase::OnSubscribers();
-    disconnectAll(false);
-  }
+  SignalBase::~SignalBase() = default;
 
   std::vector<SignalSubscriber> SignalBase::subscribers()
   {
     std::vector<SignalSubscriber> res;
-    if (!_p)
-      return res;
+    QI_ASSERT(_p);
     boost::recursive_mutex::scoped_lock sl(_p->mutex);
     for (const auto& i: _p->subscriberMap)
-      res.push_back(*i.second);
+      res.push_back(i.second);
     return res;
   }
 
   bool SignalBase::hasSubscribers()
   {
-    if (!_p)
-      return false;
+    QI_ASSERT(_p);
     boost::recursive_mutex::scoped_lock sl(_p->mutex);
     return !_p->subscriberMap.empty();
   }
 
-  bool SignalBasePrivate::disconnectAll(bool wait)
-  {
-    bool ret = true;
-    SignalLink link;
-    while (true)
-    {
-      {
-        boost::recursive_mutex::scoped_lock sl(mutex);
-        SignalSubscriberMap::iterator it = subscriberMap.begin();
-        if (it == subscriberMap.end())
-          break;
-        link = it->first;
-      }
-      // allow for multiple disconnects to occur at the same time, we must not
-      // keep the lock
-      bool b = disconnect(link, wait);
-      if (!b)
-        ret = false;
-    }
-    return ret;
-  }
-
-  SignalSubscriber& SignalBase::connect(AnyObject obj, const std::string& slot)
+  SignalSubscriber SignalBase::connect(AnyObject obj, const std::string& slot)
   {
     const MetaObject& mo = obj.metaObject();
     const MetaSignal* sig = mo.signal(slot);
@@ -616,6 +617,7 @@ namespace qi {
     return connect(SignalSubscriber(obj, method.front().uid()));
   }
 
-  QI_API const SignalLink SignalBase::invalidSignalLink = ((unsigned int)-1);
+  const SignalLink SignalBase::invalidSignalLink =
+      std::numeric_limits<SignalLink>::max();
 
 }

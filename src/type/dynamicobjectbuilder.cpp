@@ -8,6 +8,7 @@
 #include <qi/type/dynamicobjectbuilder.hpp>
 #include <qi/type/dynamicobject.hpp>
 #include "metaobject_p.hpp"
+#include <boost/optional.hpp>
 
 qiLogCategory("qitype.objectbuilder");
 
@@ -101,13 +102,13 @@ namespace qi
           << "' but object is already created.";
     }
 
-    unsigned int nextId = _p->_object->metaObject()._p->addMethod(builder);
+    const unsigned int nextId = _p->_object->metaObject()._p->addMethod(builder).id;
 
     _p->_object->setMethod(nextId, func, threadingModel);
     return nextId;
   }
 
-  unsigned int DynamicObjectBuilder::xAdvertiseSignal(const std::string &name, const qi::Signature& signature)
+  unsigned int DynamicObjectBuilder::xAdvertiseSignal(const std::string &name, const qi::Signature& signature, bool isSignalProperty)
   {
     if (!Signature(signature).isValid() || name.empty()) {
       std::stringstream err;
@@ -121,13 +122,18 @@ namespace qi
       qiLogWarning() << "DynamicObjectBuilder: Called xAdvertiseSignal on event '" << signature.toString() << "' but object is already created.";
     }
     // throw on error
-    unsigned int nextId = _p->_object->metaObject()._p->addSignal(name, signature);
+    const auto signalAddResult = _p->_object->metaObject()._p->addSignal(name, signature, -1, isSignalProperty);
+    if (isSignalProperty && !signalAddResult.isNewMember)
+    {
+      throw std::runtime_error("Registering property failed: name already used by a member Signal: " + name);
+    }
+    const unsigned int nextId = signalAddResult.id;
     return nextId;
   }
 
   unsigned int DynamicObjectBuilder::advertiseSignal(const std::string &name, qi::SignalBase *sig)
   {
-    unsigned int nextId = xAdvertiseSignal(name, sig->signature());
+    const unsigned int nextId = xAdvertiseSignal(name, sig->signature());
     _p->_object->setSignal(nextId, sig);
     return nextId;
   }
@@ -139,7 +145,7 @@ namespace qi
       throw std::runtime_error("Registering property with invalid signal signature");
     const auto propsignature = sigsignature.children()[0];
 
-    unsigned int nextId = xAdvertiseSignal(name, sigsignature);
+    const unsigned int nextId = xAdvertiseSignal(name, sigsignature, true);
     xAdvertiseProperty(name, propsignature, nextId);
     _p->_object->setProperty(nextId, prop);
     return nextId;
@@ -155,7 +161,7 @@ namespace qi
         err << "DynamicObjectBuilder: Called xAdvertiseProperty("<< name << "," << sig.toString() << ") with an invalid signature.";
       throw std::runtime_error(err.str());
     }
-    unsigned int res = _p->_object->metaObject()._p->addProperty(name, sig, id);
+    unsigned int res = _p->_object->metaObject()._p->addProperty(name, sig, id).id;
     return res;
   }
 
@@ -168,7 +174,8 @@ namespace qi
   {
     if (!_p->_objptr)
     {
-      _p->_objptr = makeDynamicAnyObject(_p->_object, _p->_deleteOnDestroy, onDelete);
+      _p->_objptr = makeDynamicAnyObject(_p->_object, _p->_deleteOnDestroy,
+                                         boost::optional<ObjectUid>{}, onDelete);
       _p->_object->setManageable(_p->_objptr.asGenericObject());
     }
     return _p->_objptr;

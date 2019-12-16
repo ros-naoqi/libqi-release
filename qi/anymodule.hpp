@@ -133,7 +133,8 @@ QI_TYPE_STRUCT(qi::ModuleInfo, name, type, path);
 /** register an embedded module. (the library do not have to be loaded)
  */
 #define QI_REGISTER_MODULE_EMBEDDED(name, fun) \
-  static bool BOOST_PP_CAT(_register_module, __COUNTER__) = ::qi::registerCppEmbeddedModule(name, fun);
+  static bool BOOST_PP_CAT(_register_module, __COUNTER__) QI_ATTR_UNUSED \
+    = ::qi::registerCppEmbeddedModule(name, fun);
 
 
 //####################### MODULE LANGUAGE FACTORY #########################
@@ -145,7 +146,7 @@ QI_TYPE_STRUCT(qi::ModuleInfo, name, type, path);
 
 namespace qi {
 
-  typedef boost::function<AnyModule (const qi::ModuleInfo&)> ModuleFactoryFunctor;
+  using ModuleFactoryFunctor = boost::function<AnyModule(const qi::ModuleInfo&)>;
   /** Register a module factory for a given language
    */
   QI_API bool registerModuleFactory(const std::string& name, ModuleFactoryFunctor fun);
@@ -156,7 +157,8 @@ namespace qi {
  *  A python one is provided by libqi-python as a plugin.
  */
 #define QI_REGISTER_MODULE_FACTORY(factoryType, fun) \
-  static bool BOOST_PP_CAT(_register_module_factory, __COUNTER__) = ::qi::registerModuleFactory(factoryType, fun)
+  static bool BOOST_PP_CAT(_register_module_factory, __COUNTER__) QI_ATTR_UNUSED \
+    = ::qi::registerModuleFactory(factoryType, fun)
 
 /** Register a Module Factory as a plugins.
  */

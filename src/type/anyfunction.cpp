@@ -3,54 +3,17 @@
 **  See COPYING for the license
 */
 #include <boost/noncopyable.hpp>
+#include <boost/container/small_vector.hpp>
 #include <qi/future.hpp>
 #include <qi/signature.hpp>
 #include <qi/anyfunction.hpp>
 #include <qi/anyobject.hpp>
+#include <qi/numeric.hpp>
 
 qiLogCategory("qitype.functiontype");
 
 namespace qi
 {
-
-  //make destroy exception-safe for AnyFunction::call
-  class AnyReferenceArrayDestroyer : private boost::noncopyable {
-  public:
-    AnyReferenceArrayDestroyer(AnyReference *toDestroy, void **convertedArgs, bool shouldDelete)
-      : toDestroy(toDestroy)
-      , convertedArgs(convertedArgs)
-      , toDestroyPos(0)
-      , shouldDelete(shouldDelete)
-    {
-    }
-
-    ~AnyReferenceArrayDestroyer() {
-      destroy();
-    }
-
-    void destroy() {
-      if (toDestroy) {
-        for (unsigned i = 0; i < toDestroyPos; ++i)
-          toDestroy[i].destroy();
-        if (shouldDelete)
-          delete[] toDestroy;
-        toDestroy = 0;
-      }
-      if (shouldDelete && convertedArgs) {
-        delete[] convertedArgs;
-        convertedArgs = 0;
-      }
-    }
-
-
-  public:
-    AnyReference* toDestroy;
-    void**        convertedArgs;
-    unsigned int  toDestroyPos;
-    bool          shouldDelete;
-  };
-
-
 
   AnyReference AnyFunction::call(AnyReference arg1, const AnyReferenceVector& remaining)
   {
@@ -61,11 +24,26 @@ namespace qi
     return call(args);
   }
 
+  static BOOST_NORETURN void throwForInvalidConversion(
+      size_t argNumber,
+      const qi::Signature& argSignature,
+      const qi::Signature& expectedArgSignature,
+      const qi::Signature& functionSignature)
+  {
+    throw std::runtime_error(
+        _QI_LOG_FORMAT(
+            "Call argument number %d conversion failure from %s to %s. Function signature: %s.",
+            argNumber,
+            argSignature.toPrettySignature(),
+            expectedArgSignature.toPrettySignature(),
+            functionSignature.toPrettySignature()));
+  }
+
   AnyReference AnyFunction::call(const AnyReferenceVector& vargs)
   {
     if (type == dynamicFunctionTypeInterface())
     {
-      DynamicFunction* f = (DynamicFunction*)value;
+      DynamicFunction* f = static_cast<DynamicFunction*>(value);
       if (!transform.dropFirst && !transform.prependValue)
         return (*f)(vargs);
       AnyReferenceVector args;
@@ -90,79 +68,79 @@ namespace qi
     * - drop first arg
     * - prepend an arg
     */
-    unsigned deltaCount = (transform.dropFirst? -1:0) + (transform.prependValue?1:0);
+    const auto deltaCount = (transform.dropFirst? -1:0) + (transform.prependValue?1:0);
     const std::vector<TypeInterface*>& target = type->argumentsType();
-    unsigned sz = vargs.size();
-    const AnyReference* args = sz > 0 ? &vargs[0] : 0;
+    auto sz = qi::numericConvert<int>(vargs.size());
+    const AnyReference* args = sz > 0 ? &vargs[0] : nullptr;
 
-    if (target.size() != sz + deltaCount)
+    // We assume that the number of arguments cannot possibly be more than INT_MAX.
+    QI_ASSERT_TRUE(target.size() <= std::numeric_limits<int>::max());
+    if (qi::numericConvert<int>(target.size()) != sz + deltaCount)
     {
       throw std::runtime_error(_QI_LOG_FORMAT("Argument count mismatch, expected %1%, got %2%",
         target.size(), sz + deltaCount));
-      return AnyReference();
     }
     if (transform.dropFirst)
     {
       ++args;
       --sz;
     }
-    unsigned offset = transform.prependValue? 1:0;
-#if QI_HAS_VARIABLE_LENGTH_ARRAY
-    AnyReference sstoDestroy[sz+offset];
-    void* ssconvertedArgs[sz+offset];
-    AnyReferenceArrayDestroyer arad(sstoDestroy, ssconvertedArgs, false);
-#else
-    AnyReference* sstoDestroy = new AnyReference[sz+offset];
-    void** ssconvertedArgs = new void*[sz+offset];
-    AnyReferenceArrayDestroyer arad(sstoDestroy, ssconvertedArgs, true);
-#endif
+    auto offset = transform.prependValue? 1:0;
+
+    boost::container::small_vector<detail::UniqueAnyReference, detail::maxAnyFunctionArgsCountHint>
+        uniqueConvertedArgs;
+    uniqueConvertedArgs.reserve(qi::numericConvert<std::size_t>(sz));
+    boost::container::small_vector<void*, detail::maxAnyFunctionArgsCountHint> callArgs;
+    callArgs.reserve(qi::numericConvert<std::size_t>(sz + offset));
+
     if (transform.prependValue)
-      arad.convertedArgs[0] = transform.boundValue;
-    for (unsigned i=0; i<sz; ++i)
+      callArgs.push_back(transform.boundValue);
+
+    for (auto i = 0; i < sz; ++i)
     {
-      const unsigned ti = i + offset;
-      //qiLogDebug() << "argument " << i
-      //   << " " << args[i].type->infoString() << ' ' << args[i].value
-      //   << " to " << target[ti]->infoString();
-      if (args[i].type() == target[ti] || args[i].type()->info() == target[ti]->info())
-        arad.convertedArgs[ti] = args[i].rawValue();
+      const auto ti = qi::numericConvert<std::size_t>(i + offset);
+      auto& arg = args[i];
+      auto* argType = arg.type();
+
+      if (!argType) // invalid argument not wrapped into a dynamic AnyReference!
+        throwForInvalidConversion(qi::numericConvert<std::size_t>(i), arg.signature(),
+                                  target[ti]->signature(),
+                                  this->parametersSignature(this->transform.dropFirst));
+
+      void* callArg = nullptr;
+      if (argType == target[ti] || argType->info() == target[ti]->info())
+        callArg = arg.rawValue();
       else
       {
-        //qiLogDebug() << "needs conversion "
-        //<< args[i].type->infoString() << " -> "
-        //<< target[ti]->infoString();
-        std::pair<AnyReference,bool> v = args[i].convert(target[ti]);
-        if (!v.first.type())
+        auto v = arg.convert(target[ti]);
+        if (!v->type())
         {
-          // Try pointer dereference
-          if (args[i].kind() == TypeKind_Pointer)
+          if (arg.isValid())
           {
-            AnyReference deref = *const_cast<AnyReference&>(args[i]);
-            if (deref.type() == target[ti] || deref.type()->info() == target[ti]->info())
-              v = std::make_pair(deref, false);
-            else
-              v = deref.convert(target[ti]);
+            // Try pointer dereference
+            if (arg.kind() == TypeKind_Pointer)
+            {
+              AnyReference deref = *const_cast<AnyReference&>(arg);
+              if (deref.type() == target[ti] || deref.type()->info() == target[ti]->info())
+                v = detail::UniqueAnyReference{ deref, detail::DeferOwnership{} };
+              else
+                v = deref.convert(target[ti]);
+            }
           }
-          if (!v.first.type())
-          {
-            throw std::runtime_error(_QI_LOG_FORMAT("Call argument number %d conversion failure from %s to %s. Function signature: %s.",
-                                                    i,
-                                                    args[i].type()->signature().toPrettySignature(),
-                                                    target[ti]->signature().toPrettySignature(),
-                                                    this->parametersSignature(this->transform.dropFirst).toPrettySignature()));
 
-            return AnyReference();
-          }
+          if (!v->type())
+            throwForInvalidConversion(qi::numericConvert<std::size_t>(i), arg.signature(true),
+                                      target[ti]->signature(),
+                                      this->parametersSignature(this->transform.dropFirst));
         }
 
-        if (v.second)
-          arad.toDestroy[arad.toDestroyPos++] = v.first;
-        arad.convertedArgs[ti] = v.first.rawValue();
+        uniqueConvertedArgs.emplace_back(std::move(v));
+        callArg = uniqueConvertedArgs.back()->rawValue();
       }
+      callArgs.push_back(callArg);
     }
-    void* res;
-    res = type->call(value, arad.convertedArgs, sz+offset);
-    arad.destroy();
+
+    void* res = type->call(value, callArgs.data(), qi::numericConvert<unsigned int>(sz + offset));
     return AnyReference(resultType(), res);
   }
 
@@ -202,7 +180,7 @@ namespace qi
 
       // do not access res[1], it might not exist and invalid access might be
       // detected by debug-mode stl
-      res.push_back(0);
+      res.push_back(nullptr);
       memmove(&res[0]+1, &res[0], (res.size()-1)*sizeof(TypeInterface*));
       res[0] = typeOf<AnyValue>();
     }
@@ -303,9 +281,9 @@ namespace qi
       if (!compatible)
       {
         qiLogError() << "convert: unknown type " << (*it).toString();
-        compatible = src[idx].type();
+        compatible = src[qi::numericConvert<std::size_t>(idx)].type();
       }
-      dst.push_back(src[idx].convertCopy(compatible));
+      dst.push_back(src[qi::numericConvert<std::size_t>(idx)].convertCopy(compatible));
     }
     return dst;
   }
@@ -323,12 +301,12 @@ namespace qi
     {
       _resultType = typeOf<AnyValue>();
     }
-    virtual void* call(void* func, void** args, unsigned int argc)
+    void* call(void* /*func*/, void** /*args*/, unsigned int /*argc*/) override
     {
       qiLogError() << "Dynamic function called without type information";
       return  nullptr;
     }
-    _QI_BOUNCE_TYPE_METHODS(DefaultTypeImplMethods<DynamicFunction>);
+    _QI_BOUNCE_TYPE_METHODS(DefaultTypeImplMethods<DynamicFunction>)
   };
 
   FunctionTypeInterface* dynamicFunctionTypeInterface()

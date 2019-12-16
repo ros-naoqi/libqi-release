@@ -1,13 +1,13 @@
 <project version="3">
-  <maintainer email="pdaouadi@aldebaran.com">Philippe Daouadi</maintainer>
-  <maintainer email="hcuche@aldebaran.com">Hervé Cuche</maintainer>
+  <maintainer email="jlamotte@aldebaran.com">Joël Lamotte</maintainer>
+  <maintainer email="jmonnon@aldebaran.com">Jérémy Monnon</maintainer>
+  <maintainer email="matthieu.paindavoine@softbankrobotics.com">Matthieu Paindavoine</maintainer>
+  <maintainer email="vincent.palancher@external.softbankrobotics.com ">Vincent Palancher</maintainer>
   <qibuild name="libqi">
-    <depends buildtime="true" runtime="true" names="dl boost pthread qiprobes" />
-    <depends testtime="true" buildtime="true" names="gtest" />
+    <depends buildtime="true" runtime="true" names="dl boost pthread systemd openssl" />
+    <depends testtime="true" buildtime="true" names="gtest gmock" />
   </qibuild>
   <project src="dox" />
-  <project src="bin"/>
-  <project src="libqipamauth" />
 
   <project src="compat/cqit"/>
   <project src="compat/cqim"/>

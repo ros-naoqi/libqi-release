@@ -7,22 +7,31 @@
 #ifndef _SRC_TRANSPORTSERVERASIO_P_HPP_
 #define _SRC_TRANSPORTSERVERASIO_P_HPP_
 
-# include <boost/asio.hpp>
-# ifdef WITH_SSL
-# include <boost/asio/ssl.hpp>
-# endif
+#include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/thread/synchronized_value.hpp>
+#include <atomic>
 
 # include <qi/api.hpp>
 # include <qi/url.hpp>
+# include "sock/networkasio.hpp"
+# include "sock/traits.hpp"
+# include "sock/socketptr.hpp"
 # include "transportserver.hpp"
 
 namespace qi
 {
-  class TransportServerAsioPrivate : public TransportServerImpl
+  class TransportServerAsioPrivate:
+      public TransportServerImpl,
+      public boost::enable_shared_from_this<TransportServerAsioPrivate>
   {
+    TransportServerAsioPrivate(TransportServer* self, EventLoop* ctx);
+
   public:
-    TransportServerAsioPrivate(TransportServer* self,
-                                   EventLoop* ctx);
+    static boost::shared_ptr<TransportServerAsioPrivate> make(
+        TransportServer* self,
+        EventLoop* ctx);
+
     virtual ~TransportServerAsioPrivate();
 
     virtual qi::Future<void> listen(const qi::Url& listenUrl);
@@ -32,24 +41,21 @@ namespace qi
     TransportServer* _self;
     boost::asio::ip::tcp::acceptor* _acceptor;
     void onAccept(const boost::system::error_code& erc,
-#ifdef WITH_SSL
-      boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* s
-#else
-      boost::asio::ip::tcp::socket* s
-#endif
-      );
+      sock::SocketWithContextPtr<sock::NetworkAsio> s);
     TransportServerAsioPrivate();
-    bool _live;
-#ifdef WITH_SSL
-    boost::asio::ssl::context _sslContext;
-    boost::asio::ssl::stream<boost::asio::ip::tcp::socket>* _s;
-#else
-    boost::asio::ip::tcp::socket* _s;
-#endif
+    std::atomic<bool> _live;
+    sock::SslContextPtr<sock::NetworkAsio> _sslContext;
+    sock::SocketWithContextPtr<sock::NetworkAsio> _s;
     bool _ssl;
     unsigned short _port;
-    qi::Future<void> _asyncEndpoints;
+    boost::synchronized_value<qi::Future<void>> _asyncEndpoints;
     Url _listenUrl;
+
+    // The server must avoid being closed while accepting a connection.
+    // Typically, the TransportServer this class has a pointer to closes implementations
+    // in its destructor. Without protection, this class can end up using a
+    // dangling pointer on the TransportServer.
+    boost::mutex _acceptCloseMutex;
 
     static const int64_t AcceptDownRetryTimerUs;
 

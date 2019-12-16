@@ -11,6 +11,8 @@
 
 #include <boost/type_traits/remove_const.hpp>
 #include <boost/type_traits/is_floating_point.hpp>
+#include <ka/macro.hpp>
+#include <ka/utility.hpp>
 #include <qi/type/detail/anyiterator.hpp>
 #include <qi/type/detail/anyreference.hpp>
 
@@ -20,20 +22,20 @@ template<>
 class TypeImpl<AnyValue>: public DynamicTypeInterface
 {
 public:
-  virtual AnyReference get(void* storage)
+  AnyReference get(void* storage) override
   {
     AnyValue* ptr = (AnyValue*)ptrFromStorage(&storage);
     return ptr->asReference();
   }
 
-  virtual void set(void** storage, AnyReference src)
+  void set(void** storage, AnyReference src) override
   {
     AnyValue* val = (AnyValue*)ptrFromStorage(storage);
     val->reset(src, true, true);
   }
 
   // Default cloner will do just right since AnyValue is by-value.
-  typedef DefaultTypeImplMethods<AnyValue, TypeByPointerPOD<AnyValue> > Methods;
+  using Methods = DefaultTypeImplMethods<AnyValue, TypeByPointerPOD<AnyValue>>;
   _QI_BOUNCE_TYPE_METHODS(Methods);
 };
 
@@ -96,6 +98,11 @@ inline AnyValue AnyValue::makeGenericMap(const std::map<AnyReference,
   return makeMap<AnyValue, AnyValue>(values);
 }
 
+inline AnyValue AnyValue::makeVoid()
+{
+  return qi::AnyValue(qi::typeOf<void>());
+}
+
 inline AnyValue::AnyValue()
 : _allocated(false)
 {}
@@ -106,6 +113,12 @@ inline AnyValue::AnyValue(const AnyValue& b)
 , _allocated(false)
 {
   *this = b;
+}
+
+inline AnyValue::AnyValue(AnyValue&& b) KA_NOEXCEPT(true)
+: AnyReferenceBase(std::move(b))
+, _allocated(ka::exchange(b._allocated, false))
+{
 }
 
 inline AnyValue::AnyValue(qi::TypeInterface *type)
@@ -141,6 +154,17 @@ inline AnyValue& AnyValue::operator=(const AnyValue& b)
   return *this;
 }
 
+inline AnyValue& AnyValue::operator=(AnyValue&& b)
+{
+  if (&b == this)
+    return *this;
+
+  resetUnsafe();
+  static_cast<AnyReferenceBase&>(*this) = std::move(b);
+  _allocated = ka::exchange(b._allocated, false);
+  return *this;
+}
+
 inline AnyValue& AnyValue::operator=(const AnyReference& b)
 {
   reset(b, true, true);
@@ -161,12 +185,17 @@ inline void AnyValue::reset(const AnyReference& b, bool copy, bool free)
     *(AnyReferenceBase*)this = clone();
 }
 
-inline void AnyValue::reset()
+inline void AnyValue::resetUnsafe()
 {
   if (_allocated)
     AnyReferenceBase::destroy();
-  _type = 0;
-  _value = 0;
+}
+
+inline void AnyValue::reset()
+{
+  resetUnsafe();
+  _type = nullptr;
+  _value = nullptr;
 }
 
 inline void AnyValue::reset(qi::TypeInterface *ttype)

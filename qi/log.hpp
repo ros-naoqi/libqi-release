@@ -25,6 +25,14 @@
 
 # include <qi/os.hpp>
 
+// For ExceptionLogError:
+# include <stdexcept>
+# include <boost/exception/exception.hpp>
+# include <boost/exception/diagnostic_information.hpp>
+# include <ka/macroregular.hpp>
+# include <ka/typetraits.hpp>
+# include <ka/utility.hpp>
+
 
 /**
  * \verbatim
@@ -63,7 +71,7 @@
  */
 #if defined(NO_QI_DEBUG) || defined(NDEBUG)
 # define qiLogDebug(...) ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogDebugF(Msg, ...)
+# define qiLogDebugF(Msg, ...) do {} while(0)
 #else
 # define qiLogDebug(...)   _QI_LOG_MESSAGE_STREAM(LogLevel_Debug,   Debug ,  __VA_ARGS__)
 # define qiLogDebugF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Debug,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -74,7 +82,7 @@
  */
 #if defined(NO_QI_VERBOSE)
 # define qiLogVerbose(...) ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogVerboseF(Msg, ...)
+# define qiLogVerboseF(Msg, ...) do {} while(0)
 #else
 # define qiLogVerbose(...) _QI_LOG_MESSAGE_STREAM(LogLevel_Verbose, Verbose, __VA_ARGS__)
 # define qiLogVerboseF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Verbose,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -85,7 +93,7 @@
  */
 #if defined(NO_QI_INFO)
 # define qiLogInfo(...) ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogInfoF(Msg, ...)
+# define qiLogInfoF(Msg, ...) do {} while(0)
 #else
 # define qiLogInfo(...)    _QI_LOG_MESSAGE_STREAM(LogLevel_Info,    Info,    __VA_ARGS__)
 # define qiLogInfoF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Info,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -96,7 +104,7 @@
  */
 #if defined(NO_QI_WARNING)
 # define qiLogWarning(...) ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogWarningF(Msg, ...)
+# define qiLogWarningF(Msg, ...) do {} while(0)
 #else
 # define qiLogWarning(...) _QI_LOG_MESSAGE_STREAM(LogLevel_Warning, Warning, __VA_ARGS__)
 # define qiLogWarningF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Warning,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -107,7 +115,7 @@
  */
 #if defined(NO_QI_ERROR)
 # define qiLogError(...)   ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogErrorF(Msg, ...)
+# define qiLogErrorF(Msg, ...) do {} while(0)
 #else
 # define qiLogError(...)   _QI_LOG_MESSAGE_STREAM(LogLevel_Error,   Error,   __VA_ARGS__)
 # define qiLogErrorF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Error,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -118,7 +126,7 @@
  */
 #if defined(NO_QI_FATAL)
 # define qiLogFatal(...)  ::qi::log::detail::qiFalse() && false < qi::log::detail::NullStream().self()
-# define qiLogFatalF(Msg, ...)
+# define qiLogFatalF(Msg, ...) do {} while(0)
 #else
 # define qiLogFatal(...)   _QI_LOG_MESSAGE_STREAM(LogLevel_Fatal,   Fatal,   __VA_ARGS__)
 # define qiLogFatalF(Msg, ...)   _QI_LOG_MESSAGE(LogLevel_Fatal,   _QI_LOG_FORMAT(Msg, __VA_ARGS__))
@@ -167,7 +175,7 @@ namespace qi {
   /**
    * \brief Logs context attribute value.
    */
-  typedef int LogContext;
+  using LogContext = int;
 
   /**
    * \brief Log functions with different levels of verbosity.
@@ -175,22 +183,22 @@ namespace qi {
   namespace log {
 
     /// \deprecated 1.22 Use qi::LogLevel_Silent
-    QI_API_DEPRECATED static const qi::LogLevel silent = LogLevel_Silent;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Silent' instead) static const qi::LogLevel silent = LogLevel_Silent;
     /// \deprecated 1.22 Use qi::LogLevel_Fatal
-    QI_API_DEPRECATED static const qi::LogLevel fatal = LogLevel_Fatal;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Fatal' instead) static const qi::LogLevel fatal = LogLevel_Fatal;
     /// \deprecated 1.22 Use qi::LogLevel_Error
-    QI_API_DEPRECATED static const qi::LogLevel error = LogLevel_Error;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Error' instead) static const qi::LogLevel error = LogLevel_Error;
     /// \deprecated 1.22 Use qi::LogLevel_Warning
-    QI_API_DEPRECATED static const qi::LogLevel warning = LogLevel_Warning;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Warning' instead) static const qi::LogLevel warning = LogLevel_Warning;
     /// \deprecated 1.22 Use qi::LogLevel_Info
-    QI_API_DEPRECATED static const qi::LogLevel info = LogLevel_Info;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Info' instead) static const qi::LogLevel info = LogLevel_Info;
     /// \deprecated 1.22 Use qi::LogLevel_Verbose
-    QI_API_DEPRECATED static const qi::LogLevel verbose = LogLevel_Verbose;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Verbose' instead) static const qi::LogLevel verbose = LogLevel_Verbose;
     /// \deprecated 1.22 Use qi::LogLevel_Debug
-    QI_API_DEPRECATED static const qi::LogLevel debug = LogLevel_Debug;
+    QI_API_DEPRECATED_MSG(Use 'LogLevel_Debug' instead) static const qi::LogLevel debug = LogLevel_Debug;
 
     /// \deprecated 1.22 Use qi::LogLevel
-    QI_API_DEPRECATED typedef qi::LogLevel LogLevel;
+    QI_API_DEPRECATED_MSG('qi::log::LogLevel' is deprecated. Use 'qi::LogLevel' instead) typedef qi::LogLevel LogLevel;
   }
 }
 
@@ -200,31 +208,31 @@ namespace qi {
       struct Category;
     }
 
-    typedef unsigned int      SubscriberId; ///< Subscriber Identifier.
-    typedef detail::Category* CategoryType; ///< Catergory Informations.
+    using SubscriberId = unsigned int; ///< Subscriber Identifier.
+    using CategoryType = detail::Category*; ///< Catergory Informations.
 
     /// \deprecated 1.22 Use qi::log::SubscriberId
-    QI_API_DEPRECATED typedef unsigned int Subscriber;
-
+    QI_API_DEPRECATED_MSG(Use 'SubscriberId' instead)
+    typedef unsigned int Subscriber;
 
     /**
      * \brief Boost delegate to log function (verbosity lv, date of log,
      *        category, message, file, function, line).
      *  \deprecated 1.24 use qi::log::Handler
      */
-    typedef boost::function7<void,
+    using logFuncHandler = boost::function7<void,
                              const qi::LogLevel,
                              const qi::os::timeval,
                              const char*,
                              const char*,
                              const char*,
                              const char*,
-                             int> logFuncHandler;
+                             int>;
     /**
      * \brief Boost delegate to log function (verbosity lv, dates of log,
      *        category, message, file, function, line).
      */
-    typedef boost::function8<void,
+    using Handler = boost::function8<void,
                              const qi::LogLevel,
                              const qi::Clock::time_point,
                              const qi::SystemClock::time_point,
@@ -232,11 +240,79 @@ namespace qi {
                              const char*,
                              const char*,
                              const char*,
-                             int> Handler;
+                             int>;
+
+    /// Environment variables used by qi::log.
+    /// Use qi::os::getenv() to get their value.
+    namespace env {
+      namespace QI_DEFAULT_LOGHANDLER {
+        /// Environment variable QI_DEFAULT_LOGHANDLER specifies which kind of log handler
+        /// to set-up at logging system initialization time.
+        /// Used by qi::log::init().
+
+        /// The table below sums up which log handler is automatically added according
+        /// to the QI_DEFAULT_LOGHANDLER environment, the target OS platform and libqi
+        /// WITH_SYSTEMD build option:
+        ///
+        /// QI_DEFAULT_LOGHANDLER | on Linux | on Windows | on Android | on other platforms
+        /// --------------------- | -------- | ---------- | ---------- | ------------------
+        /// "none"                |    -     |     -      |     -      |     -
+        /// "stdout"              | stdout   |  stdout    |   stdout   |   stdout
+        /// "logger"              | logger*  |     -      |   logger   |     -
+        /// "debugger"            |    -     |  debugger  |     -      |     -
+        /// "" or not defined     | logger*  |  stdout    |   logger   |   stdout
+        /// any other value       |    -     |     -      |     -      |     -
+        ///
+        /// @note * Only if WITH_SYSTEMD is defined.
+        /// @note Notice that when WITH_SYSTEMD is defined, it is assumed that
+        ///       systemd-journal is actually available on the (linux) platform.
+        ///
+        /// Into the details:
+        ///  * if QI_DEFAULT_LOGHANDLER=="none", no log handler is automatically
+        ///    registered at logging system initialization.
+        ///    @note Notice that log handlers may still be added with the
+        ///          qi::log::addHandler() function, but they won't receive the messages
+        ///          submitted before their addition. Even log handlers added at
+        ///          the very beginning of the main function, may still miss log messages.
+        ///          On the contrary, the default log handler should not miss any message
+        ///          as it is set up earlier, before the main is started (actually at
+        ///          static initialization time).
+        ///  * if QI_DEFAULT_LOGHANDLER=="stdout", the logs are written to stdout
+        ///    (using consoleloghandler).
+        ///    @note Notice that on Android platform stdout is usually redirected to
+        ///          /dev/null.
+        ///  * if QI_DEFAULT_LOGHANDLER=="logger", the logs are written to the
+        ///    system-wide logger. Currently supported are linux's journald (with
+        ///    WITH_SYSTEMD defined) and Android's log output.
+        ///  * if QI_DEFAULT_LOGHANDLER=="debugger", the logs are written to a
+        ///     debugging facility. Currently only Windows' debug output is
+        ///     implemented.
+        ///  * if QI_DEFAULT_LOGHANDLER=="" or is not defined, the behavior depends
+        ///    on the target OS platform:
+        ///     * it behaves as if QI_DEFAULT_LOGHANDLER=="logger" on Linux or on Android,
+        ///     * it behaves as if QI_DEFAULT_LOGHANDLER=="stdout" otherwise.
+        ///  * if QI_DEFAULT_LOGHANDLER has an unsupported value, or if adding the
+        ///    handler fails, no fallback is performed:
+        ///    no log handler is registered by libqi, like if QI_DEFAULT_LOGHANDLER=="none",
+        ///    but an error message is sent to stderr.
+        QI_API extern char const * const name; // TODO: use constexpr after upgrading to c++17
+        namespace value {
+          QI_API extern char const * const none; // TODO: use constexpr after upgrading to c++17
+          QI_API extern char const * const stdOut; // TODO: use constexpr after upgrading to c++17
+          QI_API extern char const * const logger; // TODO: use constexpr after upgrading to c++17
+          QI_API extern char const * const debugger; // TODO: use constexpr after upgrading to c++17
+        }
+      }
+
+      // TODO: Publish the names of the other environment variables used by qi::log.
+    }
 
     /**
-     * \brief Initialization of the logging system (could be avoided)
-     * \param verb Log verbosity
+     * \brief Initialization of the logging system
+     *        Creates and registers the default log handler according to
+     *        QI_DEFAULT_LOGHANDLER environment variable and compilation flags
+     *        WITH_SYSTEMD, ANDROID and BOOST_OS_WINDOWS.
+     * \param verb Log verbosity level
      * \param context Display Context
      * \param synchronous Synchronous log
      */
@@ -265,7 +341,7 @@ namespace qi {
      * \brief Log function. You should call qiLog* macros instead.
      *
      * \param verb The verbosity of the message.
-     * \param category Log category (for filtering in the future).
+     * \param category Log category (for filtering).
      * \param msg Log message.
      * \param file Filename from which this function was called (ex: __FILE__).
      * \param fct Function name from which this function was called (ex: __FUNCTION__).
@@ -479,7 +555,7 @@ namespace qi {
      * \return New log subscriber id added.
      * \deprecated 1.24 use qi::log::addHandler
      */
-    QI_API_DEPRECATED
+    QI_API_DEPRECATED_MSG(Use 'addHandler' instead)
     QI_API SubscriberId addLogHandler(const std::string& name,
                                       qi::log::logFuncHandler fct,
                                       qi::LogLevel defaultLevel = LogLevel_Info);
@@ -495,7 +571,7 @@ namespace qi {
      * \param name Name of the handler.
      * \deprecated 1.24 use qi::log::removeHandler
      */
-    QI_API_DEPRECATED
+    QI_API_DEPRECATED_MSG(Use 'removeHandler' instead)
     QI_API void removeLogHandler(const std::string& name);
 
     /**
@@ -506,39 +582,117 @@ namespace qi {
 
     #include <qi/detail/warn_push_ignore_deprecated.hpp>
     /// \deprecated since 1.22. Use qi::log::setLogLevel(const qi::LogLevel, SubscriberId)
-    QI_API_DEPRECATED inline void setVerbosity(SubscriberId sub, const qi::log::LogLevel lv) { setLogLevel((qi::LogLevel)lv, sub); }
+    QI_API_DEPRECATED_MSG(Use 'setLogLevel' instead)
+    inline void setVerbosity(SubscriberId sub, const qi::log::LogLevel lv) { setLogLevel(static_cast<qi::LogLevel>(lv), sub); }
     /// \deprecated since 1.22. Use qi::log::addFilter(const std::string&, qi::LogLevel, SubscriberId)
-    QI_API_DEPRECATED inline void setCategory(SubscriberId sub, const std::string& cat, qi::log::LogLevel level) { addFilter(cat, (qi::LogLevel)level, sub); }
+    QI_API_DEPRECATED_MSG(Use 'addFilter' instead)
+    inline void setCategory(SubscriberId sub, const std::string& cat, qi::log::LogLevel level) { addFilter(cat, static_cast<qi::LogLevel>(level), sub); }
     #include <qi/detail/warn_pop_ignore_deprecated.hpp>
 
     /**
      * \copydoc qi::log::level
      * \deprecated since 2.2. Use qi::log::logLevel instead.
      */
-    QI_API QI_API_DEPRECATED qi::LogLevel verbosity(SubscriberId sub = 0);
+    QI_API QI_API_DEPRECATED_MSG(Use 'logLevel' instead)
+    qi::LogLevel verbosity(SubscriberId sub = 0);
 
     /**
      * \copydoc qi::log::addFilters()
      * \deprecated since 2.2 Use qi::log::addFilters instead.
      */
-    QI_API QI_API_DEPRECATED void setVerbosity(const std::string& rules, SubscriberId sub = 0);
+    QI_API QI_API_DEPRECATED_MSG(Use 'addFilters' instead)
+    void setVerbosity(const std::string& rules, SubscriberId sub = 0);
 
     /**
      * \copydoc qi::log::setLogLevel()
      * \deprecated since 2.2 Use qi::log::setLogLevel instead.
      */
-    QI_API QI_API_DEPRECATED void setVerbosity(const qi::LogLevel lv, SubscriberId sub = 0);
+    QI_API QI_API_DEPRECATED_MSG(Use 'setLogLevel' instead)
+    void setVerbosity(const qi::LogLevel lv, SubscriberId sub = 0);
 
     /**
      * \copydoc qi::log::setFilter
      * \deprecated since 2.2 Use qi::log::addFilter instead.
      */
-    QI_API QI_API_DEPRECATED void setCategory(const std::string& catName, qi::LogLevel level, SubscriberId sub = 0);
+    QI_API QI_API_DEPRECATED_MSG(Use 'addFilter' instead)
+    void setCategory(const std::string& catName, qi::LogLevel level, SubscriberId sub = 0);
 
   }
+
 }
 
 # include <qi/detail/log.hxx>
 
+namespace qi
+{
+  /// Logs an exception in the error log, distinguishing
+  /// std::exception, boost::exception and unknown exception
+  /// (typically for the `catch (...)` case).
+  ///
+  /// You can provide a log category and a prefix to the log.
+  ///
+  /// OStreamable O, ConvertibleTo<const char*> S
+  template<typename O, typename S = char const*>
+  struct ExceptionLogError
+  {
+    S category;
+    O prefix;
+  // Regular (if S and O are):
+    KA_GENERATE_FRIEND_REGULAR_OPS_2(ExceptionLogError, category, prefix)
+  // Custom:
+    void operator()(const std::exception& e) const
+    {
+      qiLogError(category) << prefix << ": standard exception: " << e.what();
+    }
+    void operator()(const boost::exception& e) const
+    {
+      qiLogError(category) << prefix <<": boost exception: " << boost::diagnostic_information(e);
+    }
+    void operator()() const
+    {
+      qiLogError(category) << prefix << ": unknown exception";
+    }
+  };
+
+  /// Helper-function to deduce types for `ExceptionLogError`.
+  ///
+  /// Example: Using catch-clauses.
+  /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  /// const auto logError = qi::exceptionLogError("myapp", "The function that could throw threw");
+  /// try
+  /// {
+  ///   functionThatMightThrow();
+  /// }
+  /// catch (const std::exception& ex)
+  /// {
+  ///   logError(ex);
+  /// }
+  /// catch (const boost::exception& ex)
+  /// {
+  ///   logError(ex);
+  /// }
+  /// catch (...)
+  /// {
+  ///   logError();
+  /// }
+  /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ///
+  /// Example: Using ka::invoke_catch.
+  /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  /// ka::invoke_catch(
+  ///   qi::exceptionLogError("myapp", "The function that could throw threw"),
+  ///   functionThatMightThrow
+  /// );
+  /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  ///
+  /// OStreamable O, ConvertibleTo<const char*> S
+  template<typename O, typename S>
+  ExceptionLogError<ka::Decay<O>, ka::Decay<S>> exceptionLogError(S&& category, O&& prefix)
+  {
+    return ExceptionLogError<ka::Decay<O>, ka::Decay<S>>{ ka::fwd<S>(category),
+                                                          ka::fwd<O>(prefix) };
+  }
+
+} // namespace qi
 
 #endif  // _QI_LOG_HPP_

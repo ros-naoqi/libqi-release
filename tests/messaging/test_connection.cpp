@@ -8,6 +8,8 @@
 #include <vector>
 #include <iostream>
 #include <string>
+#include <chrono>
+#include <thread>
 
 #include <gtest/gtest.h>
 
@@ -18,70 +20,13 @@
 #include <qi/application.hpp>
 #include <qi/os.hpp>
 #include <qi/binarycodec.hpp>
+#include <qi/testutils/testutils.hpp>
 
 qiLogCategory("test");
 
 static std::string reply(const std::string &msg)
 {
   return msg;
-}
-
-static std::string connectionAddr;
-
-class TestConnection
-{
-public:
-  TestConnection()
-    : obj()
-  {
-  }
-
-  ~TestConnection()
-  {
-    session.close();
-  }
-
-  bool init()
-  {
-    session.connect(connectionAddr);
-    obj = session.service("serviceTest");
-
-    if (!obj)
-    {
-      qiLogError() << "can't get serviceTest" << std::endl;
-      return false;
-    }
-
-    return true;
-  }
-
-public:
-  qi::AnyObject obj;
-
-private:
-  qi::Session session;
-};
-
-TEST(QiMessagingConnexion, testSyncSendOneMessage)
-{
-  TestConnection tc;
-  ASSERT_TRUE(tc.init());
-
-  std::string result = tc.obj.call<std::string>("reply", "question");
-  EXPECT_EQ("question", result);
-}
-
-TEST(QiMessagingConnexion, testSyncSendMessages)
-{
-  TestConnection tc;
-  ASSERT_TRUE(tc.init());
-
-  std::string result = tc.obj.call<std::string>("reply", "question1");
-  EXPECT_EQ("question1", result);
-  result = tc.obj.call<std::string>("reply", "question2");
-  EXPECT_EQ("question2", result);
-  result = tc.obj.call<std::string>("reply", "question3");
-  EXPECT_EQ("question3", result);
 }
 
 static qi::Buffer replyBufBA(const unsigned int&, const qi::Buffer& arg, const int&)
@@ -103,7 +48,112 @@ static qi::Buffer replyBuf(const qi::Buffer& arg)
   return arg;
 }
 
-TEST(QiMessagingConnexion, testBuffer)
+static std::string connectionAddr;
+
+class TestConnection
+{
+public:
+  TestConnection()
+    : obj()
+    , session(qi::makeSession())
+  {
+  }
+
+  ~TestConnection()
+  {
+    session->close();
+  }
+
+  bool init()
+  {
+    session->connect(connectionAddr);
+    obj = session->service("serviceTest").value();
+
+    if (!obj)
+    {
+      qiLogError() << "can't get serviceTest" << std::endl;
+      return false;
+    }
+
+    return true;
+  }
+
+public:
+  qi::AnyObject obj;
+
+private:
+  qi::SessionPtr session;
+};
+
+class Connection: public ::testing::Test
+{
+protected:
+  void SetUp() override
+  {
+    session = qi::makeSession();
+    session->listenStandalone("tcp://127.0.0.1:0");
+    connectionAddr = session->endpoints()[0].str();
+
+    std::cout << "Service Directory ready." << std::endl;
+    qi::DynamicObjectBuilder ob;
+    ob.advertiseMethod("reply", &reply);
+    ob.advertiseMethod("replyBuf", &replyBuf);
+    ob.advertiseMethod("replyBufA", &replyBufA);
+    ob.advertiseMethod("replyBufB", &replyBufB);
+    ob.advertiseMethod("replyBufBA", &replyBufBA);
+
+    obj = ob.object();
+
+    unsigned int id = session->registerService("serviceTest", obj).value();
+    std::cout << "serviceTest ready:" << id << std::endl;
+
+  #ifdef WITH_GATEWAY_
+    gate.attachToServiceDirectory(sd.endpoints()[0]);
+    gate.listen(gatewayAddr.str());
+    connectionAddr = gate.endpoints()[0];
+  #endif
+  }
+
+  void TearDown() override
+  {
+    session->close();
+  }
+
+private:
+  qi::SessionPtr session;
+  qi::AnyObject obj;
+#ifdef WITH_GATEWAY_
+  static qi::Gateway gate;
+#endif
+};
+
+#ifdef WITH_GATEWAY_
+qi::Gateway Connection::gate = qi::Gateway{};
+#endif
+
+TEST_F(Connection, testSyncSendOneMessage)
+{
+  TestConnection tc;
+  ASSERT_TRUE(tc.init());
+
+  std::string result = tc.obj.call<std::string>("reply", "question");
+  EXPECT_EQ("question", result);
+}
+
+TEST_F(Connection, testSyncSendMessages)
+{
+  TestConnection tc;
+  ASSERT_TRUE(tc.init());
+
+  std::string result = tc.obj.call<std::string>("reply", "question1");
+  EXPECT_EQ("question1", result);
+  result = tc.obj.call<std::string>("reply", "question2");
+  EXPECT_EQ("question2", result);
+  result = tc.obj.call<std::string>("reply", "question3");
+  EXPECT_EQ("question3", result);
+}
+
+TEST_F(Connection, testBuffer)
 {
   TestConnection tc;
   ASSERT_TRUE(tc.init());
@@ -148,37 +198,23 @@ TEST(QiMessagingConnexion, testBuffer)
   }
 }
 
-int main(int argc, char **argv) {
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  qi::Session       session;
+TEST(ConnectionToStandalone, TcpThenTcps)
+{
+  using namespace qi;
+  using namespace std::chrono;
+  using test::ScopedProcess;
 
-  session.listenStandalone("tcp://127.0.0.1:0");
-  connectionAddr = session.endpoints()[0].str();
+  // Register a service in another process.
+  const std::string remoteServiceOwnerPath = path::findBin("remoteserviceowner");
 
-  std::cout << "Service Directory ready." << std::endl;
-  qi::DynamicObjectBuilder ob;
-  ob.advertiseMethod("reply", &reply);
-  ob.advertiseMethod("replyBuf", &replyBuf);
-  ob.advertiseMethod("replyBufA", &replyBufA);
-  ob.advertiseMethod("replyBufB", &replyBufB);
-  ob.advertiseMethod("replyBufBA", &replyBufBA);
-  qi::AnyObject        obj(ob.object());
+  ScopedProcess remoteServiceOwner{
+    remoteServiceOwnerPath, {"--qi-standalone", "--qi-listen-url=tcps://127.0.0.1:54321"}};
 
-  unsigned int id = session.registerService("serviceTest", obj);
-  std::cout << "serviceTest ready:" << id << std::endl;
+  auto sessionTcp = qi::makeSession();
+  auto futTcp = test::attemptConnect(*sessionTcp, "tcp://127.0.0.1:54321");
+  ASSERT_TRUE(test::finishesWithError(futTcp));
 
-#ifdef WITH_GATEWAY_
-
-  qi::Gateway gate;
-  gate.attachToServiceDirectory(sd.endpoints()[0]);
-  gate.listen(gatewayAddr.str());
-  connectionAddr = gate.endpoints()[0];
-#endif
-
-  int res = RUN_ALL_TESTS();
-  session.close();
-
-
-  return res;
+  auto sessionTcps = qi::makeSession();
+  auto futTcps = test::attemptConnect(*sessionTcps, "tcps://127.0.0.1:54321");
+  ASSERT_TRUE(test::finishesWithValue(futTcps));
 }

@@ -82,7 +82,7 @@ namespace qi {
   }
 
   template<typename U>
-  void ObjectTypeBuilderBase::inherits(int offset)
+  void ObjectTypeBuilderBase::inherits(std::ptrdiff_t offset)
   {
     return inherits(typeOf<
       typename boost::remove_reference<U>::type>(), offset);
@@ -96,8 +96,9 @@ namespace qi {
     // Compute the offset between T and U
     T* ptr = reinterpret_cast<T*>(0x10000);
     U* pptr = ptr;
-    intptr_t offset = reinterpret_cast<intptr_t>(pptr) - reinterpret_cast<intptr_t>(ptr);
-    qiLogDebug() << "Offset check T(" << typeid(ptr).name() << ")= " << pptr << ", U(" << typeid(ptr).name() << ")= " << ptr << ", T-U= " << offset;
+    std::ptrdiff_t offset = reinterpret_cast<intptr_t>(pptr) - reinterpret_cast<intptr_t>(ptr);
+    qiLogDebug() << "Offset check T(" << qi::typeIdRuntime(ptr).name() << ")= " << ptr
+                 << ", U(" << qi::typeIdRuntime(pptr).name() << ")= " << pptr << ", T-U= " << offset;
     return ObjectTypeBuilderBase::inherits<U>(offset);
   }
 
@@ -108,9 +109,9 @@ namespace qi {
     template<typename F, typename T> void checkRegisterParent(
       ObjectTypeBuilder<T>& builder, boost::true_type)
     {
-      typedef typename boost::function_types::parameter_types<F>::type ArgsType;
-      typedef typename boost::mpl::front<ArgsType>::type DecoratedClassType;
-      typedef typename boost::remove_reference<DecoratedClassType>::type ClassType;
+      using ArgsType = typename boost::function_types::parameter_types<F>::type;
+      using DecoratedClassType = typename boost::mpl::front<ArgsType>::type;
+      using ClassType = typename boost::remove_reference<DecoratedClassType>::type;
       builder.template inherits<ClassType>();
     }
   };
@@ -155,14 +156,14 @@ namespace qi {
   template<typename T>
   void ObjectTypeBuilder<T>::registerType()
   {
-    ::qi::registerType(typeid(T), type());
+    ::qi::registerType(qi::typeId<T>(), type());
   }
 
   template<typename A>
   typename boost::enable_if<typename detail::Accessor<A>::is_accessor, SignalBase*>::type
   signalAccess(A acc, void* instance)
   {
-    typedef typename detail::Accessor<A>::class_type class_type;
+    using class_type = typename detail::Accessor<A>::class_type;
     return &detail::Accessor<A>::access((class_type*)instance, acc);
   }
 
@@ -170,32 +171,32 @@ namespace qi {
   typename boost::enable_if<typename detail::Accessor<A>::is_accessor, PropertyBase*>::type
   propertyAccess(A acc, void* instance)
   {
-    typedef typename detail::Accessor<A>::class_type class_type;
+    using class_type = typename detail::Accessor<A>::class_type;
     return &detail::Accessor<A>::access((class_type*)instance, acc);
   }
 
   template<typename A>
   unsigned int
-  ObjectTypeBuilderBase::advertiseSignal(const std::string& eventName, A accessor, int id)
+  ObjectTypeBuilderBase::advertiseSignal(const std::string& eventName, A accessor, int id, bool isSignalProperty)
   {
     SignalMemberGetter fun = boost::bind(&signalAccess<A>, accessor, _1);
-    typedef typename detail::Accessor<A>::value_type::FunctionType FunctionType;
+    using FunctionType = typename detail::Accessor<A>::value_type::FunctionType;
     return xAdvertiseSignal(eventName,
-      detail::FunctionSignature<FunctionType>::signature(), fun, id);
+      detail::FunctionSignature<FunctionType>::signature(), fun, id, isSignalProperty);
   }
 
   template <typename A>
   unsigned int ObjectTypeBuilderBase::advertiseProperty(const std::string& name, A accessor)
   {
-    unsigned int id = advertiseSignal(name, accessor);
+    unsigned int id = advertiseSignal(name, accessor, -1, true);
     PropertyMemberGetter pg = boost::bind(&propertyAccess<A>, accessor, _1);
-    typedef typename detail::Accessor<A>::value_type::PropertyType PropertyType;
+    using PropertyType = typename detail::Accessor<A>::value_type::PropertyType;
     return xAdvertiseProperty(name, typeOf<PropertyType>()->signature(), pg, id);
   }
 
-  template <typename T> unsigned int ObjectTypeBuilderBase::advertiseSignal(const std::string& name, SignalMemberGetter getter, int id)
+  template <typename T> unsigned int ObjectTypeBuilderBase::advertiseSignal(const std::string& name, SignalMemberGetter getter, int id, bool isSignalProperty)
   {
-    return xAdvertiseSignal(name, detail::FunctionSignature<T>::signature(), getter, id);
+    return xAdvertiseSignal(name, detail::FunctionSignature<T>::signature(), getter, id, isSignalProperty);
   }
 
   template<typename T>
@@ -208,7 +209,7 @@ namespace qi {
   namespace detail
   {
     static const char* interfaceMarker = "_interface_";
-    static const unsigned int interfaceMarkerLength = strlen(interfaceMarker);
+    static const auto interfaceMarkerLength = strlen(interfaceMarker);
 
     // Trait that detect inheritance from PropertyBase SignalBase or none of the above.
 

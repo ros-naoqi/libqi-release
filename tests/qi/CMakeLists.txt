@@ -2,15 +2,89 @@
 ## Use of this source code is governed by a BSD-style license that can be
 ## found in the COPYING file.
 qi_create_test_helper(testlaunch         testlaunch.cpp)
-qi_create_test_helper(testlaunchloop     testlaunchloop.cpp   DEPENDS QI)
-qi_create_test_helper(check_env          check_env.cpp        DEPENDS QI)
-qi_create_test_helper(check_machineid    check_machineid.cpp  DEPENDS QI)
-qi_create_test_helper(test_application   test_application.cpp DEPENDS QI)
+qi_create_test_helper(testlaunchloop     testlaunchloop.cpp)
+qi_create_test_helper(test_launchloop_with_spaces testlaunchloop.cpp)
+if(QI_WITH_TESTS)
+  set_property(TARGET test_launchloop_with_spaces PROPERTY OUTPUT_NAME "test launchloop with spaces")
+endif()
 
-qi_create_gtest(test_path_conf    SRC test_path_conf.cpp ../../src/path_conf.cpp DEPENDS QI GTEST)
-qi_create_gtest(test_qipath       SRC test_qipath.cpp    ../../src/utils.cpp     DEPENDS QI GTEST)
-qi_create_gtest(test_thread       SRC test_thread.cpp       DEPENDS QI BOOST_THREAD)
-qi_create_gtest(test_qiclock      SRC test_qiclock.cpp      DEPENDS QI GTEST)
+qi_create_test_helper(check_env             check_env.cpp             DEPENDS QI)
+qi_create_test_helper(check_machineid       check_machineid.cpp       DEPENDS QI)
+qi_create_test_helper(print_process_uuid    print_process_uuid.cpp    DEPENDS QI)
+
+qi_create_gmock(
+  test_qi
+
+  SRC
+  "test_bind.cpp"
+  "test_buffer.cpp"
+  "test_bufferreader.cpp"
+  "test_either.cpp"
+  "test_errorhandling.cpp"
+  "test_eventloop.cpp"
+  "test_flags.cpp"
+  "test_functional.cpp"
+  "test_future.hpp"
+  "test_future.cpp"
+  "test_futuregroup.cpp"
+  "test_locale.cpp"
+  "test_numeric.cpp"
+  "test_macro.cpp"
+  "test_mutablestore.cpp"
+  "test_path_conf.cpp"
+  "test_periodictask.cpp"
+  "test_ptruid.cpp"
+  "test_qi.cpp" # main
+  "test_qiatomic.cpp"
+  "test_qiclock.cpp"
+  "test_qilaunch.cpp"
+  "test_qilog.hpp"
+  "test_qilog.cpp"
+  "test_qilog_async.cpp"
+  "test_qilog_sync.cpp"
+  "test_qios.cpp"
+  "test_src.cpp"
+  "test_strand.cpp"
+  "test_trackable.cpp"
+  "test_version.cpp"
+
+  DEPENDS
+  qi
+  qitestutils
+
+  TIMEOUT 120
+)
+
+# TODO: Merge helptext tests in one program once Application can be constructed
+#       and destroyed multiple times in the same process.
+qi_create_gtest(test_helptext
+  SRC
+    "test_helptext.hpp"
+    "test_helptext.cpp"
+  DEPENDS QI
+  TIMEOUT 120
+)
+
+qi_create_gtest(test_helptext_session
+  SRC
+    "test_helptext.hpp"
+    "test_helptext_session.cpp"
+  DEPENDS QI
+  TIMEOUT 120
+)
+
+qi_create_test(periodictask_always_die_gracefully
+  test_periodictask_kill.cpp
+ARGUMENTS
+  --qi-standalone
+TIMEOUT
+  10
+DEPENDS
+  qi
+)
+
+qi_create_gtest(test_qipath SRC "test_qipath.cpp" "../../src/utils.cpp" DEPENDS qi)
+
 # test with the default chrono io, which is v1 in boost 1.55
 qi_create_gtest(test_qiclock_chronoio SRC test_qiclock_chronoio.cpp DEPENDS QI GTEST)
 # test with the chrono io v2.
@@ -20,16 +94,3 @@ if(TARGET test_qiclock_chronoio_v2)
   set_target_properties(test_qiclock_chronoio_v2 PROPERTIES
       COMPILE_DEFINITIONS "BOOST_CHRONO_DONT_PROVIDES_DEPRECATED_IO_SINCE_V2_0_0")
 endif()
-qi_create_gtest(test_qilocal      SRC test_locale.cpp       DEPENDS QI GTEST)
-qi_create_gtest(test_qios         SRC test_qios.cpp         DEPENDS QI GTEST)
-qi_create_gtest(test_qiatomic     SRC test_qiatomic.cpp     DEPENDS QI GTEST)
-qi_create_gtest(test_qilaunch     SRC test_qilaunch.cpp     DEPENDS QI GTEST)
-qi_create_gtest(test_qilog_sync   SRC test_qilog_sync.cpp   DEPENDS QI GTEST)
-qi_create_gtest(test_qilog_async  SRC test_qilog_async.cpp  DEPENDS QI GTEST)
-qi_create_gtest(test_strand       SRC test_strand.cpp       DEPENDS QI GTEST)
-qi_create_gtest(test_future       SRC test_future.cpp       DEPENDS QI GTEST TIMEOUT 30)
-qi_create_gtest(test_futuregroup  SRC test_futuregroup.cpp  DEPENDS QI GTEST TIMEOUT)
-qi_create_gtest(test_buffer       SRC test_buffer.cpp       DEPENDS QI GTEST TIMEOUT 30)
-qi_create_gtest(test_bufferreader SRC test_bufferreader.cpp DEPENDS QI GTEST TIMEOUT 30)
-qi_create_gtest(test_version      SRC test_version.cpp      DEPENDS QI GTEST TIMEOUT 30)
-qi_create_gtest(test_macro        SRC test_macro.cpp        DEPENDS QI GTEST TIMEOUT 30)

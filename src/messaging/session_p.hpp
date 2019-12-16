@@ -22,11 +22,11 @@ namespace qi {
   class SessionPrivate : public qi::Trackable<SessionPrivate>
   {
   public:
-    SessionPrivate(Session* session, bool enforceAuth = false);
+    SessionPrivate(Session* session, bool enforceAuth = false, SessionConfig config = {});
     virtual ~SessionPrivate();
 
     qi::FutureSync<void> connect(const qi::Url &serviceDirectoryURL);
-    qi::FutureSync<void> listenStandalone(const qi::Url& listenUrl);
+    qi::FutureSync<void> listenStandalone(const std::vector<Url>& addresses);
     qi::FutureSync<void> close();
     bool isConnected() const;
 
@@ -42,21 +42,16 @@ namespace qi {
     // internal, add sd socket to socket cache
     void addSdSocketToCache(Future<void>, const qi::Url& url, qi::Promise<void> p);
 
-    void onServiceTrackingCanceled(qi::Promise<void> promise,
-        boost::shared_ptr<qi::Atomic<int> > link);
-    void onTrackedServiceAdded(const std::string& actual,
-      const std::string& expected,
-      qi::Promise<void> promise,
-      boost::shared_ptr<qi::Atomic<int> > link);
-
     //ServiceDirectoryClient have a transportsocket not belonging to transportsocketcache
     ServiceDirectoryClient _sdClient;
 
-    ObjectRegistrar        _serverObject;
-    Session_Service        _serviceHandler;
-    Session_Services       _servicesHandler;
-    Session_SD             _sd;
-    TransportSocketCache   _socketsCache;
+    ObjectRegistrar      _serverObject;
+    Session_Service      _serviceHandler;
+    Session_Services     _servicesHandler;
+    Session_SD           _sd;
+    TransportSocketCache _socketsCache;
+    std::atomic<bool>    _sdClientClosedByThis;
+    const SessionConfig  _config; // Keep it const for thread-safety.
   };
 }
 

@@ -57,7 +57,8 @@ namespace qi {
     template<typename T, typename... Args>
     inline unsigned int advertiseFactory(const std::string& name)
     {
-      return advertiseMethod(name, &constructObject<T, Args...>);
+      qi::Object<T>(*constructor)(Args...) = [](Args... args) { return constructObject<T>(args...); };
+      return advertiseMethod(name, constructor);
     }
 
     template <typename... Args>
@@ -85,7 +86,7 @@ namespace qi {
     unsigned int xAdvertiseMethod(MetaMethodBuilder& builder, AnyFunction func,
                                   MetaCallType threadingModel = MetaCallType_Auto);
 
-    unsigned int xAdvertiseSignal(const std::string &name, const Signature &signature);
+    unsigned int xAdvertiseSignal(const std::string &name, const Signature &signature, bool isSignalProperty = false);
     unsigned int xAdvertiseProperty(const std::string& name, const Signature& sig, int id=-1);
     void setDescription(const std::string& desc);
     qi::AnyObject object(boost::function<void (GenericObject*)> onDelete = boost::function<void (GenericObject*)>());

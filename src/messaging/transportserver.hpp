@@ -7,17 +7,21 @@
 #ifndef _SRC_TRANSPORTSERVER_HPP_
 #define _SRC_TRANSPORTSERVER_HPP_
 
+#include <utility>
 # include <boost/noncopyable.hpp>
 # include <qi/url.hpp>
 # include <qi/eventloop.hpp>
 # include <qi/signal.hpp>
+# include <qi/messaging/messagesocket_fwd.hpp>
 # include <vector>
+# include <boost/asio/ip/tcp.hpp>
+# include <boost/asio/ssl/stream.hpp>
 
 
 namespace qi {
   class TransportServer;
 
-  class TransportServerImpl: public boost::enable_shared_from_this<TransportServerImpl>
+  class TransportServerImpl
   {
   public:
     TransportServerImpl(TransportServer* self, EventLoop* ctx)
@@ -38,12 +42,19 @@ namespace qi {
     qi::Promise<void>                       _connectionPromise;
   };
 
-  typedef boost::shared_ptr<TransportServerImpl> TransportServerImplPtr;
+  using TransportServerImplPtr = boost::shared_ptr<TransportServerImpl>;
 
 
-  class TransportSocket;
-  typedef boost::shared_ptr<TransportSocket> TransportSocketPtr;
-
+  /**
+   * @brief A socket acceptor (not a server, duh).
+   * It automatically accepts incoming connections to the endpoint it
+   * listens to. When a connection is accepted, a transport socket is created
+   * and emitted through the newConnection signal.
+   *
+   * Each socket emitted is already connected to the client, but the messages
+   * are not read from the socket at this level. It is the user responsibility
+   * to manage the life cycle of the socket.
+   */
   class TransportServer : private boost::noncopyable
   {
   public:
@@ -51,7 +62,7 @@ namespace qi {
     virtual ~TransportServer();
 
     qi::Future<void> listen(const qi::Url &url,
-                            qi::EventLoop* ctx = qi::getEventLoop());
+                            qi::EventLoop* ctx = qi::getNetworkEventLoop());
     bool setIdentity(const std::string& key, const std::string& crt);
     void close();
 
@@ -62,7 +73,7 @@ namespace qi {
      * called on the socket
      */
     // C4251
-    qi::Signal<TransportSocketPtr> newConnection;
+    qi::Signal<std::pair<MessageSocketPtr, Url>> newConnection;
     // C4251
     qi::Signal<int>                acceptError;
     qi::Signal<void>               endpointsChanged;

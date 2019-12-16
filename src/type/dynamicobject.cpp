@@ -31,14 +31,15 @@ namespace qi
     // get or create signal, or 0 if id is not an event
     SignalBase* createSignal(unsigned int id);
     PropertyBase* property(unsigned int id);
-    typedef std::map<unsigned int, std::pair<SignalBase*, bool> > SignalMap;
-    typedef std::map<unsigned int, std::pair<AnyFunction, MetaCallType> > MethodMap;
+    using SignalMap = std::map<unsigned int, std::pair<SignalBase*, bool>>;
+    using MethodMap = std::map<unsigned int, std::pair<AnyFunction, MetaCallType>>;
     SignalMap           signalMap;
     MethodMap           methodMap;
     MetaObject          meta;
     ObjectThreadingModel threadingModel;
+    boost::optional<ObjectUid> uid;
 
-    typedef std::map<unsigned int, std::pair<PropertyBase*, bool> > PropertyMap;
+    using PropertyMap = std::map<unsigned int, std::pair<PropertyBase*, bool>>;
     PropertyMap propertyMap;
 
     ExecutionContext* getExecutionContext(
@@ -47,6 +48,7 @@ namespace qi
 
   DynamicObjectPrivate::DynamicObjectPrivate()
     : threadingModel(ObjectThreadingModel_Default)
+    , uid{ os::ptrUid(this) }
   {
   }
 
@@ -107,15 +109,16 @@ namespace qi
   {
   public:
     DynamicObjectTypeInterface() {}
-    virtual const MetaObject& metaObject(void* instance);
-    virtual qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature);
-    virtual void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params);
-    virtual qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber);
+    ObjectUid uid(void* instance) const override;
+    const MetaObject& metaObject(void* instance) override;
+    qi::Future<AnyReference> metaCall(void* instance, AnyObject context, unsigned int method, const GenericFunctionParameters& params, MetaCallType callType, Signature returnSignature) override;
+    void metaPost(void* instance, AnyObject context, unsigned int signal, const GenericFunctionParameters& params) override;
+    qi::Future<SignalLink> connect(void* instance, AnyObject context, unsigned int event, const SignalSubscriber& subscriber) override;
     /// Disconnect an event link. Returns if disconnection was successful.
-    virtual qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId);
-    virtual const std::vector<std::pair<TypeInterface*, int> >& parentTypes();
-    virtual qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id);
-    virtual qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue val);
+    qi::Future<void> disconnect(void* instance, AnyObject context, SignalLink linkId) override;
+    const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& parentTypes() override;
+    qi::Future<AnyValue> property(void* instance, AnyObject context, unsigned int id) override;
+    qi::Future<void> setProperty(void* instance, AnyObject context, unsigned int id, AnyValue val) override;
     _QI_BOUNCE_TYPE_METHODS(DefaultTypeImplMethods<DynamicObject>);
   };
 
@@ -283,22 +286,19 @@ namespace qi
     {
       auto prop = property(id);
       return ec->async([prop, val]{
-            // TODO make this async when setValue returns a futuresync
-            return prop->setValue(val.asReference());
-          });
+            return prop->setValue(val.asReference()).async();
+          }).unwrap();
     }
     else
     {
       try
       {
-        // TODO make this async when setValue returns a futuresync
-        property(id)->setValue(val.asReference());
+        return property(id)->setValue(val.asReference());
       }
       catch(const std::exception& e)
       {
         return qi::makeFutureError<void>(std::string("setProperty: ") + e.what());
       }
-      return qi::Future<void>(0);
     }
   }
 
@@ -317,12 +317,10 @@ namespace qi
     ExecutionContext* ec = _p->getExecutionContext(context, MetaCallType_Auto);
     if (ec)
       return ec->async([prop] {
-            // TODO make this async when setValue returns a futuresync
-            return prop->value();
-          });
+            return prop->value().async();
+          }).unwrap();
     else
-      // TODO make this async when setValue returns a futuresync
-      return qi::Future<AnyValue>(prop->value());
+      return prop->value();
   }
 
   static void reportError(qi::Future<AnyReference> fut) {
@@ -362,8 +360,8 @@ namespace qi
     if (l == SignalBase::invalidSignalLink)
       return qi::Future<SignalLink>(l);
     SignalLink link = ((SignalLink)event << 32) + l;
-    assert(link >> 32 == event);
-    assert((link & 0xFFFFFFFF) == l);
+    QI_ASSERT(link >> 32 == event);
+    QI_ASSERT((link & 0xFFFFFFFF) == l);
     qiLogDebug() << "New subscriber " << link <<" to event " << event;
     return qi::Future<SignalLink>(link);
   }
@@ -376,14 +374,33 @@ namespace qi
     SignalBase* s = _p->createSignal(event);
     if (!s)
       return qi::makeFutureError<void>("Cannot find local signal connection.");
-    bool b = s->disconnect(link);
-    if (!b) {
-      return qi::makeFutureError<void>("Cannot find local signal connection.");
-    }
-    return qi::Future<void>(0);
+    auto disconnecting = s->disconnectAsync(link);
+    return disconnecting.andThen([](bool success)
+    {
+      if (!success)
+        throw std::runtime_error("Cannot find local signal connection.");
+    });
   }
 
+  boost::optional<ObjectUid> DynamicObject::uid() const
+  {
+    return _p->uid;
+  }
+
+  void DynamicObject::setUid(boost::optional<ObjectUid> newUid)
+  {
+    _p->uid = newUid;
+  }
+
+
   //DynamicObjectTypeInterface implementation: just bounces everything to metaobject
+  ObjectUid DynamicObjectTypeInterface::uid(void* instance) const
+  {
+    auto* object = reinterpret_cast<DynamicObject*>(instance);
+    if(!object->uid())
+      object->setUid(os::ptrUid(instance));
+    return *object->uid();
+  }
 
   const MetaObject& DynamicObjectTypeInterface::metaObject(void* instance)
   {
@@ -411,9 +428,9 @@ namespace qi
     return reinterpret_cast<DynamicObject*>(instance)->metaDisconnect(linkId);
   }
 
-  const std::vector<std::pair<TypeInterface*, int> >& DynamicObjectTypeInterface::parentTypes()
+  const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& DynamicObjectTypeInterface::parentTypes()
   {
-    static std::vector<std::pair<TypeInterface*, int> > empty;
+    static std::vector<std::pair<TypeInterface*, std::ptrdiff_t> > empty;
     return empty;
   }
 
@@ -428,6 +445,8 @@ namespace qi
     return reinterpret_cast<DynamicObject*>(instance)
       ->metaSetProperty(context, id, value);
   }
+
+
 
   static void cleanupDynamicObject(GenericObject *obj, bool destroyObject,
     boost::function<void (GenericObject*)> onDelete)
@@ -450,19 +469,25 @@ namespace qi
 
   AnyObject makeDynamicSharedAnyObjectImpl(DynamicObject* obj, boost::shared_ptr<Empty> other)
   {
-    GenericObject* go = new GenericObject(getDynamicTypeInterface(), obj);
+    GenericObject* go = new GenericObject(getDynamicTypeInterface(), obj, obj->uid());
     return AnyObject(go, other);
   }
 
   AnyObject makeDynamicAnyObject(DynamicObject *obj, bool destroyObject,
+    const boost::optional<ObjectUid>& uid,
     boost::function<void (GenericObject*)> onDelete)
   {
+    QI_ASSERT_TRUE(obj);
     ObjectTypeInterface* type = getDynamicTypeInterface();
+    std::unique_ptr<GenericObject> go;
+
+    if (uid) go.reset(new GenericObject(type, obj, *uid));
+    else go.reset(new GenericObject(type, obj, obj->uid()));
+
     if (destroyObject || onDelete)
-      return AnyObject(new GenericObject(type, obj),
+      return AnyObject(go.release(),
         boost::bind(&cleanupDynamicObject, _1, destroyObject, onDelete));
     else
-      return AnyObject(new GenericObject(type, obj), &AnyObject::deleteGenericObjectOnly);
+      return AnyObject(go.release(), &AnyObject::deleteGenericObjectOnly);
   }
-
 }

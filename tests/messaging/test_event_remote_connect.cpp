@@ -3,6 +3,8 @@
 */
 
 #include <map>
+#include <thread>
+#include <chrono>
 #include <gtest/gtest.h>
 #include <qi/application.hpp>
 #include <qi/anyobject.hpp>
@@ -11,6 +13,7 @@
 #include <qi/session.hpp>
 
 #include <testsession/testsessionpair.hpp>
+#include <qi/testutils/testutils.hpp>
 
 qiLogCategory("test");
 
@@ -22,7 +25,10 @@ qiLogCategory("test");
  */
 
 static qi::Promise<int> *payload1;
-qi::Atomic<int> i = 0;
+
+namespace
+{
+qi::Atomic<int> i{0};
 
 void onFire1(const int& pl)
 {
@@ -49,18 +55,19 @@ void callbackCounter(const int& value)
 void callbackCounterBis(const int& value, std::string secondValue)
 {
   ++i;
-  std::cout << "callback called " << *i <<" times" << std::endl;
+  std::cout << "callback called " << i.load() <<" times" << std::endl;
 }
+} // anonymous
 
-class TestObject: public ::testing::Test
+class ObjectEventRemoteConnect: public ::testing::Test
 {
 public:
-  TestObject()
+  ObjectEventRemoteConnect()
     : oe1(0)
     , oe2(0)
     , om1(0)
     , om2(0)
-    , p2(p1)
+    , p2(TestSessionPair::ShareServiceDirectory, p1)
   {
     qi::DynamicObjectBuilder obs1, obs2;
     se1 = obs1.advertiseSignal<const int&>("fire1");
@@ -85,10 +92,12 @@ protected:
     EXPECT_EQ(nbLocalServices, p1.server()->services(qi::Session::ServiceLocality_Local).value().size());
     EXPECT_EQ(nbLocalServices, p2.server()->services(qi::Session::ServiceLocality_Local).value().size());
 
-    std::vector<qi::ServiceInfo> services = p1.client()->services();
-    EXPECT_EQ(nbConnectedServices, services.size());
-    services = p2.client()->services();
-    EXPECT_EQ(nbConnectedServices, services.size());
+    EXPECT_TRUE(test::verifyBeforeDuration(
+        [&] { return nbConnectedServices == p1.client()->services().value().size(); },
+        serviceWaitDefaultTimeout));
+    EXPECT_TRUE(test::verifyBeforeDuration(
+        [&] { return nbConnectedServices == p2.client()->services().value().size(); },
+        serviceWaitDefaultTimeout));
 
     qi::Future<qi::AnyObject> fut;
     fut = p2.client()->service("coin1");
@@ -97,7 +106,6 @@ protected:
 
     fut = p1.client()->service("coin2");
     ASSERT_FALSE(fut.hasError());
-
     oclient2 = fut.value();
 
     oe1 = oclient1.metaObject().signalId("fire1::(i)");
@@ -141,7 +149,7 @@ public:
 
 // We try to test all possible combinations of where we connect, where we emit.
 
-TEST_F(TestObject, Connect1)
+TEST_F(ObjectEventRemoteConnect, Connect1)
 {
   oclient1.connect(oe1, oclient1, om1).wait(2000);
   oclient1.post("fire1", 12);
@@ -149,7 +157,7 @@ TEST_F(TestObject, Connect1)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect2)
+TEST_F(ObjectEventRemoteConnect, Connect2)
 {
   oclient1.connect(oe1, oclient1, om1).wait(2000);
   oserver1.post("fire1", 12);
@@ -158,7 +166,7 @@ TEST_F(TestObject, Connect2)
 }
 
 
-TEST_F(TestObject, Connect3)
+TEST_F(ObjectEventRemoteConnect, Connect3)
 {
   oclient1.connect(oe1, oserver1, sm1).wait(2000);
   oserver1.post("fire1", 12);
@@ -166,7 +174,7 @@ TEST_F(TestObject, Connect3)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect4)
+TEST_F(ObjectEventRemoteConnect, Connect4)
 {
   oclient1.connect(oe1, oserver1, sm1).wait(2000);
   oclient1.post("fire1", 12);
@@ -174,7 +182,7 @@ TEST_F(TestObject, Connect4)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect5)
+TEST_F(ObjectEventRemoteConnect, Connect5)
 {
   oserver1.connect(se1, oclient1, om1).wait(2000);
   oclient1.post("fire1", 12);
@@ -182,7 +190,7 @@ TEST_F(TestObject, Connect5)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect6)
+TEST_F(ObjectEventRemoteConnect, Connect6)
 {
   oserver1.connect(se1, oclient1, om1).wait(2000);
   oserver1.post("fire1", 12);
@@ -190,7 +198,7 @@ TEST_F(TestObject, Connect6)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect7)
+TEST_F(ObjectEventRemoteConnect, Connect7)
 {
   oserver1.connect(se1, oserver1, sm1).wait(2000);
   oserver1.post("fire1", 12);
@@ -198,7 +206,7 @@ TEST_F(TestObject, Connect7)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect8)
+TEST_F(ObjectEventRemoteConnect, Connect8)
 {
   oserver1.connect(se1, oserver1, sm1).wait(2000);
   oclient1.post("fire1", 12);
@@ -206,7 +214,7 @@ TEST_F(TestObject, Connect8)
   EXPECT_EQ(12, payload1->future().value());
 }
 
-TEST_F(TestObject, Connect10)
+TEST_F(ObjectEventRemoteConnect, Connect10)
 {
   oclient1.connect(oe1, oclient2, om2).wait(2000);
   oclient1.post("fire1", 12);
@@ -214,7 +222,7 @@ TEST_F(TestObject, Connect10)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect11)
+TEST_F(ObjectEventRemoteConnect, Connect11)
 {
   oclient1.connect(oe1, oclient2, om2).wait(2000);
   oserver1.post("fire1", 12);
@@ -223,7 +231,7 @@ TEST_F(TestObject, Connect11)
 }
 
 
-TEST_F(TestObject, Connect12)
+TEST_F(ObjectEventRemoteConnect, Connect12)
 {
   oclient1.connect(oe1, oserver2, sm2).wait(2000);
   oserver1.post("fire1", 12);
@@ -231,7 +239,7 @@ TEST_F(TestObject, Connect12)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect13)
+TEST_F(ObjectEventRemoteConnect, Connect13)
 {
   oclient1.connect(oe1, oserver2, sm2).wait(2000);
   oclient1.post("fire1", 12);
@@ -239,7 +247,7 @@ TEST_F(TestObject, Connect13)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect14)
+TEST_F(ObjectEventRemoteConnect, Connect14)
 {
   oserver1.connect(se1, oclient2, om2).wait(2000);
   oclient1.post("fire1", 12);
@@ -247,7 +255,7 @@ TEST_F(TestObject, Connect14)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect15)
+TEST_F(ObjectEventRemoteConnect, Connect15)
 {
   oserver1.connect(se1, oclient2, om2).wait(2000);
   oserver1.post("fire1", 12);
@@ -255,7 +263,7 @@ TEST_F(TestObject, Connect15)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect16)
+TEST_F(ObjectEventRemoteConnect, Connect16)
 {
   oserver1.connect(se1, oserver2, sm2).wait(2000);
   oserver1.post("fire1", 12);
@@ -263,7 +271,7 @@ TEST_F(TestObject, Connect16)
   EXPECT_EQ(12, payload2->future().value());
 }
 
-TEST_F(TestObject, Connect17)
+TEST_F(ObjectEventRemoteConnect, Connect17)
 {
   oserver1.connect(se1, oserver2, sm2).wait(2000);
   oclient1.post("fire1", 12);
@@ -283,17 +291,17 @@ void slowDisconnect(qi::Promise<void> ready, qi::Promise<void> done, qi::Future<
 }
 
 // disconnect multiple times in parallel
-TEST_F(TestObject, disconnectDeadlock)
+TEST_F(ObjectEventRemoteConnect, disconnectDeadlock)
 {
   qi::Promise<void> doDisc, ready, discDone;
   boost::shared_ptr<qi::SignalLink> link = boost::make_shared<qi::SignalLink>();
-  *link = oclient1.connect("fire1", boost::function<void(int)>(boost::bind(slowDisconnect, ready, discDone, doDisc.future(), oclient1, link)));
+  *link = oclient1.connect("fire1", boost::function<void(int)>(boost::bind(slowDisconnect, ready, discDone, doDisc.future(), oclient1, link))).value();
   oserver1.post("fire1", 24);
   ready.future().wait();
   // a callback is running, trigger other disconnect
   qi::Future<void> discDone2 = qi::async(boost::bind(boost::function<void(qi::AnyObject, qi::SignalLink)>(&qi::AnyObject::disconnect), oclient1, *link));
   // wait and disconnect inside the callback
-  qi::os::msleep(10);
+  std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
   doDisc.setValue(0);
 
   // don't timeout
@@ -301,9 +309,9 @@ TEST_F(TestObject, disconnectDeadlock)
   discDone2.wait();
 }
 
-TEST_F(TestObject, multipleConnect)
+TEST_F(ObjectEventRemoteConnect, multipleConnect)
 {
-  int additional_timeout = 5;//time to wait after having received the correct number of callbacks
+  std::chrono::milliseconds additional_timeout{ 5 };//time to wait after having received the correct number of callbacks
   i = 0;
   qi::SignalLink link1 = oclient2.connect(se2, oserver1, callbackId).value(2000);
   qi::SignalLink link2 = oclient2.connect(se2, oserver1, callbackId).value(2000);
@@ -317,13 +325,13 @@ TEST_F(TestObject, multipleConnect)
   oclient2.post("fire2", 42);
   oclient2.post("fire2", 42);
 
-  int waiting_time = 0;
-  while(i._value != 8 && waiting_time < 10000)//waiting 10 seconds max
+  std::chrono::milliseconds waiting_time{ 0 };
+  while(i._value != 8 && waiting_time < std::chrono::seconds{ 10 }) //waiting 10 seconds max
   {
-    qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
+    std::this_thread::sleep_for(additional_timeout); //additional timeout to wait for unwanted callback
     waiting_time += additional_timeout;
   }
-  qi::os::msleep(additional_timeout);
+  std::this_thread::sleep_for(additional_timeout);
   ASSERT_EQ(i._value, 8);
 
   //disconnect 3/4 callbacks
@@ -334,12 +342,12 @@ TEST_F(TestObject, multipleConnect)
   oclient2.post("fire2", 42);//post signal twice
   oclient2.post("fire2", 42);
 
-  while(i._value != 10 && waiting_time < 10000)//waiting 10 seconds max
+  while(i._value != 10 && waiting_time < std::chrono::seconds{ 10 })//waiting 10 seconds max
   {
-    qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
+    std::this_thread::sleep_for(additional_timeout);
     waiting_time += additional_timeout;
   }
-  qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
+  std::this_thread::sleep_for(additional_timeout);
   ASSERT_EQ(i._value, 10);
   //i = 0;
 
@@ -351,13 +359,13 @@ TEST_F(TestObject, multipleConnect)
   oclient2.post("fire2", 42);//post signal twice
   oclient2.post("fire2", 42);
 
-  while((*i) != 18 && waiting_time < 10000)//waiting 10 seconds max
+  while((i.load()) != 18 && waiting_time < std::chrono::seconds{ 10 })//waiting 10 seconds max
   {
-    qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
+    std::this_thread::sleep_for(additional_timeout); //additional timeout to wait for unwanted callback
     waiting_time += additional_timeout;
   }
-  qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
-  ASSERT_EQ(*i, 18);
+  std::this_thread::sleep_for(additional_timeout); //additional timeout to wait for unwanted callback
+  ASSERT_EQ(i.load(), 18);
 
   oclient2.disconnect(link1);
   oclient2.disconnect(link2);
@@ -366,17 +374,18 @@ TEST_F(TestObject, multipleConnect)
 
   oclient2.post("fire2", 42);
 
-  qi::os::msleep(additional_timeout); //additional timeout to wait for unwanted callback
-  ASSERT_EQ(*i, 18);
+  std::this_thread::sleep_for(additional_timeout); //additional timeout to wait for unwanted callback
+  ASSERT_EQ(i.load(), 18);
 
 }
 
-TEST_F(TestObject, serviceDirectoryEvent)
+TEST_F(ObjectEventRemoteConnect, serviceDirectoryEvent)
 {
+  const std::chrono::milliseconds additional_timeout{ 10 };//time to wait after having received the correct number of callbacks
   i = 0;
-  qi::AnyObject sd = p1.client()->service("ServiceDirectory");
+  qi::AnyObject sd = p1.client()->service(qi::Session::serviceDirectoryServiceName()).value();
 
-  typedef std::map<unsigned int, qi::MetaSignal> SignalMap;
+  using SignalMap = std::map<unsigned int, qi::MetaSignal>;
   SignalMap s_map;
   s_map = sd.metaObject().signalMap();
 
@@ -396,17 +405,17 @@ TEST_F(TestObject, serviceDirectoryEvent)
 
   ASSERT_TRUE(p1.server()->registerService("test", oserver1).hasValue(1000));
 
-  int waiting_time = 0;
-  while(*i != 4 && waiting_time < 10000)
+  std::chrono::milliseconds waiting_time{ 0 };
+  while(i.load() != 4 && waiting_time < std::chrono::seconds{ 10 })
   {
-    qi::os::msleep(10);
-    waiting_time += 10;
+    std::this_thread::sleep_for(additional_timeout);
+    waiting_time += additional_timeout;
   }
-  qi::os::msleep(10);
-  ASSERT_EQ(*i, 4);
+  std::this_thread::sleep_for(additional_timeout);
+  ASSERT_EQ(i.load(), 4);
 }
 
-TEST(TestObjectDyn, PropertyConnectOnDynamicObject)
+TEST(ObjectEventRemoteDyn, PropertyConnectOnDynamicObject)
 {
   qi::Property<int> prop;
   qi::DynamicObjectBuilder builder;
@@ -417,22 +426,11 @@ TEST(TestObjectDyn, PropertyConnectOnDynamicObject)
 
   qi::Promise<int> prom;
 
-  qi::AnyObject obj = p.client()->service("Serv");
+  qi::AnyObject obj = p.client()->service("Serv").value();
   obj.connect("prop", boost::function<void(int)>([&prom](int i){
           prom.setValue(i);
         }));
 
   prop.set(42);
   ASSERT_EQ(42, prom.future().value());
-}
-
-int main(int argc, char *argv[])
-{
-#if defined(__APPLE__) || defined(__linux__)
-  setsid();
-#endif
-  qi::Application app(argc, argv);
-  TestMode::initTestMode(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }

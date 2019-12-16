@@ -18,15 +18,17 @@ namespace qi {
   /** qi::Url is an address represented by a protocol, a host and a port.
    *  @warning The class isn't compliant with RFC 3986.
    *
-   *  qi::Url can parse the following formats :
-   *    - protocol://host:port
-   *    - protocol://host
-   *    - host:port
-   *    - host
-   *    - protocol://:port
-   *    - protocol://
-   *    - :port
-   *    - *empty string*
+   *  qi::Url can parse the following formats:
+   *  <ul>
+   *    <li>- protocol://host:port</li>
+   *    <li>- protocol://host</li>
+   *    <li>- host:port</li>
+   *    <li>- host</li>
+   *    <li>- protocol://:port</li>
+   *    <li>- protocol://</li>
+   *    <li>- :port</li>
+   *    <li>- *empty string*</li>
+   *  </ul>
    *
    *  @note This class is copyable.
    */
@@ -90,7 +92,7 @@ namespace qi {
      */
 
     /**
-     *  @return True if the port and the protocol had been set.
+     *  @return True if the protocol, host and port have been set.
      */
     bool isValid() const;
 
@@ -107,16 +109,34 @@ namespace qi {
      */
     const std::string& protocol() const;
 
+    /// @return True if the protocol was set.
+    bool hasProtocol() const;
+
+    /// Sets the protocol to the given protocol identifier (tcp, tcps, udp, ...).
+    void setProtocol(const std::string& protocol);
+
     /**
      *  @return The host part of the url or an empty string if no host part was
      *  found.
      */
     const std::string& host() const;
 
+    /// @return True if the host was set.
+    bool hasHost() const;
+
+    /// Sets the host.
+    void setHost(const std::string& host);
+
     /**
      *  @return The port of the url, 0 if no port were given.
      */
     unsigned short port() const;
+
+    /// @return True if the port was set.
+    bool hasPort() const;
+
+    /// Sets the port. You can use 0.
+    void setPort(unsigned short port);
 
   private:
     UrlPrivate* _p;
@@ -130,8 +150,16 @@ namespace qi {
   QI_API inline bool operator!=(const Url& lhs, const Url& rhs)
   { return !(lhs == rhs); }
 
-  typedef std::vector<Url> UrlVector;
+  QI_API std::ostream& operator<<(std::ostream& out, const Url& url);
 
-}
+  using UrlVector = std::vector<Url>;
+
+  /**
+   * Use specified parts of the given URL to be set over the given base URL.
+   * @param specification An URL that may be incomplete, which specified parts must be kept.
+   * @param baseUrl A supposedly complete URL, which parts will be used to fill in the specified URL.
+   */
+  QI_API Url specifyUrl(const Url& specification, const Url& baseUrl);
+} // namespace qi
 
 #endif  // _QIMESSAGING_URL_HPP_

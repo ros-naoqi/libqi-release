@@ -8,39 +8,41 @@
 #ifndef _QI_DETAIL_LOG_HXX_
 #define _QI_DETAIL_LOG_HXX_
 
+#include <boost/format.hpp>
 #include <boost/noncopyable.hpp>
+#include <boost/preprocessor/cat.hpp>
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 #   define _qiLogDebug(...)      qi::log::LogStream(qi::LogLevel_Debug, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 #   define _qiLogDebug(...)      qi::log::LogStream(qi::LogLevel_Debug, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
 #endif
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 # define _qiLogVerbose(...)      qi::log::LogStream(qi::LogLevel_Verbose, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 # define _qiLogVerbose(...)      qi::log::LogStream(qi::LogLevel_Verbose, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
 #endif
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 # define _qiLogInfo(...)         qi::log::LogStream(qi::LogLevel_Info, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 # define _qiLogInfo(...)         qi::log::LogStream(qi::LogLevel_Info, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
 #endif
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 # define _qiLogWarning(...)      qi::log::LogStream(qi::LogLevel_Warning, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 # define _qiLogWarning(...)      qi::log::LogStream(qi::LogLevel_Warning, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
 #endif
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 # define _qiLogError(...)        qi::log::LogStream(qi::LogLevel_Error, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 # define _qiLogError(...)        qi::log::LogStream(qi::LogLevel_Error, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
 #endif
 
-#if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
+#if defined(NO_QI_LOG_DETAILED_CONTEXT)
 # define _qiLogFatal(...)        qi::log::LogStream(qi::LogLevel_Fatal, "", __FUNCTION__, 0, __VA_ARGS__).self()
 #else
 # define _qiLogFatal(...)        qi::log::LogStream(qi::LogLevel_Fatal, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__).self()
@@ -61,9 +63,15 @@
 
 /* For fast category access, we use lookup to a fixed name symbol.
  * The user is required to call qiLogCategory somewhere in scope.
+ *
+ * _QI_LOG_VARIABLE_SUFFIX is used to make variable name (_qi_log_category)
+ * unique when using unity(blob) builds
  */
+#ifndef _QI_LOG_VARIABLE_SUFFIX
+# define _QI_LOG_VARIABLE_SUFFIX _x // dummy/default suffix
+#endif
 
-#  define _QI_LOG_CATEGORY_GET() _qi_log_category
+#  define _QI_LOG_CATEGORY_GET() BOOST_PP_CAT(_qi_log_category, _QI_LOG_VARIABLE_SUFFIX)
 
 #if defined(NO_QI_LOG_DETAILED_CONTEXT) || defined(NDEBUG)
 #  define _QI_LOG_MESSAGE(Type, Message)                        \
@@ -176,7 +184,7 @@ namespace qi {
 
       // Hack required to silence spurious warning in compile-time disabled macros
       // We need an operator with priority below << and above &&
-      inline bool operator<(bool b, const NullStream& ns)
+      inline bool operator<(bool /*b*/, const NullStream& /*ns*/)
       {
         return false;
       }
@@ -200,6 +208,11 @@ namespace qi {
       };
 
       QI_API boost::format getFormat(const std::string& s);
+
+      // given a set of rules in the format documented in the public header,
+      // return a list of (category name, LogLevel) tuples.
+      QI_API std::vector<std::tuple<std::string, qi::LogLevel>> parseFilterRules(
+          const std::string &rules);
     }
 
     //inlined for perf
@@ -208,7 +221,7 @@ namespace qi {
       return category && level <= category->maxLevel;
     }
 
-    typedef detail::Category* CategoryType;
+    using CategoryType = detail::Category*;
     class LogStream: public std::stringstream, boost::noncopyable
     {
     public:

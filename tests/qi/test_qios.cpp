@@ -18,12 +18,21 @@
 #include <limits>
 #include <boost/filesystem/fstream.hpp>
 #include <cstdio>
+#include <future>
 
 #include <gtest/gtest.h>
 #include <boost/filesystem.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #include <qi/path.hpp>
 #include <qi/os.hpp>
+#include <ka/scoped.hpp>
+#include "testutils/testutils.hpp"
+
+static std::chrono::milliseconds timeout()
+{
+  return std::chrono::milliseconds{1000};
+}
 
 #ifdef _MSC_VER
 # pragma warning( push )
@@ -290,6 +299,25 @@ TEST(QiOs, envParam)
   EXPECT_EQ('z', qi::os::getEnvParam<char>("TOTO", 'z'));
 }
 
+TEST(QiOs, Unsetenv)
+{
+  ASSERT_EQ(0, qi::os::setenv("cookies", "good"));
+  EXPECT_EQ("good", qi::os::getenv("cookies"));
+  ASSERT_EQ(0, qi::os::unsetenv("cookies"));
+  EXPECT_TRUE(qi::os::getenv("cookies").empty());
+}
+
+TEST(QiOs, UnsetenvInexistentVariable)
+{
+  ASSERT_EQ(0, qi::os::unsetenv("a_variable_name_that_probably_does_not_exist"));
+}
+
+TEST(QiOs, UnsetenvTwice)
+{
+  ASSERT_EQ(0, qi::os::setenv("cookies", "good"));
+  ASSERT_EQ(0, qi::os::unsetenv("cookies"));
+  ASSERT_EQ(0, qi::os::unsetenv("cookies"));
+}
 
 TEST(QiOs, getpid)
 {
@@ -517,6 +545,53 @@ TEST(QiOs, hostIPAddrs)
   ASSERT_TRUE(ifsMap.empty() == false);
 }
 
+TEST(QiOs, concurrentHostIPAddrs)
+{
+  using IfsMap = std::map<std::string, std::vector<std::string>>;
+  const auto n = 200;
+
+  std::vector<std::future<IfsMap>> futureMaps;
+  futureMaps.reserve(n);
+
+  for (auto i = 0; i < n; ++i)
+  {
+    std::cout << i << std::endl;
+    futureMaps.push_back(std::async(std::launch::async,
+                                    [] () {
+      return qi::os::hostIPAddrs(false);
+    }));
+  }
+
+  for (auto i = 0; i < n; ++i)
+  {
+    auto &future = futureMaps[i];
+    future.wait();
+    std::cout << "future " << i << " set" << std::endl;
+    auto ifsMap = future.get();
+    ASSERT_FALSE(ifsMap.empty());
+    for (const auto &it : ifsMap)
+    {
+      std::cout << it.first << " : " << std::endl;
+      for (const auto &tmp : it.second)
+      {
+        std::cout << tmp << "; ";
+      }
+      std::cout << std::endl;
+    }
+  }
+}
+
+TEST(QiOs, sequentialHostIPAddrs)
+{
+  const auto n = 10000;
+  for (auto i = 0; i < n; ++i)
+  {
+    std::cout << i << std::endl;
+    auto ifsMap = qi::os::hostIPAddrs(false);
+    ASSERT_FALSE(ifsMap.empty());
+  }
+}
+
 TEST(QiOs, getMachineId)
 {
   int status = 0;
@@ -541,6 +616,48 @@ TEST(QiOs, getMachineId)
   uuid2file.close();
 
   ASSERT_TRUE(uuid1.compare(uuid2) == 0);
+}
+
+TEST(QiOs, getMachineIdAsUuid)
+{
+  using namespace qi;
+  std::ostringstream ss;
+  ss << os::getMachineIdAsUuid();
+  EXPECT_EQ(ss.str(), os::getMachineId());
+}
+
+TEST(QiOs, getMachineIdAsUuidConst)
+{
+  using namespace qi;
+  EXPECT_EQ(os::getMachineIdAsUuid(), os::getMachineIdAsUuid());
+}
+
+TEST(Os, getProcessUuidConstantInAProcess)
+{
+  using namespace qi::os;
+  EXPECT_EQ(getProcessUuid(), getProcessUuid());
+}
+
+// To check that the process uuid really changes with a different process, we
+// launch a helper executable that prints its process uuid in a file.
+// We then read the process uuid from the file, remove the file and assert that
+// the read uuid is different than ours.
+TEST(Os, getProcessUuidDifferentInDifferentProcesses)
+{
+  using namespace qi::os;
+  const auto parentProcessUuid = getProcessUuid();
+  const auto childFilename = to_string(parentProcessUuid) + ".txt";
+  {
+    test::ScopedProcess process{
+      qi::path::findBin("print_process_uuid"), {childFilename}, timeout()};
+  }
+  const auto _ = ka::scoped([=]() {
+    boost::filesystem::remove(childFilename);
+  });
+  boost::filesystem::ifstream childFile{childFilename};
+  qi::Uuid childProcessUuid;
+  childFile >> childProcessUuid;
+  EXPECT_NE(childProcessUuid, parentProcessUuid);
 }
 
 #if  defined(_WIN32) || defined(__linux__)
@@ -585,6 +702,15 @@ TEST(QiOs, dlerror)
   const char* error2 = qi::os::dlerror();
   EXPECT_NE((const char*) NULL, error2);
 #endif
+}
+
+TEST(QiOs, ptrUid)
+{
+  using namespace qi;
+  void* ptr = &ptr;
+  const auto ptruid = os::ptrUid(ptr);
+  const auto expectedPtrUid = PtrUid(os::getMachineIdAsUuid(), os::getProcessUuid(), ptr);
+  ASSERT_EQ(expectedPtrUid, ptruid);
 }
 
 #ifdef _MSC_VER

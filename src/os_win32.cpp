@@ -4,6 +4,8 @@
  * found in the COPYING file.
  */
 
+#include "os_win32.hpp"
+
 #include <boost/filesystem.hpp>
 #include <locale>
 #include <cstdio>
@@ -24,9 +26,13 @@
 # include <shlwapi.h>
 # pragma comment(lib, "shlwapi.lib")
 
+#include <boost/container/flat_map.hpp>
+#include <boost/utility/string_ref.hpp>
+
 #include <qi/log.hpp>
 #include <qi/os.hpp>
 #include <qi/path.hpp>
+#include <ka/scoped.hpp>
 
 #include "utils.hpp"
 
@@ -143,6 +149,11 @@ namespace qi {
                         boost::filesystem::path(value, qi::unicodeFacet()).wstring().c_str());
     }
 
+    int unsetenv(const char *var) {
+      return _wputenv_s(boost::filesystem::path(var, qi::unicodeFacet()).wstring().c_str(),
+                        L"");
+    }
+
     void sleep(unsigned int seconds) {
       Sleep(seconds * 1000);
     }
@@ -252,25 +263,46 @@ namespace qi {
       return ret;
     }
 
-    // Function to get real string representation from
-    // GetLastError() and WSAGetLastError()
-    static std::string GetLastErrorMessage(DWORD lastError)
-    {
-      TCHAR errmsg[512];
 
-      if (!FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,
-                         0,
-                         lastError,
-                         0,
-                         errmsg,
-                         511,
-                         NULL))
+    std::string lastErrorMessage()
+    {
+      return translateSystemError(GetLastError());
+    }
+
+    std::string lastSocketErrorMessage()
+    {
+      return translateSystemError(WSAGetLastError());
+    }
+
+    std::string translateSystemError(DWORD errorCode)
+    {
+      LPVOID messageBufferPtr = nullptr;
+
+      if (!FormatMessage(
+          FORMAT_MESSAGE_ALLOCATE_BUFFER |
+          FORMAT_MESSAGE_FROM_SYSTEM |
+          FORMAT_MESSAGE_IGNORE_INSERTS,
+          NULL,
+          errorCode,
+          MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+          (LPTSTR)& messageBufferPtr,
+          0, NULL))
       {
         /* if we fail, call ourself to find out why and return that error */
-        return (GetLastErrorMessage(GetLastError()));
+        std::stringstream message;
+        message << "Failed to allocate message buffer for error '" << errorCode
+                << "' : " << lastErrorMessage();
+        return message.str();
       }
-
-      return errmsg;
+      auto scopedBuffer = ka::scoped(messageBufferPtr, [&](LPVOID buffer) {
+        if (LocalFree(buffer))
+        {
+          qiLogWarning() << "Failed to deallocate message buffer for error '" << errorCode
+                         << "', error: " << lastErrorMessage();
+        }
+      });
+      const std::string message = static_cast<const char*>(messageBufferPtr);
+      return message;
     }
 
     unsigned short findAvailablePort(unsigned short port)
@@ -333,9 +365,7 @@ namespace qi {
 
       if (unavailable)
       {
-        unavailable = WSAGetLastError();
-        std::string error = GetLastErrorMessage(unavailable);
-
+        const auto error = lastSocketErrorMessage();
         qiLogError() << "freePort Socket Bind Error: "
                      << error << std::endl;
         iPort = 0;
@@ -348,82 +378,90 @@ namespace qi {
 
     std::map<std::string, std::vector<std::string> > hostIPAddrs(bool ipv6Addr)
     {
-      PIP_ADAPTER_INFO pAdapterInfo;
-      PIP_ADAPTER_INFO pAdapter = NULL;
-      DWORD dwRetVal = 0;
-      std::map<int, std::string> AdapterType;
-      std::string type, addr;
-      std::map<std::string, std::vector<std::string> > ifsMap;
+      // TODO: replace usage of GetAdaptersInfo by a more "modern" Windows API (or Boost)
 
-      AdapterType[MIB_IF_TYPE_OTHER] = "Other";
-      AdapterType[IF_TYPE_IEEE80211] = "802.11wireless";
-      AdapterType[MIB_IF_TYPE_ETHERNET] = "Ethernet";
-      AdapterType[MIB_IF_TYPE_TOKENRING] = "TokenRing";
-      AdapterType[MIB_IF_TYPE_FDDI] = "FDDI";
-      AdapterType[MIB_IF_TYPE_PPP] = "PPP";
-      AdapterType[MIB_IF_TYPE_LOOPBACK] = "Loopback";
-      AdapterType[MIB_IF_TYPE_SLIP] = "Slip";
+      // First call GetAdaptersInfo to get the necessary size for the adapter list.
+      // See: http://msdn.microsoft.com/en-us/library/windows/desktop/aa365917(v=vs.85).aspx
+      auto bufferSize = [&] () -> ULONG {
+        ULONG result = 0;
+        const DWORD dwRetVal = GetAdaptersInfo(nullptr, &result);
+        if (dwRetVal != ERROR_BUFFER_OVERFLOW)
+        {
+          qiLogError() << "GetAdaptersInfo failed with error " << dwRetVal << " (1)";
+          return 0;
+        }
+        return result;
+      }();
 
-      ULONG ulOutBufLen = 0;
-      if ((pAdapterInfo = (IP_ADAPTER_INFO *) malloc(sizeof(IP_ADAPTER_INFO))) == NULL)
-      {
-        qiLogError() << "Error allocation memory needed to get hostIPAddrs";
-        return std::map<std::string, std::vector<std::string> >();
-      }
+      if(bufferSize == 0)
+        return {};
 
-      /* Make initial call to GetAdaptersInfo to get
-      ** the necessary size into the ulOutBufLen variable (pr)
-      ** http://msdn.microsoft.com/en-us/library/windows/desktop/aa365917(v=vs.85).aspx */
-      if ((dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen)) != ERROR_BUFFER_OVERFLOW)
-      {
-        qiLogError() << "GetAdaptersInfo failed with error " << dwRetVal << " (1)";
-        return std::map<std::string, std::vector<std::string> >();
-      }
+      using AddressMap = std::map<std::string, std::vector<std::string>>;
 
-      free(pAdapterInfo);
-      if ((pAdapterInfo = (IP_ADAPTER_INFO *) malloc(ulOutBufLen)) == NULL)
-      {
-        qiLogError() << "Error allocation memory needed to get hostIPAddrs";
-        return std::map<std::string, std::vector<std::string> >();
-      }
+      auto adaptersIPsMap = [&] () -> AddressMap {
 
-      if ((dwRetVal = GetAdaptersInfo(pAdapterInfo, &ulOutBufLen)) != NO_ERROR)
-      {
-        qiLogError() << "GetAdaptersInfo failed with error " << dwRetVal << " (2)";
-        return std::map<std::string, std::vector<std::string> >();
-      }
+        const auto scopedAdapters = ka::scoped((PIP_ADAPTER_INFO)malloc(bufferSize), &::free);
+        if (scopedAdapters.value == NULL)
+        {
+          qiLogError() << "Error allocation memory needed to get hostIPAddrs";
+          return {};
+        }
 
-      pAdapter = pAdapterInfo;
-      while (pAdapter)
-      {
-        if ((type = AdapterType[pAdapter->Type]).compare("") == 0)
-          type = "Other";
+        const DWORD dwRetVal = GetAdaptersInfo(scopedAdapters.value, &bufferSize);
+        if (dwRetVal != NO_ERROR)
+        {
+          qiLogError() << "GetAdaptersInfo failed with error " << dwRetVal << " (2)";
+          return {};
+        }
 
-        addr = pAdapter->IpAddressList.IpAddress.String;
-        if (addr.compare("0.0.0.0") != 0)
-          ifsMap[type].push_back(pAdapter->IpAddressList.IpAddress.String);
-        pAdapter = pAdapter->Next;
-      }
+        static const
+        boost::container::flat_map<int, const char*> adapterTypes {
+          { IF_TYPE_IEEE80211      , "802.11wireless"},
+          { MIB_IF_TYPE_ETHERNET   , "Ethernet"      },
+          { MIB_IF_TYPE_TOKENRING  , "TokenRing"     },
+          { MIB_IF_TYPE_FDDI       , "FDDI"          },
+          { MIB_IF_TYPE_PPP        , "PPP"           },
+          { MIB_IF_TYPE_LOOPBACK   , "Loopback"      },
+          { MIB_IF_TYPE_SLIP       , "Slip"          }
+        };
 
-      free(pAdapterInfo);
+        PIP_ADAPTER_INFO pAdapter = scopedAdapters.value;
+
+        AddressMap foundIFS;
+
+        while (pAdapter)
+        {
+          const auto typeIt = adapterTypes.find(pAdapter->Type);
+          const char* type = typeIt != end(adapterTypes) ? typeIt->second : "Other";
+
+          const boost::string_ref addr = pAdapter->IpAddressList.IpAddress.String;
+          if (addr != "0.0.0.0")
+          {
+            foundIFS[type].push_back(pAdapter->IpAddressList.IpAddress.String);
+          }
+          pAdapter = pAdapter->Next;
+        }
+
+        return foundIFS;
+      }();
 
       // not given by default
-      if (ifsMap.find("Loopback") == ifsMap.end())
+      if (adaptersIPsMap.find("Loopback") == adaptersIPsMap.end())
       {
-        ifsMap["Loopback"].push_back("127.0.0.1");
+        adaptersIPsMap["Loopback"].push_back("127.0.0.1");
       }
 
-      return ifsMap;
+      return adaptersIPsMap;
     }
 
     void setCurrentThreadName(const std::string &name) {
-      typedef struct tagTHREADNAME_INFO
+      using THREADNAME_INFO = struct tagTHREADNAME_INFO
       {
         DWORD dwType; // must be 0x1000
         LPCSTR szName; // pointer to name (in user addr space)
         HANDLE dwThreadID; // thread ID (-1=caller thread)
         DWORD dwFlags; // reserved for future use, must be zero
-      } THREADNAME_INFO;
+      };
 
       THREADNAME_INFO info;
       info.dwType = 0x1000;
@@ -475,7 +513,8 @@ namespace qi {
 
       if (!ret)
       {
-        qiLogError() << GetLastErrorMessage(GetLastError());
+        const auto errorMessage = lastErrorMessage();
+        qiLogError() << errorMessage;
         return false;
       }
       return true;
@@ -529,7 +568,8 @@ namespace qi {
       PROCESS_MEMORY_COUNTERS counters;
       if (!GetProcessMemoryInfo(hProcess, &counters, sizeof(counters)))
       {
-        qiLogWarning() << "cannot get memory usage for PID " << pid << ": " << GetLastErrorMessage(GetLastError());
+        const auto errorMessage = lastErrorMessage();
+        qiLogWarning() << "cannot get memory usage for PID " << pid << ": " << errorMessage;
         CloseHandle(hProcess);
         return 0;
       }

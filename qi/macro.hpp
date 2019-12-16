@@ -25,9 +25,11 @@
 # define _QI_MACRO_HPP_
 
 # include <qi/preproc.hpp>
+#include <boost/predef/compiler.h>
+#include <boost/config.hpp>
 
 /**
- * \def QI_API_DEPRECATED(x)
+ * \def QI_API_DEPRECATED
  * \brief Compiler flags to mark a function as deprecated. It will generate a
  *        compiler warning.
  */
@@ -39,6 +41,19 @@
 #  define QI_API_DEPRECATED
 #endif
 
+ /**
+ * \def QI_API_DEPRECATED_MSG(msg__)
+ * \brief Compiler flags to mark a function as deprecated. It will generate a
+ *        compiler warning.
+ * \param msg__  A message providing a workaround.
+ */
+#if defined(__GNUC__) && !defined(QI_NO_API_DEPRECATED)
+#  define QI_API_DEPRECATED_MSG(msg__) __attribute__((deprecated(#msg__)))
+#elif defined(_MSC_VER) && !defined(QI_NO_API_DEPRECATED)
+#  define QI_API_DEPRECATED_MSG(msg__) __declspec(deprecated(#msg__))
+#else
+#  define QI_API_DEPRECATED_MSG(msg__)
+#endif
 
 /**
  * \def QI_NORETURN
@@ -84,9 +99,9 @@
  *   \#include <mylib/config.h>
  *   \#define MYLIB_API QI_LIB_API(mylib)
  */
-#define QI_LIB_API(libname) _QI_LIB_API(BOOST_PP_CAT(libname, _EXPORTS), BOOST_PP_CAT(libname, _STATIC_BUILD))
+#define QI_LIB_API(libname) QI_LIB_API_(BOOST_PP_CAT(libname, _EXPORTS), BOOST_PP_CAT(libname, _STATIC_BUILD))
 
-#define _QI_LIB_API(IS_BUILDING_LIB, IS_LIB_STATIC_BUILD)               \
+#define QI_LIB_API_(IS_BUILDING_LIB, IS_LIB_STATIC_BUILD)               \
   QI_LIB_API_NORMALIZED(_QI_IS_ONE_OR_EMPTY(BOOST_PP_CAT(_ , IS_BUILDING_LIB)), _QI_IS_ONE_OR_EMPTY(BOOST_PP_CAT(_, IS_LIB_STATIC_BUILD)))
 
 /**
@@ -131,7 +146,7 @@
 #define _ALMSVCLOC_ __FILE__ "("__ALSTR1__(__LINE__)") : "
 #define QI_MSG_PRAGMA(_msg) QI_DO_PRAGMA(message (_ALMSVCLOC_ _msg))
 #elif defined(__GNUC__)
-#define QI_DO_PRAGMA(x) _Pragma (#x)
+#define QI_DO_PRAGMA(x) _Pragma (BOOST_PP_STRINGIZE(x))
 #define QI_MSG_PRAGMA(_msg) QI_DO_PRAGMA(message (_msg))
 #else
 #define QI_DO_PRAGMA(x)
@@ -223,7 +238,7 @@ namespace qi {
   QI_DEPRECATE_MACRO(QI_DISALLOW_COPY_AND_ASSIGN)       \
   type(type const &);                                   \
   void operator=(type const &);                         \
-  typedef int _qi_not_clonable;                         \
+  using _qi_not_clonable = int;                         \
   template<typename U> friend struct ::qi::IsClonable
 
 
@@ -264,32 +279,114 @@ namespace qi {
 #define QI_UNUSED(x)
 
 /**
+ * This macro prevents the compiler from emitting warning when a variable is defined but not used.
+ *
+ * Note: You may not use this macro to declare that a function parameters is unused. For such uses,
+ * see QI_UNUSED.
+ *
+ * \verbatim
+ * Example:
+ *
+ * .. code-block:: cpp
+ *
+ *     void foo(std::vector<int> vec)
+ *     {
+ *       auto size = vec.size();
+ *       // QI_ASSERT expands to nothing if debug informations are disabled in the compilation
+ *       // configuration, which would make the `size` variable unused.
+ *       QI_IGNORE_UNUSED(size);
+ *       QI_ASSERT(size > 2);
+ *     }
+ * \endverbatim
+ */
+#define QI_IGNORE_UNUSED(x) (void)x
+
+/**
  * \def QI_UNIQ_DEF(A)
  * \brief A macro to append the line number of the parent macro usage, to define a
  *        function in or a variable and avoid name collision.
  */
-#define _QI_UNIQ_DEF_LEVEL2(A, B) A ## __uniq__ ## B
-#define _QI_UNIQ_DEF_LEVEL1(A, B) _QI_UNIQ_DEF_LEVEL2(A, B)
-#define QI_UNIQ_DEF(A) _QI_UNIQ_DEF_LEVEL1(A, __LINE__)
-
-#if (!defined(__GNUC__) || defined(__clang__) ||                        \
-     (__GNUC__ >= 4 && __GNUC_MINOR__ >= 7)) && __cplusplus >= 201103L
-/**
- * \def QI_CXX11_ENABLED
- * \brief GCC < 4.7 is not standard compliant about __cplusplus
- *        clang 3.3 defines the same macros as GCC 4.2 but it is compliant
- */
-# define QI_CXX11_ENABLED 1
-#endif
+#define QI_UNIQ_DEF_LEVEL2_(A, B) A ## __uniq__ ## B
+#define QI_UNIQ_DEF_LEVEL1_(A, B) QI_UNIQ_DEF_LEVEL2_(A, B)
+#define QI_UNIQ_DEF(A) QI_UNIQ_DEF_LEVEL1_(A, __LINE__)
 
 /**
  * \def QI_NOEXCEPT(cond)
- * \brief Specify that a function may throw or not
+ * \brief Specify that a function may throw or not. Do nothing if noexcept is not available.
+ *
  */
-#ifdef QI_CXX11_ENABLED
-# define QI_NOEXCEPT(cond) noexcept(cond)
-#else
-# define QI_NOEXCEPT(cond)
+#define QI_NOEXCEPT(cond) BOOST_NOEXCEPT_IF(cond)
+
+/**
+ * \def QI_NOEXCEPT_EXPR(expr)
+ * \brief Specify that a function may throw if the given expression may throw.
+ *        Do nothing if noexcept is not available.
+ */
+#define QI_NOEXCEPT_EXPR(expr) BOOST_NOEXCEPT_IF(BOOST_NOEXCEPT_EXPR(expr))
+
+
+/**
+ * \def QI_WARNING_PUSH()
+ * \brief Pushes the current state of warning flags so it can be retrieved later with QI_WARNING_POP.
+ */
+#if BOOST_COMP_MSVC
+#  define QI_WARNING_PUSH() QI_DO_PRAGMA(warning(push))
+#elif BOOST_COMP_GNUC
+#  define QI_WARNING_PUSH() QI_DO_PRAGMA(GCC diagnostic push)
+#elif BOOST_COMP_CLANG
+#  define QI_WARNING_PUSH() QI_DO_PRAGMA(clang diagnostic push)
+#endif
+
+/**
+ * \def QI_WARNING_DISABLE(msvcCode, gccName)
+ * \brief Disables the warning that is identified by msvcCode under MSVC or gccName under GCC and
+ * Clang.
+ */
+#if BOOST_COMP_MSVC
+#  define QI_WARNING_DISABLE(code, _) \
+     QI_DO_PRAGMA(warning(disable: code))
+#elif BOOST_COMP_GNUC
+#  define QI_WARNING_DISABLE(_, name) \
+     QI_DO_PRAGMA(GCC diagnostic ignored BOOST_PP_STRINGIZE(BOOST_PP_CAT(-W, name)))
+#elif BOOST_COMP_CLANG
+#  define QI_WARNING_DISABLE(_, name) \
+     QI_DO_PRAGMA(clang diagnostic ignored BOOST_PP_STRINGIZE(BOOST_PP_CAT(-W, name)))
+#endif
+
+/**
+ * \def QI_WARNING_POP()
+ * \brief Pops the last state of warning flags that was pushed with QI_WARNING_PUSH().
+ */
+#if BOOST_COMP_MSVC
+#  define QI_WARNING_POP() QI_DO_PRAGMA(warning(pop))
+#elif BOOST_COMP_GNUC
+#  define QI_WARNING_POP() QI_DO_PRAGMA(GCC diagnostic pop)
+#elif BOOST_COMP_CLANG
+#  define QI_WARNING_POP() QI_DO_PRAGMA(clang diagnostic pop)
+#endif
+
+/**
+ * \def QI_FALLTHROUGH
+ * \brief Declares that the current case in a switch falls through the next case. It is mandatory to
+ *        append a semicolon after this macro.
+ */
+#if defined(__has_cpp_attribute) && __cplusplus >= 201703L
+#  if __has_cpp_attribute(fallthrough)
+#    define QI_FALLTHROUGH [[fallthrough]]
+#  endif
+#endif
+#ifndef QI_FALLTHROUGH
+#  if __GNUC__ >= 7
+#    define QI_FALLTHROUGH __attribute__((fallthrough))
+#  elif defined(__clang__) && __cplusplus >= 201103L && \
+    defined(__has_feature) && defined(__has_warning)
+#    if __has_feature(cxx_attributes) && __has_warning("-Wimplicit-fallthrough")
+#      define QI_FALLTHROUGH [[clang::fallthrough]]
+#    endif
+#  endif
+#endif
+#ifndef QI_FALLTHROUGH
+#  define QI_FALLTHROUGH ((void)0)
 #endif
 
 #endif  // _QI_MACRO_HPP_

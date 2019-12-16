@@ -54,6 +54,8 @@
 #include <qi/path.hpp>
 #include "utils.hpp"
 
+#include <mutex>
+
 qiLogCategory("qi.os");
 
 namespace qi {
@@ -81,6 +83,10 @@ namespace qi {
 
     int setenv(const char *var, const char *value) {
       return ::setenv(var, value, 1);
+    }
+
+    int unsetenv(const char *var) {
+      return ::unsetenv(var);
     }
 
     void sleep(unsigned int seconds) {
@@ -246,10 +252,9 @@ namespace qi {
       if (unavailable)
       {
         iPort = 0;
-        qiLogError() << "Socket Cannot find available port, Last Error: "
-                     << unavailable << std::endl;
+        qiLogError() << "Socket Cannot find available port, Last Error: " << unavailable;
       }
-      qiLogDebug() << "Returning port: " << iPort << std::endl;
+      qiLogDebug() << "Returning port: " << iPort;
       return iPort;
     }
 
@@ -273,6 +278,7 @@ namespace qi {
          (d = opendir(interfacesDirectory.c_str())) == 0)
       {
         qiLogError() << "socket() failed: " << strerror(errno);
+        close(ioctl_sock);
         return res;
       }
 
@@ -326,6 +332,9 @@ namespace qi {
       struct ifaddrs *ifa = nullptr;
       void *tmpAddrPtr = nullptr;
       int ret = 0;
+
+      static std::mutex mutex;
+      std::lock_guard<std::mutex> lock(mutex);
 
       ret = getifaddrs(&ifAddrStruct);
       if (ret == -1) {
@@ -410,20 +419,27 @@ namespace qi {
     {
       boost::filesystem::path p(link, qi::unicodeFacet());
 
-      while (boost::filesystem::exists(p))
+      try
       {
-        if (boost::filesystem::is_symlink(p))
+        while (boost::filesystem::exists(p))
         {
-          p = boost::filesystem::read_symlink(p);
+          if (boost::filesystem::is_symlink(p))
+          {
+            p = boost::filesystem::read_symlink(p);
+          }
+          else
+          {
+            std::string basename = p.parent_path().filename().string(qi::unicodeFacet());
+            std::string filename = p.filename().string(qi::unicodeFacet());
+            boost::filesystem::path res(basename, qi::unicodeFacet());
+            res.append(filename, qi::unicodeFacet());
+            return res.make_preferred().string(qi::unicodeFacet());
+          }
         }
-        else
-        {
-          std::string basename = p.parent_path().filename().string(qi::unicodeFacet());
-          std::string filename = p.filename().string(qi::unicodeFacet());
-          boost::filesystem::path res(basename, qi::unicodeFacet());
-          res.append(filename, qi::unicodeFacet());
-          return res.make_preferred().string(qi::unicodeFacet());
-        }
+      }
+      catch (const boost::filesystem::filesystem_error &e)
+      {
+        qiLogError() << "Cannot access path '" << link << "': " << e.what();
       }
       return std::string();
     }

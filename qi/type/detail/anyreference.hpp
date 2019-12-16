@@ -16,14 +16,21 @@
 #include <qi/api.hpp>
 #include <qi/type/fwd.hpp>
 #include <qi/type/detail/typeinterface.hpp>
+#include <ka/macro.hpp>
+#include <ka/scoped.hpp>
+#include <ka/utility.hpp>
 #include <boost/type_traits/remove_const.hpp>
+#include <boost/optional.hpp>
 
 namespace qi {
 
 class AnyReference;
-typedef std::vector<AnyReference> AnyReferenceVector;
+using AnyReferenceVector = std::vector<AnyReference>;
 
 namespace detail {
+
+class UniqueAnyReference;
+
 
 /** Class that holds any value, with informations to manipulate it.
  *  operator=() makes a shallow copy.
@@ -35,10 +42,11 @@ namespace detail {
 class QI_API AnyReferenceBase
 {
 protected:
-  AnyReferenceBase();
-
   ///@{
   /// Low level Internal API
+
+  /// Constructs an invalid reference, pointing to nothing.
+  AnyReferenceBase();
 
   /** Store type and allocate storage of value.
    * @param type use this type for initialization
@@ -55,18 +63,49 @@ protected:
     , _value(value)
   {}
 
+  /** Get item with key/index 'key'.
+   * @param throwOnFailure controls what happens in case of failure (key out of range or invalid type):
+   *                       true - the function throws,
+   *                       false - returns empty AnyReferece.
+   *                       If the container is a 'Map' type, this parameter is ignored.
+   * @param autoInsert if the container is a 'Map' type, this parameter controls what happens if the value with
+   *                   the given key does not already exist in the map:
+   *                   true - a new entry is added to the map and then returned,
+   *                   false - an empty AnyReference is returned (no insertion is performed).
+   */
+  AnyReference _element(const AnyReference& key, bool throwOnFailure, bool autoInsert);
+
 public:
-  /// @return the pair (convertedValue, trueIfCopiedAndNeedsDestroy)
-  std::pair<AnyReference, bool> convert(TypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(ListTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(StructTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(MapTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(IntTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(FloatTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(RawTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(StringTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(PointerTypeInterface* targetType) const;
-  std::pair<AnyReference, bool> convert(DynamicTypeInterface* targetType) const;
+  AnyReferenceBase(const AnyReferenceBase&) = default;
+
+  // Resetting pointers is not mandatory but safer and easier to debug.
+  AnyReferenceBase(AnyReferenceBase&& x) KA_NOEXCEPT(true)
+    : _type(ka::exchange(x._type, nullptr))
+    , _value(ka::exchange(x._value, nullptr))
+  {}
+
+  AnyReferenceBase& operator=(const AnyReferenceBase&) = default;
+
+  AnyReferenceBase& operator=(AnyReferenceBase&& x) KA_NOEXCEPT(true)
+  {
+    _type = ka::exchange(x._type, nullptr);
+    _value = ka::exchange(x._value, nullptr);
+    return *this;
+  }
+
+  /// Attempts the conversion of the value behind the reference to the given type.
+  /// Converted value is invalid if conversion failed.
+  UniqueAnyReference convert(TypeInterface* targetType) const;
+  UniqueAnyReference convert(ListTypeInterface* targetType) const;
+  UniqueAnyReference convert(StructTypeInterface* targetType) const;
+  UniqueAnyReference convert(MapTypeInterface* targetType) const;
+  UniqueAnyReference convert(IntTypeInterface* targetType) const;
+  UniqueAnyReference convert(FloatTypeInterface* targetType) const;
+  UniqueAnyReference convert(RawTypeInterface* targetType) const;
+  UniqueAnyReference convert(StringTypeInterface* targetType) const;
+  UniqueAnyReference convert(PointerTypeInterface* targetType) const;
+  UniqueAnyReference convert(DynamicTypeInterface* targetType) const;
+  UniqueAnyReference convert(OptionalTypeInterface* targetType) const;
 
   /** Return the typed pointer behind a AnyReference. T *must* be the type
    * of the value.
@@ -76,31 +115,37 @@ public:
   template<typename T>
   T* ptr(bool check = true);
 
+  /// @return false if this is invalid.
   bool isValid() const;
+
   /// @return true if value is valid and not void
   bool isValue() const;
 
   /// Helper function that converts and always clone
   AnyReference convertCopy(TypeInterface* targetType) const;
-
-  // get item with key/index 'key'. Return empty GVP or throw in case of failure
-  AnyReference _element(const AnyReference& key, bool throwOnFailure);
-  void _append(const AnyReference& element);
-  void _insert(const AnyReference& key, const AnyReference& val);
   ///@}
 
   ///@{
   /** Construction and assign.
    */
 
-  /** Construct a AnyValue with storage pointing to ptr.
-   * @warning the AnyReference will become invalid if ptr
-   * is destroyed (if it gets deleted or points to the stack and goes
-   * out of scope).
+  /**
+   * Wraps the given value into an AnyReference, allowing an introspectable,
+   * type-erased access to the value.
+   * @warning the AnyReference has an undefined behavior if the value it
+   * references is destroyed.
+   * @note AnyReference can be used to wrap another AnyValue or AnyReference,
+   * even if they are invalid.
    */
   template <typename T>
   static AnyReference from(const T& ref);
 
+  /**
+   * Construct a AnyValue with storage pointing to ptr.
+   * @warning the AnyReference will become invalid if ptr
+   * is destroyed (if it gets deleted or points to the stack and goes
+   * out of scope).
+   */
   template <typename T>
   static AnyReference fromPtr(const T* ptr);
 
@@ -137,6 +182,7 @@ public:
   std::map<K, V> toMap() const;
 
   AnyObject  toObject() const;
+  template <typename T> boost::optional<T> toOptional() const;
 
   /** Convert the value to a tuple.
    * If value is currently a tuple, it will be returned.
@@ -150,6 +196,7 @@ public:
 
   qi::Signature signature(bool resolveDynamic = false) const;
   TypeKind kind() const;
+  AnyReference unwrap() const;
 
   ///@{
   /** Read and update functions
@@ -185,6 +232,8 @@ public:
 
   /// @return a pair of (char*, size) corresponding to the raw buffer. No copy made.
   std::pair<char*, size_t> asRaw() const;
+
+  boost::optional<AnyReference> asOptional() const;
 
   /** @return contained AnyValue or throw if type is not dynamic.
    * @note Returned AnyReference might be empty.
@@ -227,6 +276,13 @@ public:
   void  setString(const std::string& v);
   void  setDynamic(const AnyReference &value);
 
+  /// Sets the value of the optional. A copy will be made.
+  /// @throw std::runtime_error if `this` is not Optional.
+  void setOptional(const boost::optional<AnyReference>& opt);
+
+  QI_API_DEPRECATED_MSG(Use `setOptional(boost::optional<AnyReference>)` instead)
+  void setOptional(const AnyReference& opt);
+
   /// set the value of the raw buffer, a copy will be made.
   /// @throw std::runtime_error when kind is not Raw
   void  setRaw(const char *buffer, size_t size);
@@ -234,6 +290,10 @@ public:
   /// set the values of the tuple. A copy will be made.
   /// @throw std::runtime_error when kind is not Tuple
   void  setTuple(const AnyReferenceVector& values);
+
+  /// Resets the value of the optional.
+  /// @throw std::runtime_error if kind of `this` is not Optional
+  void resetOptional();
 
   ///@{
   /// In-place container manipulation.
@@ -251,19 +311,41 @@ public:
    */
   template<typename K>
   AnyReference operator[](const K& key);
+  AnyReference operator[](const AnyReference& key);
 
   /// Call operator[](key).as<E>, element type must match E
   template<typename E, typename K>
   E& element(const K& key);
 
+  /**
+   * Similar to operator[], but Map container type is not modified if
+   * the key does not exist.
+   * Returns an empty AnyReference if the key is invalid (out of bounds for
+   * list/tuple or key not found for the map)
+   */
+  template<typename K>
+  AnyReference at(const K& key);
+  template<typename K>
+  AnyReference at(const K& key) const;
+  AnyReference at(const AnyReference& key);
+  AnyReference at(const AnyReference& key) const;
+
   size_t size() const;
+
+  /// Returns true if the optional has a value.
+  /// @throw std::runtime_error if kind of `this` is not Optional
+  bool optionalHasValue() const;
+
 
   //TODO: use AutoAnyReference
   template<typename T>
   void append(const T& element);
+  void append(const AnyReference& element);
 
   template<typename K, typename V>
   void insert(const K& key, const V& val);
+  void insert(const AnyReference& key, const AnyReference& val);
+
 
   /** Similar to operator[](), but return an empty AnyValue
    * If the key is not present.
@@ -322,7 +404,7 @@ private:
   };
 };
 
-typedef std::vector<AnyReference> AnyReferenceVector;
+using AnyReferenceVector = std::vector<AnyReference>;
 QI_API bool operator< (const AnyReference& a, const AnyReference& b);
 QI_API bool operator==(const AnyReference& a, const AnyReference& b);
 QI_API bool operator!=(const AnyReference& a, const AnyReference& b);
@@ -362,17 +444,123 @@ public:
     : AnyReference(self)
   {}
 
-  template<typename T>
+  template<typename T,
+           // Disable this constructor if T inherits AnyReferenceBase to avoid it being greedy.
+           // It also handles cases where T inherits from either AutoAnyReference or AnyReference
+           // because both of these types inherit AnyReferenceBase.
+           typename = ka::EnableIfNotBaseOf<detail::AnyReferenceBase, T>>
   AutoAnyReference(const T& ptr)
   {
-    *(AnyReference*)this = AnyReference::from(ptr);
+    *static_cast<AnyReference*>(this) = AnyReference::from(ptr);
   }
 };
+
+namespace detail
+{
+
+struct DeferOwnership {};
+
+class UniqueAnyReference
+{
+public:
+  UniqueAnyReference() = default;
+
+  KA_GENERATE_FRIEND_REGULAR_OPS_2(UniqueAnyReference, ref, owned)
+
+  explicit UniqueAnyReference(AnyReference ref)
+    : ref{ ref }
+    , owned{ ref.isValid() }
+  {}
+
+  explicit UniqueAnyReference(AnyReference ref, DeferOwnership)
+    : ref{ ref }
+    , owned{ false }
+  {}
+
+  UniqueAnyReference(UniqueAnyReference&& o)
+    : ref{ ka::exchange(o.ref, AnyReference{}) }
+    , owned{ ka::exchange(o.owned, false) }
+  {
+  }
+
+  UniqueAnyReference& operator=(UniqueAnyReference&& o)
+  {
+    ref = ka::exchange(o.ref, AnyReference{});
+    owned = ka::exchange(o.owned, false);
+    return *this;
+  }
+
+  ~UniqueAnyReference()
+  {
+    destroyRef();
+  }
+
+  AnyReference& operator*()
+  {
+    return ref;
+  }
+
+  const AnyReference& operator*() const
+  {
+    return ref;
+  }
+
+  AnyReference* operator->()
+  {
+    return &ref;
+  }
+
+  const AnyReference* operator->() const
+  {
+    return &ref;
+  }
+
+  AnyReference release()
+  {
+    owned = false;
+    return ka::exchange(ref, AnyReference{});
+  }
+
+  void reset(AnyReference newRef = {})
+  {
+    destroyRef();
+    owned = newRef.isValid();
+    ref = newRef;
+  }
+
+  void reset(AnyReference newRef, DeferOwnership)
+  {
+    destroyRef();
+    owned = false;
+    ref = newRef;
+  }
+
+  bool ownsReference() const
+  {
+    return owned;
+  }
+
+  void takeOwnership()
+  {
+    owned = true;
+  }
+
+private:
+  void destroyRef()
+  {
+    if (owned)
+      ref.destroy();
+  }
+
+  AnyReference ref;
+  bool owned = false;
+};
+
+} // namespace detail
 
 } // namespace qi
 
 #include <qi/type/detail/anyreference.hxx>
-
 #include <qi/type/typeinterface.hpp>
 
 /* Since AnyReference does not handle its memory, it cannot be used

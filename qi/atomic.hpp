@@ -8,20 +8,33 @@
 #ifndef QI_ATOMIC_HPP_
 #define QI_ATOMIC_HPP_
 
-#ifdef _MSC_VER
+#include <boost/predef.h>
 
-#include <windows.h>
-#include <intrin.h>
 
-extern "C" long __cdecl _InterlockedIncrement(long volatile *);
-extern "C" long __cdecl _InterlockedDecrement(long volatile *);
-
-#pragma intrinsic(_InterlockedIncrement)
-#pragma intrinsic(_InterlockedDecrement)
-
+#if BOOST_OS_WINDOWS
+// We need to "scope" our usage of windows.h to avoid
+// clients to end up with issues at compile time.
+// TODO: remove all this when we switch totally to std::atomic
+# pragma push_macro("NOMINMAX")
+# pragma push_macro("WIN32_LEAN_AND_MEAN")
+#
+# ifndef NOMINMAX
+#   define NOMINMAX // Deactivates min/max macros from windows.h
+# endif
+#
+# ifndef WIN32_LEAN_AND_MEAN
+#   define WIN32_LEAN_AND_MEAN // Deactivates unnecessary parts of windows.h
+# endif
+#
+# include <windows.h>
+# include <intrin.h>
+#
+# pragma pop_macro("WIN32_LEAN_AND_MEAN")
+# pragma pop_macro("NOMINMAX")
 #endif
 
-#include <boost/atomic.hpp>
+
+#include <atomic>
 #include <qi/config.hpp>
 #include <qi/macro.hpp>
 
@@ -134,43 +147,56 @@ inline bool StaticAtomicInt::setIfEquals(int testValue, int setValue)
  * This class allows to do operations on an integral value from multiple threads,
  * with the guarantee that each operation will not lead to a data race.
  *
+ * @remark This is a simplification layer over the standard atomic type.
+ *         If you understand the standard atomic, it might be preferable to use it.
+ *
  * \includename{qi/atomic.hpp}
  */
 template <typename T>
 struct Atomic
 {
+  std::atomic<T> _value;
 public:
-  boost::atomic<T> _value;
-
   /* Default atomic constructor, setting value to 0.
    */
   Atomic()
-    : _value(0)
+    : _value{}
   {}
   /** Atomic constructor setting value to its parameter.
    * \param value The default value of the atomic.
    */
   Atomic(T value)
-    : _value(value)
+    : _value(std::move(value))
   {}
   // This is needed in c++03 for lines like:
   // Atomic<int> i = 0;
   // There is no copy there, but the constructor *must* exist
   Atomic(const Atomic& other)
-    : _value(*other)
+    : _value(other._value.load())
   {}
 
-  /// Atomic increment of the value.
+  /// Atomic pre-increment of the value.
   T operator++()
   { return ++_value; }
-  /// Atomic decement of the value.
+  /// Atomic pre-decrement of the value.
   T operator--()
   { return --_value; }
 
+  /// Atomic post-increment of the value.
+  T operator++(int)
+  {
+    return _value++;
+  }
+  /// Atomic post-decrement of the value.
+  T operator--(int)
+  {
+    return _value--;
+  }
+
   Atomic<T>& operator=(T value)
-  { _value = value; return *this; }
+  { _value = std::move(value); return *this; }
   Atomic<T>& operator=(const Atomic<T>& value)
-  { _value = *value; return *this; }
+  { _value = value.load(); return *this; }
 
   /** If value is testValue, replace it with setValue.
    * \return true if swap was performed
@@ -184,9 +210,15 @@ public:
   T swap(T value)
   { return _value.exchange(value); }
 
-  /** Return the contained value
+  /** Return the contained valu
+   * Deprecated since 2.5.0
    */
+
+  QI_API_DEPRECATED_MSG(Use 'load' instead)
   T operator*() const
+  { return _value.load(); }
+
+  T load() const
   { return _value.load(); }
 };
 
@@ -196,9 +228,99 @@ template<typename T> void newAndAssign(T** ptr)
 {
   *ptr = new T();
 }
+} // namespace detail
+
+/// True if the atomic flag was successfully raised (i.e. set to true).
+/// If it was already raised, false is returned.
+/// Lemma tryRaiseAtomicFlag.0:
+///   If the flag is down (false), tryRaiseAtomicFlag() atomically raises it
+///   (i.e. makes it true).
+inline bool tryRaiseAtomicFlag(std::atomic<bool>& b)
+{
+  bool expected = false;
+  const bool desired = true;
+  return b.compare_exchange_strong(expected, desired);
 }
 
+/// Inverse operation of tryRaiseAtomicFlag.
+/// True if the atomic flag was successfully lowered (i.e. set to false).
+/// If it was already lowered, false is returned.
+/// Lemma tryLowerAtomicFlag.0:
+///   If the flag is up (true), tryLowerAtomicFlag() atomically lowers it
+///   (i.e. makes it false).
+inline bool tryLowerAtomicFlag(std::atomic<bool>& b)
+{
+  bool expected = true;
+  const bool desired = false;
+  return b.compare_exchange_strong(expected, desired);
 }
+
+class AtomicFlagLock
+{
+  std::atomic_flag* _flag = nullptr;
+  bool _locked = false;
+
+  void cleanup() QI_NOEXCEPT(true)
+  {
+    if (_flag && _locked)
+    {
+      _flag->clear();
+      _locked = false;
+    }
+  }
+
+public:
+  explicit AtomicFlagLock(std::atomic_flag& f)
+    : _flag{ &f }
+    , _locked{ !f.test_and_set() } // locked if the flag was not already set
+  {}
+
+  AtomicFlagLock(const AtomicFlagLock&) = delete;
+  AtomicFlagLock& operator=(const AtomicFlagLock&) = delete;
+
+  AtomicFlagLock(AtomicFlagLock&& o)
+    : _flag{ o._flag }
+    , _locked{ o._locked }
+  {
+    o._flag = nullptr;
+    o._locked = false;
+  }
+
+  AtomicFlagLock& operator=(AtomicFlagLock&& o)
+  {
+    cleanup();
+
+    _flag = o._flag;
+    _locked = o._locked;
+    o._flag = nullptr;
+    o._locked = false;
+    return *this;
+  }
+
+  ~AtomicFlagLock()
+  {
+    cleanup();
+  }
+
+  explicit operator bool() const
+  {
+    return _locked;
+  }
+};
+
+/// model ScopeLockable std::atomic_flag:
+inline AtomicFlagLock scopelock(std::atomic_flag& f)
+{
+  return AtomicFlagLock{ f };
+}
+
+template<typename T>
+T src(const std::atomic<T>& x)
+{
+  return x.load();
+}
+
+} // namespace qi
 
 #define _QI_INSTANCIATE(_, a, elem) ::qi::detail::newAndAssign(&elem);
 

@@ -11,7 +11,7 @@
 #include <boost/function.hpp>
 #include <vector>
 
-namespace qi {
+namespace qi{
   class AnyValue;
   class AutoAnyReference;
 
@@ -22,7 +22,7 @@ namespace qi {
     VarArguments(const T& t) { _args.push_back(t); }
     VarArguments& operator()(const T& t) { _args.push_back(t);  return *this; }
 
-    typedef std::vector<T> VectorType;
+    using VectorType = std::vector<T>;
 
     VectorType &args()             { return _args; }
     const VectorType &args() const { return _args; }
@@ -38,7 +38,7 @@ namespace qi {
     VarArguments(const AutoAnyReference& t);
     VarArguments& operator()(const AutoAnyReference& t);
 
-    typedef std::vector<AnyValue> VectorType;
+    using VectorType = std::vector<AnyValue>;
 
     VectorType &args()             { return _args; }
     const VectorType &args() const { return _args; }
@@ -47,7 +47,7 @@ namespace qi {
     VectorType _args;
   };
 
-  typedef VarArguments<> AnyVarArguments;
+  using AnyVarArguments = VarArguments<>;
 }
 
 #include <qi/type/typeinterface.hpp>
@@ -139,7 +139,7 @@ namespace qi {
     AnyValueVector _args;
   };
 
-  typedef boost::function<AnyReference(const AnyReferenceVector&)> DynamicFunction;
+  using DynamicFunction = boost::function<AnyReference(const AnyReferenceVector&)>;
 
   /** Represents a generic callable function.
    * This class has value semantic.
@@ -154,7 +154,11 @@ namespace qi {
     AnyFunction(const AnyFunction& b);
     AnyFunction(FunctionTypeInterface* type, void* value);
     AnyFunction& operator = (const AnyFunction& b);
-    /// Call the function, reference must be destroy()ed
+
+    /// Calls the function.
+    /// @param args A list of unnamed arguments, each wrapped in an
+    /// AnyReference for allowing introspection.
+    /// @throw If an argument mismatches the signature, or is invalid.
     AnyReference call(const AnyReferenceVector& args);
     /// Call the function, reference must be destroy()ed
     AnyReference call(AnyReference arg1, const AnyReferenceVector& args);
@@ -235,7 +239,7 @@ QI_GEN(genCall)
     *
     */
     template<typename F>
-    static AnyFunction from(F func);
+    static AnyFunction from(F&& func);
     /// @return a AnyFunction binding instance to member function func
     template<typename F, typename C>
     static AnyFunction from(F func, C instance);
@@ -274,6 +278,17 @@ QI_GEN(genCall)
 
   /// @return the type used by dynamic functions
   QI_API FunctionTypeInterface* dynamicFunctionTypeInterface();
+
+namespace detail
+{
+
+  // This is just a hint of the maximum of the number of arguments that can be passed to a function,
+  // that is used to preallocate on the stack some of the arguments containers. It should be a
+  // number that will cover, if not all, most cases of functions without being too big that it would
+  // be unused stack space.
+  const std::size_t maxAnyFunctionArgsCountHint = 8u;
+
+}
 }
 
 #include <qi/type/detail/anyfunction.hxx>

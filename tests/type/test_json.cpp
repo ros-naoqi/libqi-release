@@ -27,7 +27,8 @@ struct MPoint {
 
 QI_TYPE_STRUCT(MPoint, x, y);
 
-TEST(TestJSON, MapIntTableString) {
+TEST(EncodeJSON, MapIntStringArray)
+{
   std::map<int, std::vector<std::string> > mps;
 
   std::vector<std::string> vs;
@@ -43,7 +44,7 @@ TEST(TestJSON, MapIntTableString) {
   EXPECT_EQ("{0:[\"pif\",\"paf\",\"pof\"],2:[\"pif\",\"paf\",\"pof\"]}", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, MST) {
+TEST(EncodeJSON, MST) {
   std::map<std::string, std::vector<std::string> > mps;
 
   std::vector<std::string> vs;
@@ -51,15 +52,15 @@ TEST(TestJSON, MST) {
   vs.push_back("paf");
   vs.push_back("pof");
 
-  mps["0"] = vs;
-  mps["2"] = vs;
+  mps["zero"] = vs;
+  mps["two"] = vs;
 
   qi::AnyReference gv = qi::AnyReference::from(mps);
 
-  EXPECT_EQ("{\"0\":[\"pif\",\"paf\",\"pof\"],\"2\":[\"pif\",\"paf\",\"pof\"]}", qi::encodeJSON(gv));
+  EXPECT_EQ("{\"two\":[\"pif\",\"paf\",\"pof\"],\"zero\":[\"pif\",\"paf\",\"pof\"]}", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, PrettyPrint) {
+TEST(EncodeJSON, PrettyPrint) {
   std::map<std::string, std::vector<std::string> > mps;
 
   std::vector<std::string> vs;
@@ -75,29 +76,29 @@ TEST(TestJSON, PrettyPrint) {
   EXPECT_EQ("{\n  \"0\": [\n    \"pif\",\n    \"paf\",\n    \"pof\"\n  ],\n  \"2\": [\n    \"pif\",\n    \"paf\",\n    \"pof\"\n  ]\n}", qi::encodeJSON(gv, qi::JsonOption_PrettyPrint));
 }
 
-TEST(TestJSON, Simple) {
+TEST(EncodeJSON, Simple) {
   EXPECT_EQ("true", qi::encodeJSON(bool(true)));
   EXPECT_EQ("false", qi::encodeJSON(bool(false)));
   EXPECT_EQ("32", qi::encodeJSON(32));
   EXPECT_EQ("\"ttc:42\"", qi::encodeJSON("ttc:42"));
-  EXPECT_EQ("32.4", qi::encodeJSON(32.4f));
-  EXPECT_EQ("32.3", qi::encodeJSON((double)32.3));
+  EXPECT_EQ("32.4000015", qi::encodeJSON(32.4f));
+  EXPECT_EQ("32.299999999999997", qi::encodeJSON((double)32.3));
 
   qi::AnyValue gv(qi::TypeInterface::fromSignature(qi::Signature("c")));
   gv.setInt(42);
   EXPECT_EQ("42", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, SimpleAutoGV) {
+TEST(EncodeJSON, SimpleAutoGV) {
   EXPECT_EQ("true", qi::encodeJSON(true));
   EXPECT_EQ("false", qi::encodeJSON(false));
   EXPECT_EQ("32", qi::encodeJSON(32));
   EXPECT_EQ("\"ttc:42\"", qi::encodeJSON("ttc:42"));
-  EXPECT_EQ("32.4", qi::encodeJSON(32.4f));
-  EXPECT_EQ("32.3", qi::encodeJSON((double)32.3));
+  EXPECT_EQ("32.4000015", qi::encodeJSON(32.4f));
+  EXPECT_EQ("32.299999999999997", qi::encodeJSON((double)32.3));
 }
 
-TEST(TestJSON, String) {
+TEST(EncodeJSON, String) {
   EXPECT_EQ("\" \\\" \"", qi::encodeJSON(" \" "));
   EXPECT_EQ("\" ' \"", qi::encodeJSON(" ' "));
   EXPECT_EQ("\" \\u0000 \"", qi::encodeJSON(" \0 "));
@@ -106,27 +107,35 @@ TEST(TestJSON, String) {
   EXPECT_EQ("\" \\\" \\u0000 \\u00E9 \"", qi::encodeJSON(" \" \0 é "));
 }
 
-TEST(TestJSON, CharTuple) {
+TEST(EncodeJSON, CharTuple) {
   qi::AnyValue gv(qi::TypeInterface::fromSignature(qi::Signature("(c)")));
   EXPECT_EQ("[0]", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, EmptyValue) {
+TEST(EncodeJSON, EmptyValue) {
   qi::AnyValue gv(qi::TypeInterface::fromSignature(qi::Signature("m")));
   EXPECT_EQ("", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, Dynamics) {
+TEST(EncodeJSON, Dynamics) {
   qi::AnyReference gv(qi::TypeInterface::fromSignature(qi::Signature("m")));
   qi::AnyValue gvr = qi::AnyValue::from("plouf");
   gv.setDynamic(gvr.asReference());
   EXPECT_EQ("\"plouf\"", qi::encodeJSON(gv));
 }
 
-TEST(TestJSON, NamedStruct) {
+TEST(EncodeJSON, NamedStruct) {
   MPoint mp(41, 42);
   qi::AnyValue gvr = qi::AnyValue::from(mp);
   EXPECT_EQ("{\"x\":41,\"y\":42}", qi::encodeJSON(gvr));
+}
+
+TEST(EncodeJSON, OptionalValue)
+{
+  EXPECT_EQ("null", qi::encodeJSON(boost::optional<std::string>()));
+  EXPECT_EQ("null", qi::encodeJSON(boost::optional<int>()));
+  EXPECT_EQ("\"foo\"", qi::encodeJSON(boost::optional<std::string>("foo")));
+  EXPECT_EQ("642", qi::encodeJSON(boost::optional<int>(642)));
 }
 
 template<class T>
@@ -163,11 +172,11 @@ std::string cleanStr(std::string const& numberStr)
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
-TEST(TestJSONDecoder, EmptyValue) {
+TEST(DecodeJSON, EmptyValue) {
   ASSERT_ANY_THROW(qi::decodeJSON(""));
 }
 
-TEST(TestJSONDecoder, String) {
+TEST(DecodeJSON, String) {
   // Broken string
   EXPECT_ANY_THROW(qi::decodeJSON("\""));
   // Empty string
@@ -206,7 +215,7 @@ TEST(TestJSONDecoder, String) {
   ASSERT_STREQ(resString.c_str(), qi::decodeJSON(testString).asString().c_str());
 }
 
-TEST(TestJSONDecoder, Integer) {
+TEST(DecodeJSON, Integer) {
   // broken value
   EXPECT_ANY_THROW(qi::decodeJSON("--42"));
 
@@ -226,7 +235,46 @@ TEST(TestJSONDecoder, Integer) {
   EXPECT_EQ(LONG_MIN, qi::decodeJSON(itoa(LONG_MIN)).asInt64());
 }
 
-TEST(TestJSONDecoder, Float) {
+// Helper to access to binary representation of the float
+union Double_t
+{
+    Double_t(double num = 0.0f) : f(num) {}
+    int64_t i;
+    double f;
+};
+
+std::ostream &operator<<(std::ostream &os, const Double_t &f)
+{
+  os.precision(std::numeric_limits<double>::max_digits10+5);
+  os << f.f << " / 0x"  << std::hex << std::setw(16) << std::setfill('0') << f.i << std::dec;
+  return os;
+}
+
+::testing::AssertionResult AssertDoubleRoundTrip(const char* f_expr,
+                                           double f) {
+  std::string str = qi::encodeJSON(f);
+  double ff = qi::decodeJSON(str).as<double>();
+#if defined(_MSC_VER)
+  // MSVC fails to roundtrip exactly. See here for the upstream report
+  // forum:
+  // https://social.msdn.microsoft.com/Forums/en-US/214a6e0c-2036-47ab-a6ff-c7737f5cf395/imprecise-deserializing-of-decimals-to-double?forum=vcgeneral
+  // bug report:
+  // connect.microsoft.com/VisualStudio/feedback/details/2245376/imprecise-deserialization-of-decimals-to-double/
+  using FPdouble = testing::internal::FloatingPoint<double>;
+  if (FPdouble(f).AlmostEquals(FPdouble(f)))
+#else
+  if (f == ff)
+#endif
+    return ::testing::AssertionSuccess();
+  return ::testing::AssertionFailure()
+      << f_expr << " with value " << Double_t(f)
+      << " is serialized to \"" << str << "\"  then deserialized to "
+      << Double_t(ff);
+}
+
+#define EXPECT_DOUBLE_ROUNDTRIP(f) EXPECT_PRED_FORMAT1(AssertDoubleRoundTrip, f);
+
+TEST(DecodeJSON, Float) {
   // broken value
   ASSERT_NO_THROW(qi::decodeJSON("42.43"));
   ASSERT_NO_THROW(qi::decodeJSON("-42.43"));
@@ -239,27 +287,39 @@ TEST(TestJSONDecoder, Float) {
   ASSERT_NO_THROW(qi::decodeJSON("42e-10"));
   ASSERT_NO_THROW(qi::decodeJSON("42e10"));
 
-  EXPECT_DOUBLE_EQ(0.42, qi::decodeJSON("0.42").asDouble());
-  EXPECT_DOUBLE_EQ(42.0, qi::decodeJSON("42.0").asDouble());
-  EXPECT_DOUBLE_EQ(0.0000042, qi::decodeJSON("0.0000042").asDouble());
+  // comparing floating point values is usually done with an epsilon.
+  // However here we do exact comparisons, on purpose, since (de)serialization
+  // shall be lossless.
+  EXPECT_EQ(0.42, qi::decodeJSON("0.42").as<double>());
+  EXPECT_EQ(42.0, qi::decodeJSON("42.0").as<double>());
+  EXPECT_EQ(0.0000042, qi::decodeJSON("0.0000042").as<double>());
 
   // positive value
-  EXPECT_DOUBLE_EQ(42.43, qi::decodeJSON("42.43").asDouble());
+  EXPECT_EQ(42.43, qi::decodeJSON("42.43").as<double>());
 
   // negative value
-  EXPECT_DOUBLE_EQ(-42.43, qi::decodeJSON("-42.43").asDouble());
+  EXPECT_EQ(-42.43, qi::decodeJSON("-42.43").as<double>());
 
   // with E
-  EXPECT_DOUBLE_EQ(42e+10, qi::decodeJSON("42e+10").asDouble());
-  EXPECT_DOUBLE_EQ(42e-10, qi::decodeJSON("42e-10").asDouble());
-  EXPECT_DOUBLE_EQ(42e10, qi::decodeJSON("42e10").asDouble());
+  EXPECT_EQ(42e+10, qi::decodeJSON("42e+10").as<double>());
+  EXPECT_EQ(42e-10, qi::decodeJSON("42e-10").as<double>());
+  EXPECT_EQ(42e10, qi::decodeJSON("42e10").as<double>());
 
-  // max/min vals
-  EXPECT_DOUBLE_EQ(DBL_MAX, qi::decodeJSON(cleanStr(STR(DBL_MAX))).asDouble());
-  EXPECT_DOUBLE_EQ(DBL_MIN, qi::decodeJSON(cleanStr(STR(DBL_MIN))).asDouble());
+  // roundtrip
+  EXPECT_EQ(0, qi::decodeJSON(qi::encodeJSON(0)).to<int>());
+  EXPECT_EQ(0., qi::decodeJSON(qi::encodeJSON(0.)).to<double>());
+  EXPECT_EQ(0.f, qi::decodeJSON(qi::encodeJSON(0.f)).to<float>());
+  EXPECT_EQ(1.6f, qi::decodeJSON(qi::encodeJSON(1.6f)).to<float>());
+
+  EXPECT_DOUBLE_ROUNDTRIP(1.5);
+  EXPECT_DOUBLE_ROUNDTRIP(-1.8364336390987788);
+  EXPECT_DOUBLE_ROUNDTRIP(std::numeric_limits<double>::max());
+  EXPECT_DOUBLE_ROUNDTRIP(std::numeric_limits<double>::min());
+  EXPECT_DOUBLE_ROUNDTRIP(std::numeric_limits<double>::lowest());
+  EXPECT_DOUBLE_ROUNDTRIP(std::numeric_limits<double>::denorm_min());
 }
 
-TEST(TestJSONDecoder, Array) {
+TEST(DecodeJSON, Array) {
   // good parse and type
   ASSERT_NO_THROW(qi::decodeJSON("[]"));
   ASSERT_NO_THROW(qi::decodeJSON("[42]"));
@@ -282,7 +342,7 @@ TEST(TestJSONDecoder, Array) {
   ASSERT_EQ(2U, qi::decodeJSON("[1, [2, 3]]")[1].content().size());
 }
 
-TEST(TestJSONDecoder, Object) {
+TEST(DecodeJSON, Object) {
   // good parse
   ASSERT_NO_THROW(qi::decodeJSON("{}"));
   ASSERT_NO_THROW(qi::decodeJSON("{\"a\":42}"));
@@ -299,7 +359,7 @@ TEST(TestJSONDecoder, Object) {
 
 }
 
-TEST(TestJSONDecoder, special) {
+TEST(DecodeJSON, special) {
   // good parse
   ASSERT_NO_THROW(qi::decodeJSON("true"));
   ASSERT_NO_THROW(qi::decodeJSON("false"));
@@ -317,7 +377,7 @@ TEST(TestJSONDecoder, special) {
   ASSERT_EQ(0, qi::decodeJSON("false").toInt());
 }
 
-TEST(TestJSONDecoder, itOverload) {
+TEST(DecodeJSON, itOverload) {
   std::string testString = "<jsonString=\"[\"a\", 42]\"/>";
 
   qi::AnyValue val;
@@ -331,7 +391,7 @@ TEST(TestJSONDecoder, itOverload) {
 
 }
 
-TEST(TestJSONDecoder, Strings)
+TEST(DecodeJSON, Strings)
 {
   static const std::string s1 = "{ \"content\" : \"pone\" }";
   static const std::string s2 = "{ \"content\" : \"poné\" }";
@@ -354,7 +414,7 @@ TEST(TestJSONDecoder, Strings)
 }
 
 
-TEST(TestJSONDecoder, ignoringWhiteSpace)
+TEST(DecodeJSON, ignoringWhiteSpace)
 {
   static const std::string ohMinceAlors =
       "{\n"
@@ -379,7 +439,7 @@ struct Qiqi
 };
 QI_TYPE_STRUCT_REGISTER(Qiqi, ffloat, fdouble, fint);
 
-TEST(TestJSONDecoder, StructWithDifferentSizedFields)
+TEST(DecodeJSON, StructWithDifferentSizedFields)
 {
   Qiqi val;
   val.ffloat = 3.14f;
@@ -389,17 +449,10 @@ TEST(TestJSONDecoder, StructWithDifferentSizedFields)
   std::cout << qi::AnyValue(val).signature().toString() << std::endl;
 
   std::string json = qi::encodeJSON(val);
-  qiLogDebug() << json << std::endl;
+  qiLogDebug() << json;
   qi::AnyValue res_any = qi::decodeJSON(json);
-  qiLogDebug() << res_any.signature().toString() << std::endl;
+  qiLogDebug() << res_any.signature().toString();
   Qiqi res = res_any.to<Qiqi>();
   EXPECT_EQ(val,
             res) << qi::encodeJSON(val) << "\n" << qi::encodeJSON(res);
-}
-
-int main(int argc, char **argv)
-{
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }

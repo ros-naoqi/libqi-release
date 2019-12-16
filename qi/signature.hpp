@@ -43,6 +43,7 @@ namespace qi {
   QI_API qi::Signature makeVarArgsSignature(const qi::Signature &element);
   QI_API qi::Signature makeKwArgsSignature(const qi::Signature &element);
   QI_API qi::Signature makeMapSignature(const qi::Signature &key, const qi::Signature &value);
+  QI_API qi::Signature makeOptionalSignature(const qi::Signature& value);
 
   /* Represent the serialisation signature of a Type.
   * pseudo-grammar:
@@ -60,7 +61,7 @@ namespace qi {
   * for tuple annotation has the following form: "<TupleName,elementName0,...,elementName1>"
   */
   class Signature;
-  typedef std::vector<Signature> SignatureVector;
+  using SignatureVector = std::vector<Signature>;
 
   class QI_API Signature {
   protected:
@@ -121,6 +122,8 @@ namespace qi {
       Type_Object   = 'o',
       Type_VarArgs  = '#',
       Type_KwArgs   = '~',
+
+      Type_Optional = '+',
 
       Type_Unknown  = 'X',
     };

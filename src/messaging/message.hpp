@@ -1,4 +1,5 @@
 #pragma once
+
 /*
 **  Copyright (C) 2012 Aldebaran Robotics
 **  See COPYING for the license
@@ -9,43 +10,18 @@
 
 #include <qi/api.hpp>
 #include <qi/anyvalue.hpp>
+#include <qi/anyobject.hpp>
 #include <qi/buffer.hpp>
 #include <qi/binarycodec.hpp>
 #include <qi/anyfunction.hpp>
 #include <qi/types.hpp>
-
+#include <ka/macroregular.hpp>
+#include <qi/assert.hpp>
+#include <qi/messaging/messagesocket_fwd.hpp>
+#include <ka/scoped.hpp>
+#include <boost/weak_ptr.hpp>
 
 namespace qi {
-
-  class MessagePrivate
-  {
-  public:
-    struct MessageHeader
-    {
-      qi::uint32_t magic = 0;
-      qi::uint32_t id = 0;
-      qi::uint32_t size = 0;
-      qi::uint16_t version = 0;
-      qi::uint8_t  type = 0;
-      qi::uint8_t  flags = 0;
-      qi::uint32_t service = 0;
-      qi::uint32_t object = 0;
-      qi::uint32_t action = 0;
-    };
-
-    MessagePrivate();
-    MessagePrivate(const MessagePrivate& b);
-    ~MessagePrivate();
-
-    inline void                complete() { header.size = buffer.totalSize(); }
-    inline void               *getHeader() { return reinterpret_cast<void *>(&header); }
-
-    Buffer        buffer;
-    std::string   signature;
-    MessageHeader header;
-
-    static const unsigned int magic = 0x42adde42;
-  };
 
   class MessageAddress {
   public:
@@ -70,22 +46,48 @@ namespace qi {
     unsigned int serviceId;
     unsigned int objectId;
     unsigned int functionId;
+    KA_GENERATE_FRIEND_REGULAR_OPS_4(MessageAddress, messageId, serviceId, objectId, functionId)
   };
 
 
   /** \class qi::Message
     * This class represent a network message
     */
-  class TransportSocket;
-  typedef boost::shared_ptr<TransportSocket> TransportSocketPtr;
   class ObjectHost;
 
-  class Message {
+  class Message
+  {
   public:
-    static unsigned int currentVersion()
+    struct Header
     {
-      return 0;
-    }
+      qi::uint32_t magic = magicCookie;
+      qi::uint32_t id = newMessageId();
+      qi::uint32_t size = 0;
+      qi::uint16_t version = currentVersion();
+      qi::uint8_t  type = 0;
+      qi::uint8_t  flags = 0;
+      qi::uint32_t service = 0;
+      qi::uint32_t object = 0;
+      qi::uint32_t action = 0;
+
+      bool operator==(const Header& b) const
+      {
+        return magic == b.magic && id == b.id && size == b.size &&
+               version == b.version && type == b.type &&
+               flags == b.flags && service == b.service &&
+               object == b.object && action == b.action;
+      }
+
+      static inline qi::uint16_t currentVersion()
+      {
+        return 0;
+      }
+
+      QI_API static qi::uint32_t newMessageId();
+
+      QI_API static const qi::uint32_t magicCookie;
+    };
+    static_assert(sizeof(Header) == 28, "Message::Header does not have the right size!");
 
 
     // Fixed service id numbers
@@ -97,7 +99,7 @@ namespace qi {
 
     enum GenericObject
     {
-      GenericObject_None = 0,
+      GenericObject_None = nullObjectId,
       GenericObject_Main = 1
     };
 
@@ -160,70 +162,227 @@ namespace qi {
      */
     static const unsigned int TypeFlag_ReturnType = 2;
 
-    static const char* typeToString(Type t);
-    static const char* actionToString(unsigned int action, unsigned int service);
+    QI_API static const char* typeToString(Type t);
+    QI_API static const char* actionToString(unsigned int action, unsigned int service);
 
-    ~Message();
-    Message();
-    Message(Type type, const MessageAddress &address);
-    Message(const Message &msg);
-    Message &operator=(const Message &msg);
+    Message() = default;
 
-    void setAddress(const MessageAddress &address);
+    Message(Type type, const MessageAddress &address)
+    {
+      setType(type);
+      setAddress(address);
+    }
 
-    void         setId(unsigned int id);
-    unsigned int id() const;
+    void setAddress(const MessageAddress &address)
+    {
+      _header.id = address.messageId;
+      _header.service = address.serviceId;
+      _header.object = address.objectId;
+      _header.action = address.functionId;
+    }
 
-    void         setVersion(qi::uint16_t type);
-    unsigned int version() const;
+    void setId(unsigned int id)
+    {
+      _header.id = id;
+    }
 
-    void         setType(Type type);
-    Type         type() const;
+    unsigned int id() const
+    {
+      return _header.id;
+    }
 
-    void         setFlags(qi::uint8_t flags);
-    void         addFlags(qi::uint8_t flags);
-    qi::uint8_t  flags() const;
+    void setVersion(qi::uint16_t version)
+    {
+      _header.version = version;
+    }
 
-    void         setService(qi::uint32_t service);
-    unsigned int service() const;
+    unsigned int version() const
+    {
+      return _header.version;
+    }
 
-    void         setObject(qi::uint32_t object);
-    unsigned int object() const;
+    void setType(Type type)
+    {
+      _header.type = type;
+    }
 
-    void         setFunction(qi::uint32_t function);
-    unsigned int function() const;
+    Type type() const
+    {
+      return static_cast<Message::Type>(_header.type);
+    }
 
-    void         setEvent(qi::uint32_t event);
-    unsigned int event() const;
+    void setFlags(qi::uint8_t flags)
+    {
+      _header.flags = flags;
+    }
 
-    unsigned int action() const;
+    void addFlags(qi::uint8_t flags)
+    {
+      _header.flags |= flags;
+    }
 
-    void          setBuffer(const Buffer &buffer);
-    const Buffer &buffer() const;
+    qi::uint8_t  flags() const
+    {
+      return _header.flags;
+    }
 
-    void          setError(const std::string &error);
+    void setService(qi::uint32_t service)
+    {
+      _header.service = service;
+    }
+
+    unsigned int service() const
+    {
+      return _header.service;
+    }
+
+    void setObject(qi::uint32_t object)
+    {
+      _header.object = object;
+    }
+
+    unsigned int object() const
+    {
+      return _header.object;
+    }
+
+    QI_API void setFunction(qi::uint32_t function);
+
+    QI_API unsigned int function() const;
+
+    QI_API void setEvent(qi::uint32_t event);
+
+    QI_API unsigned int event() const;
+
+    unsigned int action() const
+    {
+      return _header.action;
+    }
+
+    void setBuffer(const Buffer &buffer)
+    {
+      _buffer = buffer;
+      _header.size = static_cast<qi::uint32_t>(_buffer.totalSize());
+    }
+
+    void setBuffer(Buffer&& buffer)
+    {
+      _buffer = std::move(buffer);
+      _header.size = static_cast<qi::uint32_t>(_buffer.totalSize());
+    }
+
+    const Buffer& buffer() const
+    {
+      return _buffer;
+    }
+
+    Buffer extractBuffer()
+    {
+      Buffer extracted = std::move(_buffer);
+      _buffer.clear();
+      return extracted;
+    }
+
+    void setError(const std::string &error)
+    {
+      QI_ASSERT(type() == Type_Error && "called setError on a non Type_Error message");
+
+      // Clear the buffer before setting an error.
+      _buffer.clear();
+      _header.size = static_cast<qi::uint32_t>(_buffer.totalSize());
+
+      // Error message is of type m (dynamic)
+      AnyValue v(AnyReference::from(error), false, false);
+      setValue(AnyReference::from(v), "m");
+    }
 
     ///@return signature, set by setParameters() or setSignature()
+    QI_API AnyValue value(const Signature &signature, const qi::MessageSocketPtr &socket) const;
 
+    QI_API void setValue(const AutoAnyReference& value,
+                  const Signature& signature,
+                  boost::weak_ptr<ObjectHost> context = {},
+                  MessageSocketPtr socket = {});
 
-    AnyReference value(const Signature &signature, const qi::TransportSocketPtr &socket) const;
-    void setValue(const AutoAnyReference& value, const Signature& signature, ObjectHost* context = 0, StreamContext* streamContext = 0);
-    void setValues(const std::vector<qi::AnyReference>& values, ObjectHost* context = 0, StreamContext* streamContext = 0);
+    QI_API void setValues(const std::vector<qi::AnyReference>& values,
+                   boost::weak_ptr<ObjectHost> context = {},
+                   MessageSocketPtr socket = {});
+
     /// Convert values to \p targetSignature and assign to payload.
-    void setValues(const std::vector<qi::AnyReference>& values, const qi::Signature& targetSignature, ObjectHost* context = 0, StreamContext* streamContext = 0);
-    /// Append additional data to payload
-    void appendValue(const AutoAnyReference& value, ObjectHost* context = 0, StreamContext* streamContext = 0);
-    MessageAddress address() const;
+    QI_API void setValues(const std::vector<qi::AnyReference>& values,
+                   const qi::Signature& targetSignature,
+                   boost::weak_ptr<ObjectHost> context = {},
+                   MessageSocketPtr socket = {});
 
-    bool         isValid();
+    MessageAddress address() const
+    {
+      return MessageAddress(_header.id, _header.service, _header.object, _header.action);
+    }
 
-  public:
-    boost::shared_ptr<MessagePrivate> _p;
-    void         cow();
+    Header& header() {return _header;}
+
+    const Header& header() const {return _header;}
+
+    bool operator==(const Message& b) const
+    {
+      return _header == b._header && signature == b.signature && _buffer == b._buffer;
+    }
+
+  private:
+    Buffer _buffer;
+    std::string signature;
+    Header _header;
+
+    void encodeBinary(const qi::AutoAnyReference& ref,
+                      SerializeObjectCallback onObject,
+                      MessageSocketPtr socket)
+    {
+      auto updateHeaderSize =
+          ka::scoped([&] { _header.size = static_cast<qi::uint32_t>(_buffer.totalSize()); });
+      qi::encodeBinary(&_buffer, ref, onObject, socket);
+    }
   };
 
-  std::ostream& operator<<(std::ostream& os, const qi::MessageAddress &address);
-  std::ostream& operator<<(std::ostream& os, const qi::Message& msg);
+  inline std::ostream& operator<<(std::ostream& os, const qi::MessageAddress &address)
+  {
+    os << "{" << address.serviceId << "." << address.objectId << "." << address.functionId
+       << ", id:" << address.messageId << "}";
+    return os;
+  }
+
+  inline std::ostream& operator<<(std::ostream& os, const qi::Message::Type& type)
+  {
+    return os << Message::typeToString(type);
+  }
+
+  QI_API std::ostream& operator<<(std::ostream& os, const qi::Message& msg);
+
+
+  /// Status returned by message handlers.
+  /// This is used mainly to determine if a message have been handled or not
+  /// and how to route it to another handler if it was not handled yet.
+  enum class DispatchStatus
+  {
+    MessageHandled,           ///< The message was understood and processed without error.
+
+    MessageHandled_WithError, ///< The message was understood, but it's processing lead
+                              ///< to an error (for example: the requested function call is not found).
+
+    MessageNotHandled,        ///< The message was not understood or not handled  on purpose.
+                              ///< (for example: the handler isn't the recipient or don't know how to handle this message).
+
+    MessageHandlingFailure,   ///< An error happened before the message was handled.
+                              ///< (for example: an exception thrown in a message handler).
+  };
+
+  /// @returns true if the message was handled, with or without error.
+  inline bool isMessageHandled(DispatchStatus status)
+  {
+    return status == DispatchStatus::MessageHandled
+        || status == DispatchStatus::MessageHandled_WithError
+        ;
+  }
+
 }
 
 QI_TYPE_CONCRETE(qi::Message);

@@ -16,12 +16,8 @@ qiLogCategory("test");
 
 qi::AnyValue v;
 
-void onFire(const int& pl)
+namespace
 {
-  std::cout << "onFire:" << pl << std::endl;
-  std::cout.flush();
-}
-
 void value(qi::AnyValue mv)
 {
   v = mv;
@@ -31,12 +27,17 @@ void valueList(std::vector<qi::AnyValue> mv)
 {
   v = qi::AnyValue(mv);
 }
+} // anonymous
 
-class TestObject: public ::testing::Test
+class MetaValueArgument: public ::testing::Test
 {
 public:
-  TestObject()
+  MetaValueArgument()
   {
+    sd = qi::makeSession();
+    session = qi::makeSession();
+    sclient = qi::makeSession();
+
     qi::DynamicObjectBuilder ob;
     ob.advertiseSignal<const int&>("fire");
     ob.advertiseMethod("value", &value);
@@ -49,44 +50,44 @@ public:
 protected:
   void SetUp()
   {
-    qi::Future<void> f = sd.listenStandalone("tcp://127.0.0.1:0");
+    qi::Future<void> f = sd->listenStandalone("tcp://127.0.0.1:0");
     f.wait(3000);
     ASSERT_TRUE(!f.hasError());
-    f = session.connect(sd.endpoints()[0]);
+    f = session->connect(sd->endpoints()[0]);
     f.wait(3000);
     ASSERT_TRUE(!f.hasError());
-    f = session.listen("tcp://0.0.0.0:0");
+    f = session->listen("tcp://0.0.0.0:0");
     f.wait(3000);
     ASSERT_TRUE(!f.hasError());
-    ASSERT_TRUE(session.registerService("coin", oserver).hasValue(3000));
-    EXPECT_EQ(1U, session.services(qi::Session::ServiceLocality_Local).value().size());
+    ASSERT_TRUE(session->registerService("coin", oserver).hasValue(3000));
+    EXPECT_EQ(1U, session->services(qi::Session::ServiceLocality_Local).value().size());
 
-    f = sclient.connect(sd.endpoints()[0]);
+    f = sclient->connect(sd->endpoints()[0]);
     f.wait(3000);
     ASSERT_TRUE(!f.hasError());
-    std::vector<qi::ServiceInfo> services = sclient.services();
+    std::vector<qi::ServiceInfo> services = sclient->services().value();
     EXPECT_EQ(2U, services.size());
-    oclient = sclient.service("coin");
+    oclient = sclient->service("coin").value();
   }
 
   void TearDown()
   {
-    sclient.close();
-    session.close();
-    sd.close();
+    sclient->close();
+    session->close();
+    sd->close();
   }
 
 public:
   qi::Promise<int>     prom;
-  qi::Session          sd;
-  qi::Session          session;
+  qi::SessionPtr       sd;
+  qi::SessionPtr       session;
   qi::AnyObject        oserver;
-  qi::Session          sclient;
+  qi::SessionPtr       sclient;
   qi::AnyObject        oclient;
 };
 
 
-TEST_F(TestObject, meta)
+TEST_F(MetaValueArgument, all)
 {
   using namespace qi;
   qi::int64_t time = os::ustime();
@@ -242,14 +243,4 @@ TEST_F(TestObject, meta)
   }
   qiLogVerbose() << "plugin sync us: " << os::ustime() - time;
   time = os::ustime();
-}
-
-int main(int argc, char *argv[])
-{
-#if defined(__APPLE__) || defined(__linux__)
-  setsid();
-#endif
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }

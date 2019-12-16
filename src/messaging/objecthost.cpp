@@ -3,113 +3,157 @@
 **  See COPYING for the license
 */
 
+#include <qi/actor.hpp>
 #include "objecthost.hpp"
 
 #include "boundobject.hpp"
+#include <ka/typetraits.hpp>
+
+#include <boost/range/iterator_range.hpp>
+#include <boost/range/adaptor/transformed.hpp>
 
 qiLogCategory("qimessaging.objecthost");
 
 namespace qi
 {
 
-ObjectHost::ObjectHost(unsigned int service)
- : _service(service)
- {}
-
- ObjectHost::~ObjectHost()
- {
-   onDestroy();
-   // deleting our map will trigger calls to removeObject
-   // so does clear() while iterating
-   ObjectMap map;
-   std::swap(map, _objectMap);
-   map.clear();
- }
-
-static void async_destroy_attempt(BoundAnyObject obj, Future<void> fut)
-{
-  fut.wait();
-  obj.reset();
-}
-
-void ObjectHost::onMessage(const qi::Message &msg, TransportSocketPtr socket)
-{
-  BoundAnyObject obj;
+  ObjectHost::ObjectHost(unsigned int service)
+    : _service(service)
   {
-    boost::recursive_mutex::scoped_lock lock(_mutex);
-    ObjectMap::iterator it = _objectMap.find(msg.object());
-    if (it == _objectMap.end())
+  }
+
+  ObjectHost::~ObjectHost()
+  {
+    clear();
+  }
+
+  unsigned int ObjectHost::addObject(BoundObjectPtr obj, MessageSocketPtr socket)
+  {
+    const auto id = obj->id();
     {
-      return;
+      auto syncObjSockBindings = _objSockBindings.synchronize();
+      const auto objIsAlreadyAdded =
+        std::any_of(syncObjSockBindings->begin(), syncObjSockBindings->end(),
+                    [&](const detail::boundObject::SocketBinding& binding) {
+                      return binding.object()->id() == id;
+                    });
+      if (objIsAlreadyAdded)
+        // TODO: Throw an domain specific error.
+        throw std::logic_error("This BoundObject already exists in this host.");
     }
-    // Keep ptr alive while message is being processed, even if removeObject is called
-    obj = it->second;
+
+    // Create the value outside of the lock of the list to avoid potential deadlocks.
+    detail::boundObject::SocketBinding binding(std::move(obj), std::move(socket));
+    _objSockBindings->emplace_back(std::move(binding));
+
+    return id;
   }
-  obj->onMessage(msg, socket);
 
-  qi::Promise<void> destructPromise;
-  qi::async(boost::bind(&async_destroy_attempt, obj, destructPromise.future()));
-  obj.reset();
-  destructPromise.setValue(0);
-}
-
-unsigned int ObjectHost::addObject(BoundAnyObject obj, StreamContext* remoteRef, unsigned int id)
-{
-  boost::recursive_mutex::scoped_lock lock(_mutex);
-  if (!id)
-    id = nextId();
-  assert(_objectMap.find(id) == _objectMap.end());
-  _objectMap[id] = obj;
-  _remoteReferences[remoteRef].push_back(id);
-  return id;
-}
-
-void ObjectHost::removeRemoteReferences(TransportSocketPtr socket)
-{
-  boost::recursive_mutex::scoped_lock lock(_mutex);
-
-  RemoteReferencesMap::iterator it = _remoteReferences.find(socket.get());
-  if (it == _remoteReferences.end())
-    return;
-  for (std::vector<unsigned int>::iterator vit = it->second.begin(), end = it->second.end();
-       vit != end;
-       ++vit)
-    removeObject(*vit);
-  _remoteReferences.erase(it);
-}
-
-void ObjectHost::removeObject(unsigned int id)
-{
-  /* Ensure we are not in the middle of iteration when
-  *  removing our ref on BoundAnyObject.
-  */
-  BoundAnyObject obj;
+  namespace
   {
-    boost::recursive_mutex::scoped_lock lock(_mutex);
-    ObjectMap::iterator it = _objectMap.find(id);
-    if (it == _objectMap.end())
+
+    /// ForwardIterator FwdIter
+    template<typename FwdIter>
+    std::vector<BoundObjectPtr> consumeObjectFromBindings(FwdIter begin, FwdIter end)
     {
-      qiLogDebug() << this << " No match in host for " << id;
-      return;
+      std::vector<BoundObjectPtr> objects;
+      objects.reserve(static_cast<std::size_t>(distance(begin, end)));
+
+      // Transform the range of bindings into a range of objects so that we can defer destruct all of
+      // them.
+      std::transform(std::make_move_iterator(begin), std::make_move_iterator(end),
+                     std::back_inserter(objects),
+                     [](detail::boundObject::SocketBinding binding) -> BoundObjectPtr {
+                       return binding.object();
+                     });
+      return objects;
     }
-    obj = it->second;
-    _objectMap.erase(it);
-    qiLogDebug() << this << " count " << obj.use_count();
-    qi::async(boost::bind(&qi::detail::hold<BoundAnyObject>, obj));
-  }
-  qiLogDebug() << this << " Object " << id << " removed.";
-}
 
-void ObjectHost::clear()
-{
-  boost::recursive_mutex::scoped_lock lock(_mutex);
-  for (ObjectMap::iterator it = _objectMap.begin(); it != _objectMap.end(); ++it)
+  }
+
+  std::size_t ObjectHost::removeObjectsFromSocket(const MessageSocketPtr& socket) noexcept
   {
-    ServiceBoundObject* sbo = dynamic_cast<ServiceBoundObject*>(it->second.get());
-    if (sbo)
-      sbo->_owner = 0;
+    std::vector<BoundObjectPtr> objects;
+
+    {
+      auto syncObjSockBindings = _objSockBindings.synchronize();
+      const auto bindingsEnd = syncObjSockBindings->end();
+
+      // Put all bindings related to the socket at the end of the vector. Do not use `std::remove_if`
+      // because values to remove are move-assigned into, effectively resulting in their immediate
+      // destruction preventing us to defer the destruction of the bound objects.
+      const auto bindingsWithSocketIt =
+        std::partition(syncObjSockBindings->begin(), bindingsEnd,
+                       [&](const detail::boundObject::SocketBinding& binding) {
+                         return binding.socket() != socket;
+                       });
+
+      objects = consumeObjectFromBindings(bindingsWithSocketIt, bindingsEnd);
+      syncObjSockBindings->erase(bindingsWithSocketIt, bindingsEnd);
+    }
+
+    // Defer destruction outside of the lock of the list to avoid potential deadlocks.
+    const auto count = objects.size();
+    sequentializeDeferDestruction(std::move(objects));
+    return count;
   }
-  _objectMap.clear();
+
+  bool ObjectHost::removeObject(unsigned int id) noexcept
+  {
+    BoundObjectPtr object;
+
+    {
+      auto syncObjSockBindings = _objSockBindings.synchronize();
+      const auto bindingsEnd = syncObjSockBindings->end();
+      const auto it = std::find_if(syncObjSockBindings->begin(), bindingsEnd,
+                                   [&](const detail::boundObject::SocketBinding& binding) {
+                                     return binding.object()->id() == id;
+                                   });
+      if (it == bindingsEnd)
+      {
+        qiLogDebug() << this << " No match in host for " << id;
+        return false;
+      }
+
+      auto binding = std::move(*it);
+      syncObjSockBindings->erase(it);
+      qiLogDebug() << this << " Object " << id << " removed.";
+      object = binding.object();
+    }
+
+    // Defer destruction outside of the lock of the list to avoid potential deadlocks.
+    BoundObject::deferDestruction(std::move(object));
+    return true;
+  }
+
+  void ObjectHost::clear() noexcept
+  {
+    ObjSocketBindingList bindings;
+    _objSockBindings.swap(bindings);
+
+    sequentializeDeferDestruction(consumeObjectFromBindings(bindings.begin(), bindings.end()));
+  }
+
+  template<typename Range>
+  Future<void> ObjectHost::sequentializeDeferDestruction(Range objects)
+  {
+    // We use future continuations to implement chaining/sequencing.
+    auto seqFut = futurize();
+
+    for (BoundObjectPtr& object : std::move(objects))
+    {
+      seqFut = deferConsumeWhenReady<BoundObjectPtr>(
+        std::move(object), [&](Future<void> ready, PtrHolder<BoundObjectPtr> holder) {
+          return seqFut.then(FutureCallbackType_Async,
+                  [=](Future<void>) mutable {
+                    return ready.andThen([=](void*) {
+                      const auto res = consumePtr(holder, &BoundObject::deferDestruction);
+                      return res.empty() ? futurize() : *res;
+                    }).unwrap();
+                  }).unwrap();
+        });
+    }
+    return seqFut;
+  }
 }
 
-}

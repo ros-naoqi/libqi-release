@@ -4,6 +4,15 @@
  * found in the COPYING file.
  */
 
+// VS2015 fix atomic alignment and require an acknowledgement from developer
+#include <boost/predef.h>
+#if BOOST_COMP_MSVC
+#  if (BOOST_COMP_MSVC >= BOOST_VERSION_NUMBER(14, 0, 0))
+#    define _ENABLE_ATOMIC_ALIGNMENT_FIX
+#  endif
+#endif
+
+#include <qi/assert.hpp>
 #include <qi/log.hpp>
 #include "log_p.hpp"
 #include <qi/os.hpp>
@@ -11,6 +20,7 @@
 #include <map>
 #include <cstring>
 #include <iomanip>
+#include <iostream>
 
 #include <qi/application.hpp>
 #include <qi/atomic.hpp>
@@ -19,24 +29,32 @@
 #include <boost/thread/thread.hpp>
 #include <boost/thread/condition_variable.hpp>
 #include <boost/thread/recursive_mutex.hpp>
+#include <boost/thread/locks.hpp>
 #include <boost/program_options.hpp>
 #include <boost/unordered_map.hpp>
 #include <boost/algorithm/string.hpp>
 
-#ifndef ANDROID
-# include <boost/lockfree/queue.hpp>
-#endif
+#include <boost/lockfree/queue.hpp>
 #include <boost/function.hpp>
+#include <boost/predef.h>
+#include <boost/utility/string_ref.hpp>
+#include <boost/function_output_iterator.hpp>
+
+#ifdef WITH_SYSTEMD
+#include <qi/log/journaldloghandler.hpp>
+#endif
 
 #ifdef ANDROID
-# include <android/log.h>
+# include <qi/log/androidloghandler.hpp>
 #endif
 
-#ifndef _WIN32
-#include <fnmatch.h>
-#else
+#if BOOST_OS_WINDOWS
 # include <shlwapi.h>
 # pragma comment(lib, "shlwapi.lib")
+# include <boost/locale.hpp>
+# include <boost/filesystem.hpp>
+#else
+# include <fnmatch.h>
 #endif
 
 
@@ -86,7 +104,11 @@ namespace qi {
         logline << fct << "() ";
       if (context & qi::LogContextAttr_Return)
         logline << std::endl;
-      logline.write(msg, qi::detail::rtrim(msg));
+      if (msg)
+      {
+        boost::algorithm::trim_right_copy_if(std::ostream_iterator<char>(logline),
+                                             boost::string_ref(msg), &isNewLine);
+      }
       logline << std::endl;
 
       return logline.str();
@@ -163,9 +185,14 @@ namespace qi {
       csvline << ",";
 
       csvline << "\"";
-      std::string escapedMsg(msg);
-      boost::algorithm::replace_all(escapedMsg, "\"", "\"\"");
-      csvline.write(escapedMsg.c_str(), qi::detail::rtrim(escapedMsg.c_str()));
+
+      if (msg)
+      {
+        std::string msgStr(msg);
+        boost::algorithm::replace_all(msgStr, "\"", "\"\"");
+        boost::algorithm::trim_right_copy_if(std::ostream_iterator<char>(csvline), msgStr,
+                                             &isNewLine);
+      }
       csvline << "\"" << std::endl;
 
       return csvline.str();
@@ -189,25 +216,15 @@ namespace qi {
       return ss.str();
     }
 
-    /* Emulate previous behavior that ensured a single newline was
-    * present at the end on message.
-    */
-    int rtrim(const char *msg)
+    bool isNewLine(char c)
     {
-      size_t p = strlen(msg) - 1;
-
-      p -= (msg[p] == '\r')? 1:
-             (msg[p] == '\n')?
-               (p && msg[p-1] == '\r')? 2:1
-               :0;
-
-      return p+1;
+      return c == '\n' || c == '\r';
     }
   }
 
   namespace log {
 
-    typedef struct sPrivateLog
+    using privateLog = struct sPrivateLog
     {
       qi::LogLevel               _logLevel;
       char                       _category[CAT_SIZE];
@@ -217,7 +234,7 @@ namespace qi {
       char                       _log[LOG_SIZE];
       qi::Clock::time_point       _date;
       qi::SystemClock::time_point _systemDate;
-    } privateLog;
+    };
 
     class Log
     {
@@ -234,22 +251,22 @@ namespace qi {
       void run();
       void printLog();
       // Invoke handlers who enabled given level/category
-      void dispatch(const qi::LogLevel,
-                    const qi::Clock::time_point date,
-                    const qi::SystemClock::time_point systemDate,
-                    const char*,
-                    const char*,
-                    const char*,
-                    const char*,
-                    int);
-      void dispatch(const qi::LogLevel level,
-                    const qi::Clock::time_point date,
-                    const qi::SystemClock::time_point systemDate,
-                    detail::Category& category,
-                    const char* log,
-                    const char* file,
-                    const char* function,
-                    int line);
+      void dispatch_unsynchronized(const qi::LogLevel,
+                                   const qi::Clock::time_point date,
+                                   const qi::SystemClock::time_point systemDate,
+                                   const char*,
+                                   const char*,
+                                   const char*,
+                                   const char*,
+                                   int);
+      void dispatch_unsynchronized(const qi::LogLevel level,
+                                   const qi::Clock::time_point date,
+                                   const qi::SystemClock::time_point systemDate,
+                                   detail::Category& category,
+                                   const char* log,
+                                   const char* file,
+                                   const char* function,
+                                   int line);
       Handler* logHandler(SubscriberId id);
 
       void setSynchronousLog(bool sync);
@@ -262,11 +279,9 @@ namespace qi {
       bool                       SyncLog;
       bool                       AsyncLogInit;
 
-#ifndef ANDROID
       boost::lockfree::queue<privateLog*>     logs;
-#endif
 
-      typedef std::map<std::string, Handler> LogHandlerMap;
+      using LogHandlerMap = std::map<std::string, Handler>;
       LogHandlerMap logHandlers;
 
       qi::Atomic<int> nextIndex;
@@ -295,32 +310,196 @@ namespace qi {
     static std::vector<GlobRule> _glGlobRules;
 
     // categories must be accessible at static init: cannot go in Log class
-    typedef std::map<std::string, detail::Category*> CategoryMap;
-    static CategoryMap* _glCategories = nullptr;
+    using CategoryMap = std::map<std::string, detail::Category*>;
     inline CategoryMap& _categories()
     {
-      if (!_glCategories)
-        _glCategories = new CategoryMap;
+      static CategoryMap* _glCategories;
+      QI_ONCE(_glCategories = new CategoryMap);
       return *_glCategories;
     }
 
     // protects globs and categories, both the map and the per-category vector
-    static boost::recursive_mutex          *_glMutex   = nullptr;
     inline boost::recursive_mutex& _mutex()
     {
-      if (!_glMutex)
-        _glMutex = new boost::recursive_mutex();
+      static boost::recursive_mutex* _glMutex;
+      QI_ONCE(_glMutex = new boost::recursive_mutex());
       return *_glMutex;
     }
 
     static int                    _glContext = 0;
     static bool                   _glInit    = false;
-    static ConsoleLogHandler     *_glConsoleLogHandler;
     static LogColor               _glColorWhen = LogColor_Auto;
 
-    static Log                   *LogInstance;
+    static Log                   *LogInstance = nullptr;
     static privateLog             LogBuffer[RTLOG_BUFFERS];
     static volatile unsigned long LogPush = 0;
+
+    namespace detail {
+
+      // return a log handler on windows, an invalid boost::function otherwise
+      Handler makeWindowsDebuggerOutputLogHandler()
+      {
+#if BOOST_OS_WINDOWS && !defined(NDEBUG)
+        auto winDebuggerOutputLogHandler = [](const qi::LogLevel verb, const qi::Clock::time_point date,
+            const qi::SystemClock::time_point systemDate,
+            const char* category, const char* msg,
+            const char* file, const char* fct, const int line)
+        {
+          if (!IsDebuggerPresent()) // we need to check on each call in case the debuger is attached on the fly
+            return;
+
+          // We force long log level names in this specific case.
+          auto context = (log::context() | LogContextAttr_Verbosity) & ~LogContextAttr_ShortVerbosity;
+          auto logline = qi::detail::logline(context, date, systemDate, category, msg, file, fct, line, verb);
+
+          const auto processId = std::to_wstring(GetCurrentProcessId());
+
+          // Add the process name to help with multi-process debugging:
+          static const auto processName = [&] {
+
+            using Path = boost::filesystem::path;
+
+            static const auto getProcessPath = [&] {
+              const Path processPath = __argv ? Path{ __argv[0] } : Path{ __wargv[0] };
+
+              // Before providing the process name, we log in the debug ouptut the complete command line
+              // so that is is possible to identify processes in multi-process debugging when using several same process names
+              // but different arguments:
+              {
+                std::wstringstream launchMessage;
+                launchMessage << L"#### QI Process Logs Tracking Begin (PID=" << processId
+                              << L") - Command Line: \n  " << processPath;
+                for (int idx = 1; idx < __argc; ++idx)
+                {
+                  launchMessage << L' ';
+                  if (__argv)
+                    launchMessage << (__argv[idx] ? __argv[idx] : "<null-argument?>");
+                  else
+                    launchMessage << (__wargv[idx] ? __wargv[idx] : L"<null-argument?>");
+                }
+                launchMessage << L'\n';
+                OutputDebugStringW(launchMessage.str().c_str());
+              }
+
+              return processPath;
+            };
+
+
+            return getProcessPath().filename().wstring() + L'(' + processId + L") > ";
+
+          }();
+
+          // We receive UTF-8 so we want to be able to display unicode characters in this output too:
+          auto wlogline = processName + boost::locale::conv::utf_to_utf<wchar_t>(logline.c_str(), logline.c_str() + logline.size());
+          OutputDebugStringW(wlogline.c_str());
+        };
+        return winDebuggerOutputLogHandler;
+#else
+        return Handler{};
+#endif
+      }
+
+    }
+
+
+
+    static ConsoleLogHandler *_glConsoleLogHandler = nullptr;
+
+    namespace env {
+      namespace QI_DEFAULT_LOGHANDLER {
+        char const * const name = "QI_DEFAULT_LOGHANDLER";
+        namespace value {
+          char const * const none     = "none";
+          char const * const stdOut   = "stdout";
+          char const * const logger   = "logger";
+          char const * const debugger = "debugger";
+        }
+      }
+    }
+
+    namespace detail {
+
+      /// Creates and registers the default log handler according to QI_DEFAULT_LOGHANDLER
+      /// environment variable, libqi WITH_SYSTEMD build option and the target OS platform.
+
+      /// See documentation of the public function calling this private one: qi::log::init().
+      void createAndInstallDefaultHandler(qi::LogLevel verb)
+      {
+        using namespace qi::log::env;
+        auto handler = qi::os::getenv(QI_DEFAULT_LOGHANDLER::name);
+        if (handler.empty())
+        {
+          handler =
+#if defined(ANDROID) || defined(WITH_SYSTEMD)
+              QI_DEFAULT_LOGHANDLER::value::logger;
+#else
+              QI_DEFAULT_LOGHANDLER::value::stdOut;
+#endif
+        }
+        const auto invalidId = static_cast<SubscriberId>(-1);
+        auto id = invalidId;
+        QI_ASSERT(! handler.empty());
+        if (handler == QI_DEFAULT_LOGHANDLER::value::stdOut){
+          _glConsoleLogHandler = new ConsoleLogHandler;
+          id = addHandler("consoleloghandler",
+                          boost::bind(&ConsoleLogHandler::log,
+                                      _glConsoleLogHandler,
+                                      _1, _2, _3, _4, _5, _6, _7, _8),
+                          verb);
+          QI_ASSERT(id == 0 || id == invalidId);
+        }
+        else if (handler == QI_DEFAULT_LOGHANDLER::value::logger)
+        {
+#ifdef ANDROID
+          id = addHandler("androidloghandler", makeAndroidLogHandler(), verb);
+#elif defined(WITH_SYSTEMD)
+          id = addHandler("journaldloghandler", makeJournaldLogHandler(), verb);
+#endif
+          QI_ASSERT(id == 0 || id == invalidId);
+        }
+        else if (handler == QI_DEFAULT_LOGHANDLER::value::debugger)
+        {
+          auto h = makeWindowsDebuggerOutputLogHandler();
+          if (h)
+          {
+            id = addHandler("winDebuggerOutputLogHandler", std::move(h), verb);
+          }
+          QI_ASSERT(id == 0 || id == invalidId);
+        }
+        else if (handler == QI_DEFAULT_LOGHANDLER::value::none)
+        {
+          QI_ASSERT(id == invalidId);
+        }
+        else
+        {
+          QI_ASSERT(id == invalidId);
+          std::cerr << "qi.log: bad value for " << QI_DEFAULT_LOGHANDLER::name
+                    << " environment variable: \"" << handler << "\"."
+                    << " Possible values are: \"\","
+                    << " \"" << QI_DEFAULT_LOGHANDLER::value::none     << "\","
+                    << " \"" << QI_DEFAULT_LOGHANDLER::value::stdOut   << "\","
+                    << " \"" << QI_DEFAULT_LOGHANDLER::value::logger   << "\","
+                    << " \"" << QI_DEFAULT_LOGHANDLER::value::debugger << "\".\n";
+        }
+        if (id == invalidId)
+        {
+          std::cerr << "qi.log: failed to register \"" << handler
+                    << "\" log handler. Log messages will be lost until a"
+                       " log handler is added.\n";
+        }
+      }
+
+      void destroyDefaultHandler()
+      {
+#ifndef ANDROID
+        if(_glConsoleLogHandler)
+        {
+          delete _glConsoleLogHandler;
+          _glConsoleLogHandler = nullptr;
+        }
+#endif
+      }
+    } // namespace detail
 
     namespace detail {
 
@@ -420,7 +599,7 @@ namespace qi {
       CategoryMap& c = _categories();
       for (CategoryMap::iterator it = c.begin(); it != c.end(); ++it)
       {
-        assert(it->first == it->second->name);
+        QI_ASSERT(it->first == it->second->name);
         if (g.matches(it->first)) {
           detail::Category* cat = it->second;
           checkGlobs(cat);
@@ -467,46 +646,40 @@ namespace qi {
 
     void Log::printLog()
     {
-// Logs are handled in qi::log in Android
-#ifndef ANDROID
       privateLog* pl = nullptr;
-      boost::mutex::scoped_lock lock(LogHandlerLock);
+
+      boost::recursive_mutex::scoped_lock lock(_mutex(), boost::defer_lock);
+      boost::mutex::scoped_lock lockHandlers(LogInstance->LogHandlerLock, boost::defer_lock);
+      boost::lock(lock, lockHandlers);
       while (logs.pop(pl))
       {
-        dispatch(pl->_logLevel,
-                 pl->_date,
-                 pl->_systemDate,
-                 pl->_category,
-                 pl->_log,
-                 pl->_file,
-                 pl->_function,
-                 pl->_line);
+        dispatch_unsynchronized(pl->_logLevel, pl->_date, pl->_systemDate, pl->_category, pl->_log,
+                                pl->_file, pl->_function, pl->_line);
       }
-#endif
     }
 
-    void Log::dispatch(const qi::LogLevel level,
-                       const qi::Clock::time_point date,
-                       const qi::SystemClock::time_point systemDate,
-                       const char*  category,
-                       const char* log,
-                       const char* file,
-                       const char* function,
-                       int line)
+    void Log::dispatch_unsynchronized(const qi::LogLevel level,
+                                      const qi::Clock::time_point date,
+                                      const qi::SystemClock::time_point systemDate,
+                                      const char* category,
+                                      const char* log,
+                                      const char* file,
+                                      const char* function,
+                                      int line)
     {
-      dispatch(level, date, systemDate, *addCategory(category), log, file, function, line);
+      dispatch_unsynchronized(level, date, systemDate, *addCategory(category), log, file, function,
+                              line);
     }
 
-    void Log::dispatch(const qi::LogLevel level,
-                       const qi::Clock::time_point date,
-                       const qi::SystemClock::time_point systemDate,
-                       detail::Category& category,
-                       const char* log,
-                       const char* file,
-                       const char* function,
-                       int line)
+    void Log::dispatch_unsynchronized(const qi::LogLevel level,
+                                      const qi::Clock::time_point date,
+                                      const qi::SystemClock::time_point systemDate,
+                                      detail::Category& category,
+                                      const char* log,
+                                      const char* file,
+                                      const char* function,
+                                      int line)
     {
-      boost::recursive_mutex::scoped_lock lock(_mutex());
       if (!logHandlers.empty())
       {
         LogHandlerMap::iterator it;
@@ -526,7 +699,7 @@ namespace qi {
       {
         {
           boost::mutex::scoped_lock lock(LogWriteLock);
-          LogReadyCond.wait(lock);
+          LogReadyCond.wait(lock, []{ return !LogInstance->logs.empty(); });
         }
 
         printLog();
@@ -541,17 +714,15 @@ namespace qi {
         AsyncLogInit = true;
         LogThread = boost::thread(&Log::run, this);
       }
-    };
+    }
 
     inline Log::Log() :
       SyncLog(true),
       AsyncLogInit(false)
-#ifndef ANDROID
       , logs(50)
-#endif
     {
       LogInit = true;
-    };
+    }
 
     inline Log::~Log()
     {
@@ -584,13 +755,9 @@ namespace qi {
       // will lead to racecond)
       if (_glInit)
         return;
-      _glConsoleLogHandler = new ConsoleLogHandler;
-      LogInstance          = new Log;
-      addHandler("consoleloghandler",
-                 boost::bind(&ConsoleLogHandler::log,
-                             _glConsoleLogHandler,
-                             _1, _2, _3, _4, _5, _6, _7, _8),
-                 verb);
+
+      LogInstance = new Log;
+      detail::createAndInstallDefaultHandler(verb);
       _glInit = true;
     }
 
@@ -600,7 +767,6 @@ namespace qi {
     {
       QI_ONCE(doInit(verb));
 
-      setLogLevel(verb);
       setContext(ctx);
 
       setSynchronousLog(synchronous);
@@ -612,10 +778,9 @@ namespace qi {
         return;
       _glInit = false;
       LogInstance->printLog();
-      delete _glConsoleLogHandler;
-      _glConsoleLogHandler = 0;
+      detail::destroyDefaultHandler();
       delete LogInstance;
-      LogInstance = 0;
+      LogInstance = nullptr;
     }
 
     void flush()
@@ -658,19 +823,6 @@ namespace qi {
                      const char           *fct,
                      const int             line)
     {
-#ifdef ANDROID
-      std::map<LogLevel, android_LogPriority> _conv;
-
-      _conv[silent]  = ANDROID_LOG_SILENT;
-      _conv[fatal]   = ANDROID_LOG_FATAL;
-      _conv[error]   = ANDROID_LOG_ERROR;
-      _conv[warning] = ANDROID_LOG_WARN;
-      _conv[info]    = ANDROID_LOG_INFO;
-      _conv[verbose] = ANDROID_LOG_VERBOSE;
-      _conv[debug]   = ANDROID_LOG_DEBUG;
-
-      __android_log_print(_conv[verb], categoryStr, msg);
-#else
       if (!LogInstance)
         return;
       if (!LogInstance->LogInit)
@@ -680,10 +832,15 @@ namespace qi {
       qi::SystemClock::time_point systemDate = qi::SystemClock::now();
       if (LogInstance->SyncLog)
       {
+        boost::recursive_mutex::scoped_lock lock(_mutex(), boost::defer_lock);
+        boost::mutex::scoped_lock lockHandlers(LogInstance->LogHandlerLock, boost::defer_lock);
+        boost::lock(lock, lockHandlers);
         if (category)
-          LogInstance->dispatch(verb, date, systemDate, *category, msg, file, fct, line);
+          LogInstance->dispatch_unsynchronized(verb, date, systemDate, *category, msg, file, fct,
+                                               line);
         else
-          LogInstance->dispatch(verb, date, systemDate, categoryStr, msg, file, fct, line);
+          LogInstance->dispatch_unsynchronized(verb, date, systemDate, categoryStr, msg, file, fct,
+                                               line);
       }
       else
       {
@@ -702,7 +859,6 @@ namespace qi {
         LogInstance->logs.push(pl);
         LogInstance->LogReadyCond.notify_one();
       }
-#endif
     }
 
     Log::Handler* Log::logHandler(SubscriberId id)
@@ -839,7 +995,12 @@ namespace qi {
     void setColor(LogColor color)
     {
       _glColorWhen = color;
-      _glConsoleLogHandler->updateColor();
+#ifndef ANDROID
+      if(_glConsoleLogHandler)
+      {
+        _glConsoleLogHandler->updateColor();
+      }
+#endif
     }
 
     LogColor color()
@@ -943,51 +1104,66 @@ namespace qi {
         checkGlobs(it->second);
     }
 
+    namespace detail {
+      std::vector<std::tuple<std::string, qi::LogLevel>> parseFilterRules(
+          const std::string &rules) {
+        std::vector<std::tuple<std::string, qi::LogLevel>> res;
+        // See doc in header for format
+        size_t pos = 0;
+        while (true)
+        {
+          if (pos >= rules.length())
+            break;
+          size_t next = rules.find(':', pos);
+          std::string token;
+          if (next == rules.npos)
+            token = rules.substr(pos);
+          else
+            token = rules.substr(pos, next-pos);
+          if (token.empty())
+          {
+            pos = next + 1;
+            continue;
+          }
+          if (token[0] == '+')
+            token = token.substr(1);
+          size_t sep = token.find('=');
+          if (sep != token.npos)
+          {
+            std::string sLevel = token.substr(sep+1);
+            std::string cat = token.substr(0, sep);
+            qi::LogLevel level = stringToLogLevel(sLevel.c_str());
+            res.emplace_back(cat, level);
+          }
+          else
+          {
+            if (token[0] == '-')
+              res.emplace_back(token.substr(1), LogLevel_Silent);
+            else
+              res.emplace_back(token, LogLevel_Debug);
+          }
+          if (next == rules.npos)
+            break;
+          pos = next+1;
+        }
+        return res;
+      }
+    }
+
     void addFilters(const std::string& rules, SubscriberId sub)
     {
-      // See doc in header for format
-      size_t pos = 0;
-      while (true)
+      std::string cat;
+      qi::LogLevel level;
+      for (auto &&p: detail::parseFilterRules(rules))
       {
-        if (pos >= rules.length())
-          break;
-        size_t next = rules.find(':', pos);
-        std::string token;
-        if (next == rules.npos)
-          token = rules.substr(pos);
-        else
-          token = rules.substr(pos, next-pos);
-        if (token.empty())
-        {
-          pos = next + 1;
-          continue;
-        }
-        if (token[0] == '+')
-          token = token.substr(1);
-        size_t sep = token.find('=');
-        if (sep != token.npos)
-        {
-          std::string sLevel = token.substr(sep+1);
-          std::string cat = token.substr(0, sep);
-          qi::LogLevel level = stringToLogLevel(sLevel.c_str());
-          addFilter(cat, level, sub);
-        }
-        else
-        {
-          if (token[0] == '-')
-            addFilter(token.substr(1), LogLevel_Silent, sub);
-          else
-            addFilter(token, LogLevel_Debug, sub);
-        }
-        if (next == rules.npos)
-          break;
-        pos = next+1;
+        std::tie(cat, level) = std::move(p);
+        addFilter(cat, level, sub);
       }
     }
 
     static void _setLogLevel(const std::string &level)
     {
-      setLogLevel(stringToLogLevel(level.c_str()));
+      setLogLevel(stringToLogLevel(level.c_str()), 0u);
     }
 
     static void _setColor(const std::string &color)

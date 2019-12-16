@@ -7,6 +7,9 @@
 */
 
 #include "trafficgenerator.hpp"
+#include <chrono>
+#include <thread>
+#include <random>
 
 qiLogCategory("qimessaging.testsession");
 
@@ -19,12 +22,12 @@ TrafficGenerator::~TrafficGenerator()
   stopTraffic();
 }
 
-bool TrafficGenerator::generateCommonTraffic(const std::vector<qi::Session *> &sessions, const std::string &serviceName)
+bool TrafficGenerator::generateCommonTraffic(const std::vector<qi::SessionPtr> &sessions, const std::string &serviceName)
 {
   Behavior     *b;
-  qi::Session  *sess;
+  qi::SessionPtr sess;
 
-  for (std::vector<qi::Session *>::const_iterator it = sessions.begin(); it != sessions.end(); ++it)
+  for (std::vector<qi::SessionPtr>::const_iterator it = sessions.begin(); it != sessions.end(); ++it)
   {
     b = new Behavior();
     sess = (*it);
@@ -38,7 +41,7 @@ bool TrafficGenerator::generateCommonTraffic(const std::vector<qi::Session *> &s
   return true;
 }
 
-bool TrafficGenerator::generateSpam(std::vector<qi::Session *> &sessions)
+bool TrafficGenerator::generateSpam(std::vector<qi::SessionPtr> &sessions)
 {
   return false;
 }
@@ -59,7 +62,7 @@ bool TrafficGenerator::stopTraffic()
 void __chaosThread(void *data)
 {
   Behavior *b = reinterpret_cast<Behavior *>(data);
-  qi::Session  *session;
+  qi::SessionPtr  session;
   boost::mutex *mutex;
   std::string  service;
   std::string  methodToCall;
@@ -75,7 +78,15 @@ void __chaosThread(void *data)
   delete b;
 
   // #1 Init random.
-  srand(static_cast<unsigned int>(time(0)));
+  auto randEngine = [] {
+    std::random_device rd;
+    std::seed_seq seq{ rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd() };
+    return std::default_random_engine{ seq };
+  }();
+  std::uniform_int_distribution<int> dis0to9{ 0, 9 };
+  std::uniform_int_distribution<int> dis0to49{ 0, 49 };
+  const auto random0to9 = [&] { return dis0to9(randEngine); };
+  const auto random0to49 = [&] { return dis0to49(randEngine); };
 
   // #2 Run until interrupt :
   while (mutex->try_lock())
@@ -84,7 +95,7 @@ void __chaosThread(void *data)
       session->connect(serviceDirectory).wait(1000);
 
     // #2.1 Get proxy on service.
-    qi::AnyObject proxy = session->service(service);
+    qi::AnyObject proxy = session->service(service).value();
 
     if (proxy.asGenericObject() == 0)
     {
@@ -98,22 +109,22 @@ void __chaosThread(void *data)
     while (methodToCall.compare("") != 0 && nbCalls > 0)
     {
       // #2.2.1 Randomise number of call.
-      nbCalls = rand() % 50 + 1;
+      nbCalls = random0to49() + 1;
 
       // #2.2.2 Call method.
       std::string pong = proxy.call<std::string>(methodToCall);
 
       // #2.2.3 Sleep a random time between 0 and 9ms.
-      qi::os::msleep(rand() % 10);
+      std::this_thread::sleep_for(std::chrono::milliseconds{ random0to9() });
 
       nbCalls--;
     }
 
     // #2.3 Sleep a random time between 0 and 9ms.
-    qi::os::msleep(rand() % 10);
+    std::this_thread::sleep_for(std::chrono::milliseconds{ random0to9() });
 
     // #2.3 Disconnect session.
-    session->close().wait(1000);
+    session->close().wait(qi::Seconds{ 10 });
     mutex->unlock();
   }
 }

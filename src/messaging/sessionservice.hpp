@@ -15,7 +15,7 @@
 #include <qi/atomic.hpp>
 #include "remoteobject_p.hpp"
 #include "transportsocketcache.hpp"
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include "clientauthenticator_p.hpp"
 
 namespace qi {
@@ -59,14 +59,11 @@ namespace qi {
 
   private:
     //FutureInterface
-    void onServiceInfoResult(qi::Future<qi::ServiceInfo> value, long requestId, std::string protocol);
     void onRemoteObjectComplete(qi::Future<void> value, long requestId);
-    void onTransportSocketResult(qi::Future<TransportSocketPtr> value, long requestId);
+    void onTransportSocketResult(qi::Future<MessageSocketPtr> value, long requestId);
 
     //ServiceDirectoryClient
-    void onServiceRemoved(const unsigned int &index, const std::string &service);
-
-    void onAuthentication(const TransportSocket::SocketEventData& data, long requestId, TransportSocketPtr socket, ClientAuthenticatorPtr auth, SignalSubscriberPtr old);
+    void onAuthentication(const MessageSocket::SocketEventData& data, long requestId, MessageSocketPtr socket, ClientAuthenticatorPtr auth, SignalSubscriberPtr old);
 
     ServiceRequest *serviceRequest(long requestId);
     void            removeRequest(long requestId);
@@ -77,22 +74,36 @@ namespace qi {
     qi::Atomic<int>                _requestsIndex;
 
     //maintain a cache of remote object
-    typedef std::map<std::string, AnyObject> RemoteObjectMap;
+    using RemoteObjectMap = std::map<std::string, AnyObject>;
     RemoteObjectMap                 _remoteObjects;
     boost::recursive_mutex          _remoteObjectsMutex;
 
   private:
-    qi::SignalLink    _linkServiceRemoved;
+    // RAII type to ensure a promise is set in error by default.
+    //
+    // If the optional promise is not set, or the caller deactivated the set,
+    // or the promise is already set, the call will do nothing.
+    //
+    // The service request is also removed from the pending requests.
+    struct SetPromiseInError
+    {
+      Session_Service& session;
+      boost::optional<Promise<AnyObject>>& promise;
+      bool& mustSetPromise;
+      long requestId;
+
+      void operator()();
+    };
+
     TransportSocketCache   *_socketCache;
     ServiceDirectoryClient *_sdClient;  //not owned by us
     ObjectRegistrar        *_server;    //not owned by us
-    boost::shared_ptr<Session_Service> _self;
-    Promise<void>                      _destructionBarrier;
     ClientAuthenticatorFactoryPtr      _authFactory;
     bool _enforceAuth;
     friend inline void sessionServiceWaitBarrier(Session_Service* ptr);
-    friend inline void onServiceInfoResultIfExists(Session_Service* s, qi::Future<qi::ServiceInfo> f,
-    long requestId, std::string protocol, boost::weak_ptr<Session_Service> self);
+
+    void setErrorAndRemoveRequest(
+      Promise<AnyObject> p, const std::string& message, long requestId);
   };
 
 }

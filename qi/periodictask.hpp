@@ -28,10 +28,7 @@ namespace qi
   {
   public:
     /// \brief Callback is a boost::function.
-    typedef boost::function<void()> Callback;
-    // internal
-    typedef boost::function<qi::Future<void>(
-        const Callback&, qi::Duration delay)> ScheduleCallback;
+    using Callback = boost::function<void()>;
 
     /// \brief Default constructor.
     PeriodicTask();
@@ -45,12 +42,22 @@ namespace qi
      * any other operation. Once set the callback cannot be changed.
      * If the callback throws, async task will be stopped
      */
-    void setCallback(const Callback& cb);
+    template <typename T>
+    auto setCallback(T&& cb) -> typename std::enable_if<detail::IsAsyncBind<typename std::decay<T>::type>::value>::type
+    {
+      static_assert(sizeof(T) && false,
+          "Don't use PeriodicTask::setCallback(qi::bind(...)) but setCallback(...) directly");
+    }
+    template <typename T>
+    auto setCallback(T&& cb) -> typename std::enable_if<!detail::IsAsyncBind<typename std::decay<T>::type>::value>::type
+    {
+      _setCallback(std::forward<T>(cb));
+    }
     template <typename AF, typename ARG0, typename... ARGS>
     inline void setCallback(AF&& callable, ARG0&& arg0, ARGS&&... args)
     {
       _connectMaybeActor(arg0);
-      setCallback(boost::bind(std::forward<AF>(callable), std::forward<ARG0>(arg0), std::forward<ARGS>(args)...));
+      _setCallback(boost::bind(std::forward<AF>(callable), std::forward<ARG0>(arg0), std::forward<ARGS>(args)...));
     }
 
     /**
@@ -90,7 +97,6 @@ namespace qi
      * Trigger a started periodic task to run right now.
      * Does nothing if the periodic task just ran, is running, starting,
      * stopping or stopped.
-     * This function is lockfree.
      */
     void trigger();
 
@@ -149,6 +155,8 @@ namespace qi
     {
       setStrand(0);
     }
+
+    void _setCallback(const Callback& cb);
   };
 
 }

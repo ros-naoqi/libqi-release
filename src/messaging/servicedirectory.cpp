@@ -15,8 +15,9 @@
 #include <boost/make_shared.hpp>
 
 #include <qi/anyobject.hpp>
+#include <qi/future.hpp>
 #include "transportserver.hpp"
-#include "transportsocket.hpp"
+#include "messagesocket.hpp"
 #include "servicedirectory.hpp"
 #include <qi/session.hpp>
 #include <qi/messaging/serviceinfo.hpp>
@@ -34,7 +35,7 @@ qiLogCategory("qimessaging.servicedirectory");
 namespace qi
 {
 
-  qi::AnyObject createSDP(ServiceDirectory* self) {
+  qi::AnyObject createSDObject(ServiceDirectory* self) {
     static qi::ObjectTypeBuilder<ServiceDirectory>* ob = nullptr;
     static boost::mutex* mutex = nullptr;
     QI_THREADSAFE_NEW(mutex);
@@ -46,23 +47,23 @@ namespace qi
       ob->setThreadingModel(ObjectThreadingModel_MultiThread);
       unsigned int id = 0;
       id = ob->advertiseMethod("service", &ServiceDirectory::service);
-      assert(id == qi::Message::ServiceDirectoryAction_Service);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_Service);
       id = ob->advertiseMethod("services", &ServiceDirectory::services);
-      assert(id == qi::Message::ServiceDirectoryAction_Services);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_Services);
       id = ob->advertiseMethod("registerService", &ServiceDirectory::registerService);
-      assert(id == qi::Message::ServiceDirectoryAction_RegisterService);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_RegisterService);
       id = ob->advertiseMethod("unregisterService", &ServiceDirectory::unregisterService);
-      assert(id == qi::Message::ServiceDirectoryAction_UnregisterService);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_UnregisterService);
       id = ob->advertiseMethod("serviceReady", &ServiceDirectory::serviceReady);
-      assert(id == qi::Message::ServiceDirectoryAction_ServiceReady);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_ServiceReady);
       id = ob->advertiseMethod("updateServiceInfo", &ServiceDirectory::updateServiceInfo);
-      assert(id == qi::Message::ServiceDirectoryAction_UpdateServiceInfo);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_UpdateServiceInfo);
       id = ob->advertiseSignal("serviceAdded", &ServiceDirectory::serviceAdded);
-      assert(id == qi::Message::ServiceDirectoryAction_ServiceAdded);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_ServiceAdded);
       id = ob->advertiseSignal("serviceRemoved", &ServiceDirectory::serviceRemoved);
-      assert(id == qi::Message::ServiceDirectoryAction_ServiceRemoved);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_ServiceRemoved);
       id = ob->advertiseMethod("machineId", &ServiceDirectory::machineId);
-      assert(id == qi::Message::ServiceDirectoryAction_MachineId);
+      QI_ASSERT(id == qi::Message::ServiceDirectoryAction_MachineId);
       ob->advertiseMethod("_socketOfService", &ServiceDirectory::_socketOfService);
       // used locally only, we do not export its id
       // Silence compile warning unused id
@@ -79,23 +80,23 @@ namespace qi
   ServiceDirectory::~ServiceDirectory()
   {
     if (!connectedServices.empty())
-      qiLogWarning() << "Destroying while connected services remain";
+      qiLogVerbose() << "Destroying while connected services remain";
   }
 
-  void ServiceDirectory::onSocketDisconnected(TransportSocketPtr socket, std::string error)
+  void ServiceDirectory::removeClientSocket(MessageSocketPtr socket)
   {
     boost::recursive_mutex::scoped_lock lock(mutex);
     // clean from idxToSocket
-    for (std::map<unsigned int, TransportSocketPtr>::iterator it = idxToSocket.begin(), iend = idxToSocket.end(); it != iend;)
+    for (std::map<unsigned int, MessageSocketPtr>::iterator it = idxToSocket.begin(), iend = idxToSocket.end(); it != iend;)
     {
-      std::map<unsigned int, TransportSocketPtr>::iterator next = it;
+      std::map<unsigned int, MessageSocketPtr>::iterator next = it;
       ++next;
       if (it->second == socket)
         idxToSocket.erase(it);
       it = next;
     }
     // if services were connected behind the socket
-    std::map<TransportSocketPtr, std::vector<unsigned int> >::iterator it;
+    std::map<MessageSocketPtr, std::vector<unsigned int> >::iterator it;
     it = socketToIdx.find(socket);
     if (it == socketToIdx.end()) {
       return;
@@ -108,7 +109,7 @@ namespace qi
          it2 != ids.end();
          ++it2)
     {
-      qiLogInfo() << "Service #" << *it2 << " disconnected";
+      qiLogVerbose() << "Service #" << *it2 << " disconnected";
       try {
         unregisterService(*it2);
       } catch (std::runtime_error &) {
@@ -156,11 +157,11 @@ namespace qi
 
   unsigned int ServiceDirectory::registerService(const ServiceInfo &svcinfo)
   {
-    boost::shared_ptr<ServiceBoundObject> sbo = serviceBoundObject.lock();
-    if (!sbo)
-      throw std::runtime_error("ServiceBoundObject has expired.");
+    boost::shared_ptr<BoundObject> bo = serviceBoundObject.lock();
+    if (!bo)
+      throw std::runtime_error("BoundObject has expired.");
 
-    TransportSocketPtr socket = sbo->currentSocket();
+    MessageSocketPtr socket = bo->currentSocket();
     boost::recursive_mutex::scoped_lock lock(mutex);
     std::map<std::string, unsigned int>::iterator it;
     it = nameToIdx.find(svcinfo.name());
@@ -261,7 +262,7 @@ namespace qi
 
     // Find and remove serviceId into socketToIdx map
     {
-      std::map<TransportSocketPtr , std::vector<unsigned int> >::iterator it;
+      std::map<MessageSocketPtr , std::vector<unsigned int> >::iterator it;
       for (it = socketToIdx.begin(); it != socketToIdx.end(); ++it) {
         std::vector<unsigned int>::iterator jt;
         for (jt = it->second.begin(); jt != it->second.end(); ++jt) {
@@ -341,7 +342,8 @@ namespace qi
     , _init(false)
   {
     ServiceDirectory *sdObject = new ServiceDirectory();
-    boost::shared_ptr<ServiceBoundObject> sbo = boost::make_shared<ServiceBoundObject>(1, Message::GenericObject_Main, createSDP(sdObject), qi::MetaCallType_Direct);
+    auto sbo = makeServiceBoundObjectPtr(Message::Service_ServiceDirectory,
+                                         createSDObject(sdObject), qi::MetaCallType_Direct);
     _serviceBoundObject = sbo;
     sdObject->_setServiceBoundObject(sbo);
     _sdObject = sdObject;
@@ -354,44 +356,77 @@ namespace qi
   void Session_SD::updateServiceInfo()
   {
     ServiceInfo si;
-    si.setName("ServiceDirectory");
+    si.setName(Session::serviceDirectoryServiceName());
     si.setServiceId(qi::Message::Service_ServiceDirectory);
     si.setMachineId(qi::os::getMachineId());
     si.setEndpoints(_server->endpoints());
     _sdObject->updateServiceInfo(si);
   }
 
-  qi::Future<void> Session_SD::listenStandalone(const qi::Url &address)
+  qi::Future<void> Session_SD::listenStandalone(const std::vector<qi::Url> &listenAddresses)
   {
     if (_init)
       throw std::runtime_error("Already initialised");
     _init = true;
-    _server->addObject(1, _serviceBoundObject);
+    const bool success = _server->addObject(1, _serviceBoundObject);
+    QI_IGNORE_UNUSED(success);
+    QI_ASSERT_TRUE(success);
 
-    qiLogInfo() << "ServiceDirectory listener created on " << address.str();
-    qi::Future<void> f = _server->listen(address);
-
-    std::map<unsigned int, ServiceInfo>::iterator it =
-        _sdObject->connectedServices.find(qi::Message::Service_ServiceDirectory);
-    if (it != _sdObject->connectedServices.end())
+    std::ostringstream messInfo;
+    messInfo << "ServiceDirectory listener created on";
+    qi::FutureBarrier<void> barrier;
+    for (const qi::Url& url : listenAddresses)
     {
-      it->second.setEndpoints(_server->endpoints());
-      return f;
+      messInfo << " " << url.str();
+      barrier.addFuture(_server->listen(url));
     }
-    ServiceInfo si;
-    si.setName("ServiceDirectory");
-    si.setServiceId(qi::Message::Service_ServiceDirectory);
-    si.setMachineId(qi::os::getMachineId());
-    si.setProcessId(qi::os::getpid());
-    si.setSessionId("0");
-    si.setEndpoints(_server->endpoints());
-    unsigned int regid = _sdObject->registerService(si);
-    (void)regid;
-    _sdObject->serviceReady(qi::Message::Service_ServiceDirectory);
-    //serviceDirectory must have id '1'
-    assert(regid == qi::Message::Service_ServiceDirectory);
+    qiLogVerbose() << messInfo.str();
+    auto f = barrier.future().andThen([&](const std::vector<Future<void>>& futures)
+    {
+      const auto error = [&]
+      {
+        std::stringstream ss;
+        bool prefixed = false;
+        for (const auto& future: futures)
+        {
+          if (future.hasError())
+          {
+            if (!prefixed)
+            {
+              ss << "an error occurred when listening to one of the requested endpoints:";
+              prefixed = true;
+            }
+            ss << std::endl << future.error();
+          }
+        }
+        return ss.str();
+      }();
 
-    _server->_server.endpointsChanged.connect(boost::bind(&Session_SD::updateServiceInfo, this));
+      if (!error.empty())
+        throw std::runtime_error(error);
+
+      auto it = _sdObject->connectedServices.find(qi::Message::Service_ServiceDirectory);
+      if (it != _sdObject->connectedServices.end())
+      {
+        it->second.setEndpoints(_server->endpoints());
+        return;
+      }
+
+      ServiceInfo si;
+      si.setName(Session::serviceDirectoryServiceName());
+      si.setServiceId(qi::Message::Service_ServiceDirectory);
+      si.setMachineId(qi::os::getMachineId());
+      si.setProcessId(qi::os::getpid());
+      si.setSessionId("0");
+      si.setEndpoints(_server->endpoints());
+      unsigned int regid = _sdObject->registerService(si);
+      (void)regid;
+      _sdObject->serviceReady(qi::Message::Service_ServiceDirectory);
+      //serviceDirectory must have id '1'
+      QI_ASSERT(regid == qi::Message::Service_ServiceDirectory);
+
+      _server->_server.endpointsChanged.connect(boost::bind(&Session_SD::updateServiceInfo, this));
+    });
 
     return f;
   }
@@ -401,20 +436,20 @@ namespace qi
     return qi::os::getMachineId();
   }
 
-  qi::TransportSocketPtr ServiceDirectory::_socketOfService(unsigned int id)
+  qi::MessageSocketPtr ServiceDirectory::_socketOfService(unsigned int id)
   {
     boost::recursive_mutex::scoped_lock lock(mutex);
-    std::map<unsigned int, TransportSocketPtr>::iterator it = idxToSocket.find(id);
+    std::map<unsigned int, MessageSocketPtr>::iterator it = idxToSocket.find(id);
     if (it == idxToSocket.end())
-      return TransportSocketPtr();
+      return MessageSocketPtr();
     else
       return it->second;
   }
 
-  void ServiceDirectory::_setServiceBoundObject(boost::shared_ptr<ServiceBoundObject> sbo)
+  void ServiceDirectory::_setServiceBoundObject(boost::shared_ptr<BoundObject> bo)
   {
-    serviceBoundObject = sbo;
-    sbo->_onSocketDisconnectedCallback = boost::bind(&ServiceDirectory::onSocketDisconnected, this, _1, _2);
+    serviceBoundObject = bo;
+    bo->setOnSocketUnbound(boost::bind(&ServiceDirectory::removeClientSocket, this, _1));
   }
 
 } // !qi

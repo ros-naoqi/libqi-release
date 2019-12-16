@@ -6,6 +6,8 @@
 */
 
 #include <gtest/gtest.h>
+#include <gmock/gmock.h>
+#include <ka/unit.hpp>
 #include <qi/signal.hpp>
 #include <qi/future.hpp>
 #include <qi/signalspy.hpp>
@@ -13,8 +15,14 @@
 #include <qi/application.hpp>
 #include <qi/type/objecttypebuilder.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
+#include <future>
 
 qiLogCategory("test");
+
+namespace
+{
+const auto usualTimeoutMs = 300;
+const qi::MilliSeconds usualTimeout{usualTimeoutMs};
 
 class Foo
 {
@@ -23,21 +31,63 @@ public:
   void func1(qi::Atomic<int>* r, int)
   {
     // hackish sleep so that asynchronous trigger detection is safer
-    qi::os::msleep(1); ++*r;
+    std::this_thread::sleep_for(std::chrono::milliseconds{ 1 });
+    ++*r;
   }
   void func2(qi::Atomic<int>* r, int, int) { ++*r; }
 };
 void foo(qi::Atomic<int>* r, int, int)     { ++*r; }
 void foo2(qi::Atomic<int>* r, char, char)  { ++*r; }
 void foo3(qi::Atomic<int>* r, Foo *)       { ++*r; }
-void foolast(int, qi::Promise<void> prom, qi::Atomic<int>* r) { prom.setValue(0); ++*r; }
+void foolast(int, qi::Promise<void> prom, qi::Atomic<int>* r) { prom.setValue(nullptr); ++*r; }
+} // anonymous
+
+void fire(int &a) { a = 44; }
+
+TEST(TestSignal, RegisterSignalAndMethodWithSameSignature)
+{
+  qi::DynamicObjectBuilder ob;
+  qi::Property<int> prop;
+
+  ob.advertiseSignal<int&>("fire1");
+  ASSERT_THROW(ob.advertiseMethod("fire1", &fire), std::runtime_error);
+  ASSERT_THROW(ob.advertiseProperty("fire1", &prop), std::runtime_error);
+
+  ob.advertiseMethod("fire2", &fire);
+  ASSERT_THROW(ob.advertiseSignal<int&>("fire2"), std::runtime_error);
+  ASSERT_THROW(ob.advertiseProperty("fire2", &prop), std::runtime_error);
+
+  ob.advertiseProperty("fire3", &prop);
+  ASSERT_THROW(ob.advertiseSignal<int&>("fire3"), std::runtime_error);
+  ASSERT_THROW(ob.advertiseMethod("fire3", &fire), std::runtime_error);
+
+}
+
+TEST(TestSignal, RegisterSignalAndMethodWithDifferentSignature)
+{
+  qi::DynamicObjectBuilder ob;
+  qi::Property<char> prop;
+
+  ob.advertiseSignal<float&>("fire1");
+  ASSERT_NO_THROW(ob.advertiseMethod("fire1", &fire));
+  ASSERT_NO_THROW(ob.advertiseProperty("fire1", &prop));
+
+  ob.advertiseMethod("fire2", &fire);
+  ASSERT_NO_THROW(ob.advertiseSignal<float&>("fire2"));
+  ASSERT_NO_THROW(ob.advertiseProperty("fire2", &prop));
+
+  ob.advertiseProperty("fire3", &prop);
+  ASSERT_NO_THROW(ob.advertiseSignal<float&>("fire3"));
+  ASSERT_NO_THROW(ob.advertiseMethod("fire3", &fire));
+}
+
 
 TEST(TestSignal, TestCompilation)
 {
-  qi::Atomic<int>        res = 0;
+  qi::Atomic<int> res{0};
   qi::Signal<int> s;
-  Foo*                   f = (Foo*)1;
-  qi::Promise<void>      prom;
+  auto f = reinterpret_cast<Foo*>(1);
+  qi::Promise<void> prom;
 
   //do not count
   s.connect(qi::AnyFunction::from(&Foo::func, f));
@@ -52,29 +102,104 @@ TEST(TestSignal, TestCompilation)
 
   s(42);
 
-  while (*res != 6)
-    qi::os::msleep(10);
+  while (res.load() != 6)
+    std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
 
-  ASSERT_EQ(6, *res);
+  ASSERT_EQ(6, res.load());
   ASSERT_TRUE(prom.future().isFinished());
   ASSERT_FALSE(prom.future().hasError());
 }
 
-void write42(boost::shared_ptr<int> ptr)
+TEST(TestSignal, SignalHasNoSubscriberByDefault)
 {
-  *ptr = 42;
+  qi::Signal<int> signal;
+  ASSERT_FALSE(signal.hasSubscribers());
 }
 
-TEST(TestSignal, SharedPtr)
+TEST(TestSignal, EmitWithNoSubscriber)
+{
+  qi::Signal<int> signal;
+  QI_EMIT signal(42);
+}
+
+TEST(TestSignal, EmitSharedPointerWithNoSubscriber)
+{
+  qi::Signal<boost::shared_ptr<int>> signal;
+  QI_EMIT signal(boost::make_shared<int>(42));
+}
+
+void write42(qi::Promise<int> prom)
+{
+  prom.setValue(42);
+}
+
+TEST(TestSignal, EmitPromiseWithDirectSubscriber)
 {
   // Redundant with Copy test, but just to be sure, check that shared_ptr
   // is correctly transmited.
-  qi::Signal<boost::shared_ptr<int> > sig;
+  qi::Signal<qi::Promise<int>> sig;
+  sig.connect(qi::AnyFunction::from(&write42)).setCallType(qi::MetaCallType_Direct);
+  qi::Promise<int> prom;
+  QI_EMIT sig(prom);
+
+  // no need to wait for the promise, a value should already be set
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, prom.future().wait(0));
+  ASSERT_EQ(42, prom.future().value());
+}
+
+TEST(TestSignal, EmitPromiseWithQueuedSubscriber)
+{
+  // Redundant with Copy test, but just to be sure, check that shared_ptr
+  // is correctly transmited.
+  qi::Signal<qi::Promise<int>> sig;
   sig.connect(qi::AnyFunction::from(&write42)).setCallType(qi::MetaCallType_Queued);
-  {
-    boost::shared_ptr<int> ptr(new int(12));
-    sig(ptr);
-  };
+  qi::Promise<int> prom;
+  QI_EMIT sig(prom);
+
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, prom.future().wait(usualTimeout));
+  ASSERT_EQ(42, prom.future().value());
+}
+
+TEST(TestSignal, DisconnectAsynchronouslyFromCallback)
+{
+  qi::SignalLink link;
+  qi::Signal<void> signal;
+  qi::Promise<bool> p;
+  link = signal.connect([&]{ adaptFuture(signal.disconnectAsync(link), p); });
+  QI_EMIT signal();
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, p.future().wait(usualTimeout));
+}
+
+TEST(TestSignal, DisconnectSynchronouslyFromCallback)
+{
+  qi::SignalLink link;
+  qi::Signal<void> signal;
+  qi::Promise<bool> p;
+  link = signal.connect([&]{ p.setValue(signal.disconnect(link)); });
+  QI_EMIT signal();
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, p.future().wait(usualTimeout));
+}
+
+TEST(TestSignal, DisconnectAsynchronouslyFromAsyncCallback)
+{
+  qi::SignalLink link;
+  qi::Signal<void> signal;
+  qi::Promise<bool> p;
+  link = signal.connect([&]{ adaptFuture(signal.disconnectAsync(link), p); })
+      .setCallType(qi::MetaCallType_Queued);
+  QI_EMIT signal();
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, p.future().wait(usualTimeout));
+}
+
+TEST(TestSignal, DisconnectSynchronouslyFromAsyncCallback)
+{
+  qi::SignalLink link;
+  qi::Signal<void> signal;
+  qi::Promise<bool> p;
+  link = signal.connect([&]{ p.setValue(signal.disconnect(link)); })
+      .setCallType(qi::MetaCallType_Queued);
+  QI_EMIT signal();
+  ASSERT_EQ(qi::FutureState_FinishedWithValue, p.future().wait(usualTimeout));
 }
 
 void byRef(int& i, bool* done)
@@ -84,25 +209,96 @@ void byRef(int& i, bool* done)
   *done = true;
 }
 
+TEST(TestSignal, FunctionDestroyedOnDisconnection)
+{
+  std::atomic<bool> destroyed{false};
+  std::shared_ptr<int> sharedInt{new int{42}, [&](int* i){ delete i; destroyed = true; }};
+  qi::Signal<void> signal;
+  qi::SignalLink link = signal.connect([sharedInt]{});
+  sharedInt.reset();
+  ASSERT_FALSE(destroyed);
+  signal.disconnect(link);
+  ASSERT_TRUE(destroyed);
+}
+
+
+TEST(TestSignal, DisconnectLinkRegistrationCheck)
+{
+  qi::Signal<void> signal1;
+  qi::SignalLink link1 = signal1.connect([]{});
+  { // Nominal case: registered link id
+    bool linkFoundAndDisconnected = signal1.disconnect(link1);
+    ASSERT_TRUE(linkFoundAndDisconnected);
+  }
+  { // Multiple attempts (link id already unregistered)
+    bool linkFoundAndDisconnected = signal1.disconnect(link1);
+    ASSERT_FALSE(linkFoundAndDisconnected);
+  }
+  { // Bad link id
+    qi::Signal<void> signal2;
+    bool linkFoundAndDisconnected = signal2.disconnect(link1);
+    ASSERT_FALSE(linkFoundAndDisconnected);
+  }
+}
+
+TEST(TestSignal, DisconnectLinkRegistrationCheckWarning)
+{
+  // Set up signals
+  qi::Signal<void> signal1, signal2;
+  qi::SignalLink link1 = signal1.connect([]{});
+
+  // Listen to log
+  // TODO: Add common test utility to expect a particular message of a given level.
+  // (See MockLogHandler in test_qilog.hpp.) Then use it here.
+  std::atomic<bool> warningRaised{false};
+  const auto logHandlerName = "check_signal_disconnect_warning";
+  qi::log::flush(); // previous messages
+
+  auto add = [&]() {
+    qi::log::addHandler(
+      logHandlerName,
+      [&warningRaised]( const qi::LogLevel level,
+                        const qi::Clock::time_point,
+                        const qi::SystemClock::time_point,
+                        const char* /*category*/, const char* message,
+                        const char* /*file*/, const char* /*function*/, int /*line*/)
+      {
+        if (level == qi::LogLevel_Warning
+          && std::string(message).find("No subscription found for SignalLink") != std::string::npos)
+        {
+          warningRaised = true;
+        }
+      },
+      qi::LogLevel_Warning);
+      return logHandlerName;
+  };
+  auto scopedLogHandler = ka::scoped(add(), &qi::log::removeHandler);
+
+  // Try to unsubscribe to the signal
+  signal2.disconnect(link1); // Bad link
+  qi::log::flush();
+  ASSERT_TRUE(warningRaised);
+}
+
 
 TEST(TestSignal, AutoDisconnect)
 {
   // Test automatic disconnection when passing shared_ptrs
-  qi::Atomic<int> r = 0;
+  qi::Atomic<int> r{0};
   boost::shared_ptr<Foo> foo(new Foo());
   qi::Signal<qi::Atomic<int>*, int> sig;
   sig.connect(&Foo::func1, boost::weak_ptr<Foo>(foo), _1, _2).setCallType(qi::MetaCallType_Direct);
   sig(&r, 0);
-  ASSERT_EQ(1, *r);
+  ASSERT_EQ(1, r.load());
   foo.reset();
   sig(&r, 0);
-  ASSERT_EQ(1, *r);
+  ASSERT_EQ(1, r.load());
 }
 
 void waitFuture(qi::Atomic<int>& cnt, qi::Promise<void> start, qi::Future<void> f)
 {
   if (++cnt == 2)
-    start.setValue(0);
+    start.setValue(nullptr);
   f.wait();
 
   // force disconnection, may trigger a segfault
@@ -115,7 +311,7 @@ TEST(TestSignal, NonBlockingDestroy)
 
   qi::Promise<void> start;
   qi::Promise<void> finish;
-  qi::Atomic<int> cnt = 0;
+  qi::Atomic<int> cnt{0};
 
   {
     qi::Signal<void> sig;
@@ -129,7 +325,7 @@ TEST(TestSignal, NonBlockingDestroy)
   }
 
   // all went well, unblock the callback
-  finish.setValue(0);
+  finish.setValue(nullptr);
 }
 
 TEST(TestSignal, BadArity)
@@ -139,62 +335,90 @@ TEST(TestSignal, BadArity)
   // avoid using s.connect() which will catch the problem at compile-time
   EXPECT_ANY_THROW(s.connect(qi::SignalSubscriber(qi::AnyFunction::from(&foo))));
   EXPECT_ANY_THROW(s.connect(qi::SignalSubscriber(qi::AnyFunction::from(&foo2))));
-  EXPECT_ANY_THROW(s.connect(qi::AnyFunction::from((boost::function<void(qi::Atomic<int>*, int)>)boost::bind(&Foo::func1, (Foo*)0, _1, _2))));
+  EXPECT_ANY_THROW(s.connect(qi::AnyFunction::from(
+    boost::function<void(qi::Atomic<int>*, int)>{
+      boost::bind(&Foo::func1, static_cast<Foo*>(nullptr), _1, _2)
+    })));
 }
 
 void lol(int v, int& target)
 {
   target = v;
 }
+
+namespace
+{
+
+struct MockCallback
+{
+  MockCallback()
+  {
+    ON_CALL(*this, call(testing::_)).WillByDefault(testing::Return(ka::unit));
+  }
+
+  void operator()(int val) { call(val); }
+
+  // TODO: Replace ka::unit_t by void once we upgrade GoogleMock with the fix on mock methods returning
+  // void crashing in optimized compilation on recent compilers.
+  // See: https://github.com/google/googletest/issues/705
+  MOCK_METHOD1(call, ka::unit_t(int));
+};
+
+}
+
 TEST(TestSignal, SignalSignal)
 {
+  // The signal to spy is explicitly destroyed in order to verify that it disconnects itself from
+  // the first signal on destruction and therefore is not called after that. To check that the
+  // callback connected to that signal is called before destruction but not after, we cannot use
+  // SignalSpy because its precondition is that the signal outlives it.
+
+  // Create the mock first so that it is destroyed and checked after the signals.
+  testing::StrictMock<MockCallback> callback;
+
+  // Call chain: sig1 -> sig2 -> callback
   qi::SignalF<void (int)> sig1;
-  qi::SignalF<void (int)> *sig2 = new  qi::SignalF<void (int)>();
-  int res = 0;
-  sig1.connect(*sig2);
-  sig2->connect(boost::bind<void>(&lol, _1, boost::ref(res)));
-  sig1(10);
-  qi::os::msleep(300);
-  ASSERT_EQ(10, res);
-  // Test autodisconnect
-  delete sig2;
+  {
+    qi::SignalF<void (int)> sig2;
+
+    // Connect synchronously, there is no need for concurrency in this test.
+    sig1.connect(sig2).setCallType(qi::MetaCallType_Direct);
+    sig2.connect(std::ref(callback)).setCallType(qi::MetaCallType_Direct);
+
+    EXPECT_CALL(callback, call(10));
+    sig1(10);
+  }
+
+  // No call of the callback shall occur, StrictMock will generate a failure if it does.
   sig1(20);
-  qi::os::msleep(300);
-  ASSERT_EQ(10, res);
 }
 
 class SignalTest {
 public:
-  SignalTest() : payload(0) {}
   qi::Signal<int> sig;
   qi::Signal<int> sig2;
-  void callback(int val) {
-    payload = val;
-  }
-  int payload;
 };
 
 
 TEST(TestSignal, SignalSignal2)
 {
   SignalTest st;
-  st.sig2.connect(&SignalTest::callback, boost::ref(st), _1);
+  qi::SignalSpy spy(st.sig2);
   st.sig.connect(st.sig2);
   qiLogDebug() << "sigptrs are " << &st.sig << " " << &st.sig2;
   st.sig(4242);
-  for (unsigned i=0; i<50 && st.payload != 4242; ++i)
-    qi::os::msleep(20);
-  EXPECT_EQ(st.payload, 4242);
+  ASSERT_TRUE(spy.waitUntil(1, qi::MilliSeconds(300)).value());
+  assert(spy.recordCount() == 1u);
+  EXPECT_EQ(4242, spy.lastRecord().arg<int>(0));
 }
 
 TEST(TestSignal, SignalN)
 {
   qi::Signal<int> sig;
-  int res = 0;
-  sig.connect(boost::bind<void>(&lol, _1, boost::ref(res)));
+  qi::SignalSpy spy(sig);
   sig(5);
-  qi::os::msleep(300);
-  ASSERT_EQ(5, res);
+  ASSERT_TRUE(spy.waitUntil(1, qi::MilliSeconds(300)).value());
+  ASSERT_EQ(5, spy.lastRecord().arg<int>(0));
 }
 
 class SigHolder
@@ -218,14 +442,17 @@ TEST(TestSignal, SignalNBind)
   qi::detail::printMetaObject(std::cerr, op.metaObject());
   op.connect("s1", (boost::function<void(int)>)boost::bind<void>(&lol, _1, boost::ref(res)));
   op.post("s1", 2);
-  for (unsigned i=0; i<30 && res!=2; ++i) qi::os::msleep(10);
+  for (unsigned i=0; i<30 && res!=2; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
   ASSERT_EQ(2, res);
   so->s1(3);
-  for (unsigned i=0; i<30 && res!=3; ++i) qi::os::msleep(10);
+  for (unsigned i=0; i<30 && res!=3; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
   ASSERT_EQ(3, res);
   so->s0.connect( boost::bind<void>(&lol, 42, boost::ref(res)));
   op.post("s0");
-  for (unsigned i=0; i<30 && res!=42; ++i) qi::os::msleep(10);
+  for (unsigned i=0; i<30 && res!=42; ++i)
+    std::this_thread::sleep_for(std::chrono::milliseconds{ 10 });
   ASSERT_EQ(42, res);
 }
 
@@ -239,7 +466,7 @@ TEST(TestSignal, SignalThrow)
   qi::Signal<> sig;
   sig.connect(boost::bind<void>(&foothrow));
   ASSERT_NO_THROW(sig());
-  qi::os::msleep(50);
+  std::this_thread::sleep_for(std::chrono::milliseconds{ 50 });
 }
 
 
@@ -247,8 +474,10 @@ void dynTest0(int& tgt)                     { tgt |= 1;}
 void dynTest1(int& tgt, int)                { tgt |= 2;}
 void dynTest2(int& tgt, int, int)           { tgt |= 4;}
 void dynTest3(int& tgt, int, std::string)   { tgt |= 8;}
-void dynTestN(int& tgt, const qi::AnyArguments& a)   { tgt |= 32;}
-qi::AnyReference dynTestN2(int& tgt, const std::vector<qi::AnyReference>& a)   { tgt |= 16; return qi::AnyReference();}
+void dynTestN(int& tgt, const qi::AnyArguments&)   { tgt |= 32;}
+qi::AnyReference dynTestN2(int& tgt, const std::vector<qi::AnyReference>&) {
+  tgt |= 16; return qi::AnyReference();
+}
 
 
 TEST(TestSignal, Dynamic)
@@ -281,17 +510,18 @@ TEST(TestSignal, Dynamic)
   EXPECT_EQ(56, trig);
 }
 
-void onSubs(boost::atomic<bool>& var, bool subs)
+qi::Future<void> onSubs(std::atomic<bool>& var, bool subs)
 {
   var = subs;
+  return qi::Future<void>{nullptr};
 }
 
-void callback(int i)
+void callback(int)
 {}
 
 TEST(TestSignal, OnSubscriber)
 {
-  boost::atomic<bool> subscribers(false);
+  std::atomic<bool> subscribers(false);
 
   qi::Signal<int> sig(boost::bind(onSubs, boost::ref(subscribers), _1));
   ASSERT_FALSE(subscribers);
@@ -319,14 +549,60 @@ TEST(TestSignal, SignalToSignalWithExtraArgument)
   EXPECT_EQ(42, target2.future().value());
 }
 
+TEST(TestSignal, SignalSubscriberDoesNotUnsubscribeAtDestruction)
+{
+  int count = 0;
+  qi::Signal<void> signal;
+  {
+    auto subscriber = signal.connect([&]{ ++count; })
+        .setCallType(qi::MetaCallType_Direct);
+    QI_IGNORE_UNUSED(subscriber); // we are just keeping it alive for a moment
+
+    signal();
+    ASSERT_EQ(1, count);
+  }
+  signal();
+  ASSERT_EQ(2, count);
+}
+
+TEST(TestSignal, WithExecutionContext)
+{
+  qi::EventLoop threadPool{ "test_theadpool", 1, false };
+  qi::Signal<> signal{ &threadPool };
+  qi::Promise<bool> prom;
+  signal.connect([=, &threadPool]() mutable { prom.setValue(threadPool.isInThisContext()); });
+  signal();
+  ASSERT_TRUE(prom.future().value());
+}
+
+// ===========================================================
+// Signal Spy
+// -----------------------------------------------------------
+TEST(TestSignalSpy, Disconnection)
+{
+  qi::Signal<int> sig;
+  {
+    qi::SignalSpy sp(sig);
+  }
+  QI_EMIT sig(1);
+  // let some time for the disconnection to happen
+  auto i = 5;
+  while (sig.hasSubscribers() && i-- > 0)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  // ensure it did happen
+  EXPECT_FALSE(sig.hasSubscribers());
+}
+
 TEST(TestSignalSpy, Counter)
 {
   qi::Signal<int> sig;
   qi::SignalSpy sp(sig);
   QI_EMIT sig(1);
   QI_EMIT sig(1);
-  qi::os::sleep(1);
-  ASSERT_EQ(sp.getCounter(), 2u);
+  ASSERT_TRUE(sp.waitUntil(2, usualTimeout).value());
+  ASSERT_EQ(sp.recordCount(), 2u);
 
   qi::DynamicObjectBuilder ob;
   ob.advertiseSignal("signal", &sig);
@@ -334,8 +610,8 @@ TEST(TestSignalSpy, Counter)
   qi::SignalSpy sp2(obj, "signal");
   QI_EMIT sig(1);
   QI_EMIT sig(1);
-  qi::os::sleep(1);
-  ASSERT_EQ(sp2.getCounter(), 2u);
+  ASSERT_TRUE(sp2.waitUntil(2, usualTimeout).value());
+  ASSERT_EQ(sp2.recordCount(), 2u);
 }
 
 TEST(TestSignalSpy, Async)
@@ -344,12 +620,51 @@ TEST(TestSignalSpy, Async)
   qi::SignalSpy sp(sig);
   qi::async(boost::bind(boost::ref(sig), 1));
   qi::async(boost::bind(boost::ref(sig), 1));
-  ASSERT_TRUE(sp.waitUntil(2, qi::Seconds(1)));
-  ASSERT_EQ(sp.getCounter(), 2u);
+  ASSERT_TRUE(sp.waitUntil(2, usualTimeout).value());
+  ASSERT_EQ(sp.recordCount(), 2u);
 }
 
-int main(int argc, char **argv) {
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
+TEST(TestSignalSpy, StoringTypedValueRecords)
+{
+  const std::vector<int> ints{ 1, 42, 13, 2016 };
+  const std::vector<std::string> strings{ "poil", "slip", "banane", "pancréas" };
+  qi::Signal<int, std::string> signal;
+  qi::SignalSpy spy(signal);
+
+  signal(ints[0], strings[0]);
+  ASSERT_EQ(1u, spy.recordCount());
+  auto record = spy.record(0);
+  ASSERT_EQ(ints[0], record.arg<int>(0));
+  ASSERT_EQ(strings[0], record.arg<std::string>(1));
+
+  for(auto i = 1u; i < ints.size(); ++i)
+  {
+    signal(ints[i], strings[i]);
+  }
+  spy.waitUntil(ints.size(), usualTimeout);
+
+  for(auto i = 1u; i < ints.size(); ++i)
+  {
+    record = spy.record(i);
+    EXPECT_EQ(ints[i], record.arg<int>(0));
+    EXPECT_EQ(strings[i], record.arg<std::string>(1));
+  }
+
+  auto records = spy.allRecords();
+  ASSERT_EQ(ints.size(), records.size());
+  for(auto i = 0u; i < records.size(); ++i)
+  {
+    EXPECT_EQ(ints[i], records[i].arg<int>(0));
+    EXPECT_EQ(strings[i], records[i].arg<std::string>(1));
+  }
+}
+
+TEST(TestSignalSpy, WaitUntilCanBeCancelled)
+{
+  qi::Signal<bool> sig;
+  qi::SignalSpy spy{sig};
+  auto waiting = spy.waitUntil(1, usualTimeout);
+  waiting.cancel();
+  auto status = waiting.wait(usualTimeout);
+  ASSERT_EQ(qi::FutureState_Canceled, status);
 }

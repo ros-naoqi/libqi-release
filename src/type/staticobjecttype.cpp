@@ -23,6 +23,11 @@ void StaticObjectTypeBase::initialize(const MetaObject& mo, const ObjectTypeData
   _data = data;
 }
 
+ObjectUid StaticObjectTypeBase::uid(void* instance) const
+{
+  QI_ASSERT_TRUE(instance);
+  return os::ptrUid(instance);
+}
 
 const MetaObject&
 StaticObjectTypeBase::metaObject(void* )
@@ -195,8 +200,8 @@ qi::Future<SignalLink> StaticObjectTypeBase::connect(void* instance, AnyObject c
   if (id == SignalBase::invalidSignalLink)
     return qi::Future<SignalLink>(id);
   SignalLink link = ((SignalLink)event << 32) + id;
-  assert(link >> 32 == event);
-  assert((link & 0xFFFFFFFF) == id);
+  QI_ASSERT(link >> 32 == event);
+  QI_ASSERT((link & 0xFFFFFFFF) == id);
   qiLogDebug() << "Connect " << event <<' ' << id << ' ' << link;
   return qi::Future<SignalLink>(link);
 }
@@ -214,10 +219,12 @@ qi::Future<void> StaticObjectTypeBase::disconnect(void* instance, AnyObject cont
     qiLogWarning() << "disconnect: no such signal: " << event;
     return qi::makeFutureError<void>("Cant find signal");
   }
-  bool b = sb->disconnect(link);
-  if (!b)
-    return qi::makeFutureError<void>("Cant unregister signal");
-  return qi::Future<void>(0);
+
+  return sb->disconnectAsync(link).andThen([](bool successful)
+  {
+    if (!successful)
+      throw std::runtime_error("signal registration failed");
+  });
 }
 
 qi::Future<AnyValue> StaticObjectTypeBase::property(void* instance, AnyObject context, unsigned int id)
@@ -231,11 +238,10 @@ qi::Future<AnyValue> StaticObjectTypeBase::property(void* instance, AnyObject co
   ExecutionContext* ec = getExecutionContext(instance, context);
   if (ec)
     return ec->async([p]{
-          // TODO make this async when setValue returns a futuresync
-          return p->value();
-        });
+          return p->value().async();
+        }).unwrap();
   else
-    return qi::Future<AnyValue>(p->value());
+    return p->value();
 }
 
 static void setPropertyValue(PropertyBase* property, AnyValue value)
@@ -257,19 +263,17 @@ qi::Future<void> StaticObjectTypeBase::setProperty(void* instance, AnyObject con
     return ec->async(boost::bind(&setPropertyValue, p, value));
   else
   {
-    try
-    {
-      p->setValue(value.asReference());
-    }
-    catch(const std::exception& e)
-    {
-      return qi::makeFutureError<void>(std::string("setProperty: ") + e.what());
-    }
-    return qi::Future<void>(0);
+    const auto asyncSetValue = [&]{
+      return p->setValue(value.asReference()).async();
+    };
+    const auto formatError = [&](const std::string& err) {
+      return str(boost::format("Failed to set object property '%1%', reason: %2%") % id % err);
+    };
+    return ka::invoke_catch(futureErrorFromException<void>(formatError), asyncSetValue);
   }
 }
 
-const std::vector<std::pair<TypeInterface*, int> >& StaticObjectTypeBase::parentTypes()
+const std::vector<std::pair<TypeInterface*, std::ptrdiff_t> >& StaticObjectTypeBase::parentTypes()
 {
   return _data.parentTypes;
 }

@@ -13,23 +13,27 @@
 
 namespace qi {
 
-  typedef std::map<SignalLink, SignalSubscriberPtr> SignalSubscriberMap;
-  typedef std::map<int, SignalLink> TrackMap;
+  using SignalSubscriberMap = std::map<SignalLink, SignalSubscriber>;
+  using TrackMap = std::map<int, SignalLink>;
 
   class SignalBasePrivate
   {
   public:
     SignalBasePrivate()
-      : defaultCallType(MetaCallType_Auto)
+      : execContext(nullptr)
+      , defaultCallType(MetaCallType_Auto)
     {}
 
     ~SignalBasePrivate();
-    bool disconnectAll(bool wait = true);
-    bool disconnect(const SignalLink& l, bool wait = true);
-    bool disconnectTrackLink(const SignalLink& l);
+    Future<bool> disconnect(const SignalLink& l);
+    Future<bool> disconnectAll();
 
-  public:
+  private:
+    friend class SignalBase;
+    Future<bool> disconnectAllStep(bool overallSuccess);
+
     SignalBase::OnSubscribers      onSubscribers;
+    ExecutionContext*              execContext;
     SignalSubscriberMap            subscriberMap;
     TrackMap                       trackMap;
     qi::Atomic<int>                trackId;

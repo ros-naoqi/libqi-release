@@ -9,6 +9,9 @@
 #include <qi/anyobject.hpp>
 #include <qi/session.hpp>
 #include <qi/anymodule.hpp>
+#include <ka/scoped.hpp>
+
+qiLogCategory("qi.test.anymodule");
 
 class Module : public ::testing::Test
 {
@@ -20,7 +23,22 @@ protected:
   }
   void TearDown() override
   {
-    session->close();
+    try
+    {
+      session->close();
+    }
+    catch (const std::exception& ex)
+    {
+      qiLogError() << "Error while closing session: " << ex.what();
+    }
+    catch (const boost::exception& ex)
+    {
+      qiLogError() << "Error while closing session: " << boost::diagnostic_information(ex);
+    }
+    catch (...)
+    {
+      qiLogError() << "Unknown error while closing session";
+    }
     session = nullptr;
   }
 
@@ -31,7 +49,7 @@ TEST_F(Module, Load)
 {
   session->loadService("naoqi.testanymodule.test");
 
-  qi::AnyObject o = session->service("test");
+  qi::AnyObject o = session->service("test").value();
   ASSERT_TRUE(o);
   int res = o.call<int>("testMethod", 12);
   ASSERT_EQ(13, res);
@@ -42,7 +60,7 @@ TEST_F(Module, LoadTypeErased)
   qi::AnyObject osession = session;
   osession.call<void>("loadServiceRename", "naoqi.testanymodule.test", "test");
 
-  qi::AnyObject o = session->service("test");
+  qi::AnyObject o = session->service("test").value();
   ASSERT_TRUE(o);
   int res = o.call<int>("testMethod", 12);
   ASSERT_EQ(13, res);
@@ -63,7 +81,9 @@ TEST_F(Module, LoadByHandWithSession)
 {
   qi::AnyModule foomod = qi::import("naoqi.testanymodulesession");
   qi::AnyObject ao = foomod.call<qi::AnyObject>("Foo", session);
-  session->registerService("Foo", ao);
+  auto scopeUnregister = ka::scoped(session->registerService("Foo", ao).value(),
+                                    [&](unsigned int id) { session->unregisterService(id); });
+
   int res = ao.call<int>("bar");
 
   ASSERT_EQ(42, res);
@@ -74,16 +94,9 @@ TEST_F(Module, LoadWithSessionAndRename)
   //## register the Foo object as a service
   session->loadService("naoqi.testanymodulesession.Foo", "Bar");
 
-  qi::AnyObject o = session->service("Bar");
+  qi::AnyObject o = session->service("Bar").value();
   ASSERT_TRUE(o);
   int res = o.call<int>("bar");
 
   ASSERT_EQ(42, res);
-}
-
-int main(int argc, char **argv) {
-  qi::Application app(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  int res = RUN_ALL_TESTS();
-  return res;
 }

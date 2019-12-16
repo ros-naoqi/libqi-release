@@ -44,16 +44,26 @@ public:
   class QI_API Config
   {
   public:
+  // Regular:
     Config();
     ~Config();
+    KA_GENERATE_FRIEND_REGULAR_OPS_4(Config, _standalone, _opt, _sessionConfig, _name)
 
+  // Config:
     /**
      * Set default value of standAlone
      * if defaultUrl is set this function will throw.
      * If --qi-standalone is set the session will automatically be standalone.
      */
+    QI_API_DEPRECATED_MSG(Use 'setStandAlone' instead)
     Config& setDefaultStandAlone(bool standAlone);
+
+    QI_API_DEPRECATED_MSG(Use 'standAlone' instead)
     bool defaultStandAlone() const;
+
+    Config& setStandalone(bool standalone);
+
+    bool standalone() const;
 
     Config& setOption(ApplicationSession::Option opt);
     ApplicationSession::Option option() const;
@@ -62,73 +72,127 @@ public:
      * Set default url to connect to
      * If --qi-url is set the session will connect on the provided url.
      */
-    Config& setDefaultUrl(const Url& url);
+    QI_API_DEPRECATED_MSG(Use 'setConnectUrl' instead)
+    Config& setDefaultUrl(const Url& connectUrl);
+    QI_API_DEPRECATED_MSG(Use 'connectUrl' instead)
     const Url& defaultUrl() const;
+
+    Config& setConnectUrl(Url connectUrl);
+
+    const boost::optional<Url>& connectUrl() const;
 
     /**
      * Set default url to listen to
      * If --qi-listen-url is set the session will listen on the provided url.
      */
+    QI_API_DEPRECATED_MSG(Use 'setListenUrls' or 'addListenUrl' instead)
     Config& setDefaultListenUrl(const Url& listenUrl);
+    QI_API_DEPRECATED_MSG(Use 'listenUrls' instead)
     const Url& defaultListenUrl() const;
+
+    Config& addListenUrl(Url listenUrl);
+
+    /// @note Any previous listen URLs that were added in this configuration are discarded.
+    Config& setListenUrls(std::vector<Url> listenUrls);
+
+    const std::vector<Url>& listenUrls() const;
+
+    Config& setSessionConfig(SessionConfig sessConfig);
+    const SessionConfig& sessionConfig() const;
 
     Config& setName(const std::string& name);
     const std::string& name() const;
 
   private:
-    qi::uint32_t _stateMachine;
+    bool _standalone;
     Option _opt;
-    Url _url;
-    Url _listenUrl;
+    SessionConfig _sessionConfig;
     std::string _name;
   };
 
-  /** ApplicationSession will check first if there is a --qi-url given in argv,
-   *  if not it will take the url in the constructor instead setting its url.
-   *  If --qi-listen-url is set the session will listen on the provided url.
+  /**
+   * @brief Constructors of the class.
+   *
+   * The session owned by the object can have two different modes: either standard or standalone.
+   *
+   * To make an application session standalone, you need to specify the "--qi-standalone" option on
+   * the command line arguments or set the option in the configuration passed at the application
+   * construction.
+   *
+   * A standard session must connect to a service directory, and therefore needs a URL to connect
+   * to. This URL is chosen from available values (the ones that have been specified) according to
+   * the following order:
+   *   - First the URL that was specified as  "--qi-url <url>" in the command line arguments.
+   *   - Then the URL specified in the "QI_URL" environment variable.
+   *   - Finally the URL passed directly or as a member of the configuration to the constructor.
+   *
+   * A standalone session cannot connect to a service directory but must instead listen on some
+   * URLs. A standard session can also listen, but will only do if the "--qi-listen-url" is given in
+   * the command line arguments or if a service is registered on it. In both cases, the URLs to
+   * listen on are chosen from available values (the ones that have been specified) according to the
+   * following order:
+   *   - First the URLs that were specified as  "--qi-listen-url <urls>" in the command line
+   *    arguments.
+   *   - Then the URLs specified in the "QI_LISTEN_URL" environment variable.
+   *   - Then the URLs in the configuration passed to the constructor.
+   *   - Finally the hardcoded default listen URL.
+   *
+   * Both the "--qi-listen-url" command line argument and the "QI_LISTEN_URL" environment variable
+   * follow the same format "url1;url2;...", allowing the user to specify multiple values.
+   *
    *  @param argc The number of arguments.
    *  @param argv The array containing all the arguments given to the program.
    *  @param opt Either ApplicationSession::Option_None or
    *  ApplicationSession::Option_NoAutoExit. The default behavior of
    *  ApplicationSession is to call stop() once the session gets disconnected.
    *  @see qi::ApplicationSession::Option
-   *  @param url The default url used if no --qi-url was found in the options.
-   *  @param listenUrl The default url used if no --qi-listen-url was found in the options.
+   *  @param defaultUrl The default url used if no --qi-url was found in the command line arguments
+   * and no suitable QI_URL environment variable was defined.
    */
-  ApplicationSession(int& argc, char**& argv, int opt = 0, const Url& url = "tcp://127.0.0.1:9559");
+  ApplicationSession(int& argc,
+                     char**& argv,
+                     int opt = 0,
+                     const Url& defaultUrl = SessionConfig::defaultConnectUrl());
   ApplicationSession(const std::string& name,
                      int& argc,
                      char**& argv,
                      int opt = 0,
-                     const Url& url = "tcp://127.0.0.1:9559");
+                     const Url& defaultUrl = SessionConfig::defaultConnectUrl());
   ApplicationSession(int& argc, char**& argv, const Config& defaultConfig);
   virtual ~ApplicationSession();
 
   /**
    * @return The embedded session used by ApplicationSession.
    */
-  SessionPtr session();
+  SessionPtr session() const;
+
+  const Config& config() const;
 
   /**
-   *  @return The url used by ApplicationSession parsed on the command line by
-   *  --qi-url if specified, otherwise the default url given in the constructor.
+   *  @return The URL used by ApplicationSession to connect to a service directory.
    *  @see qi::ApplicationSession::ApplicationSession for parsing information.
    */
-  Url url();
+  Url url() const;
 
   /**
-   *  @return The url used by ApplicationSession parsed on the command line by
-   *  --qi-listen-url, otherwise the default url given in the constructor.
+   *  @return The first URL used by ApplicationSession to listen on.
    *  @see qi::ApplicationSession::ApplicationSession for parsing information.
    */
-  Url listenUrl();
+  Url listenUrl() const;
+
+  /**
+   *  @return All the URLs used by ApplicationSession to listen on.
+   *  @see qi::ApplicationSession::ApplicationSession for parsing information.
+   */
+  std::vector<Url> allListenUrl() const;
 
   /**
    * Establishes the session's connection and moreover starts listening if
    * --qi-listen-url was given.
    * @deprecated since 2.5, use startSession instead
    */
-  void QI_API_DEPRECATED start();
+  QI_API_DEPRECATED_MSG(Use 'startSession' instead)
+  void start();
 
   /**
    * Establishes the session's connection and moreover starts listening if
@@ -140,11 +204,21 @@ public:
    */
   void run();
 
+  /**
+   * Returns whether the ApplicationSession runs in standalone mode.
+   */
+  bool standAlone();
+
+  /**
+   *  @return A concatenation of the ApplicationSession's --help with the Application's --help texts.
+   */
+  std::string helpText() const;
+
 private:
-  ApplicationSessionPrivate* _p;
+  std::unique_ptr<ApplicationSessionPrivate> _p;
 };
 
-typedef ApplicationSession::Option ApplicationSessionOptions;
+using ApplicationSessionOptions = ApplicationSession::Option;
 }
 
 #endif // QIMESSAGING_APPLICATIONSESSION_HPP_

@@ -6,7 +6,16 @@
 **
 */
 
+#include <vector>
 #include <algorithm>
+#include <iterator>
+#include <future>
+#include <thread>
+#include <chrono>
+#include <thread>
+#include <numeric>
+#include <boost/algorithm/string/predicate.hpp>
+#include <boost/optional.hpp>
 
 #include <gtest/gtest.h>
 
@@ -15,16 +24,16 @@
 #include <qi/session.hpp>
 
 #include "src/messaging/transportsocketcache.hpp"
-#include "src/messaging/tcptransportsocket.hpp"
+#include "src/messaging/tcpmessagesocket.hpp"
 #include "src/messaging/transportserver.hpp"
 
 qiLogCategory("TestTransportSocketCache");
 
 namespace {
 
-void newConnection(qi::TransportSocketPtr socket)
+void newConnection(const std::pair<qi::MessageSocketPtr, qi::Url>& p)
 {
-  socket->startReading();
+  p.first->ensureReading();
 }
 
 class TestTransportSocketCache : public ::testing::Test
@@ -47,26 +56,37 @@ protected:
 
 }
 
+
 TEST_F(TestTransportSocketCache, DisconnectReconnect)
 {
-  qi::Promise<void> prom;
+  using namespace qi;
+  Promise<void> prom;
 
   server_.listen("tcp://0.0.0.0:0").wait();
   server_.listen("tcp://0.0.0.0:0").wait();
 
-  std::vector<qi::Url> endpoints = server_.endpoints();
-  //endpoints.push_back(server_.endpoints()[0]);
-  qi::ServiceInfo servInfo;
+  std::vector<Url> endpoints = server_.endpoints();
+  endpoints.push_back(server_.endpoints()[0]);
+  ServiceInfo servInfo;
   servInfo.setMachineId("tle;l");
   servInfo.setEndpoints(endpoints);
-  qi::Future<qi::TransportSocketPtr> sockfut = cache_.socket(servInfo, endpoints[0].protocol());
-  qi::TransportSocketPtr sock = sockfut.value();
-  ASSERT_TRUE(sock->isConnected());
+  qiLogDebug() << "CONNECTING: begin";
+  qi::Future<qi::MessageSocketPtr> sockfut = cache_.socket(servInfo, endpoints[0].protocol());
+  qi::MessageSocketPtr sock = sockfut.value();
+  qiLogDebug() << "CONNECTING: end";
+  ASSERT_TRUE(sock->isConnected()) << sock.get();
+  qiLogDebug() << "DISCONNECTING: begin";
   sock->disconnect();
-  ASSERT_FALSE(sock->isConnected());
+  qiLogDebug() << "DISCONNECTING: end";
+  ASSERT_FALSE(sock->isConnected()) << sock.get();
+
+  // the disconnected signal can take some time until it's received, so wait a bit
+  std::this_thread::sleep_for(std::chrono::milliseconds{ 100 });
+  qiLogDebug() << "RECONNECTING: begin";
   sockfut = cache_.socket(servInfo, endpoints[0].protocol());
   sock = sockfut.value();
-  ASSERT_TRUE(sock->isConnected());
+  qiLogDebug() << "RECONNECTING: END";
+  ASSERT_TRUE(sock->isConnected()) << sock.get();
 }
 
 TEST_F(TestTransportSocketCache, FirstUrlWillFail)
@@ -79,20 +99,20 @@ TEST_F(TestTransportSocketCache, FirstUrlWillFail)
   qi::ServiceInfo servInfo;
   servInfo.setMachineId(qi::os::getMachineId());
   servInfo.setEndpoints(endpoints);
-  qi::Future<qi::TransportSocketPtr> sockFut = cache_.socket(servInfo, endpoints[0].protocol());
-  qi::TransportSocketPtr sock = sockFut.value();
+  qi::Future<qi::MessageSocketPtr> sockFut = cache_.socket(servInfo, endpoints[0].protocol());
+  qi::MessageSocketPtr sock = sockFut.value();
 
   ASSERT_TRUE(sock->isConnected());
 }
 
 TEST_F(TestTransportSocketCache, DifferentMachineIdLocalConnection)
 {
-  qi::TransportSocketPtr socket = boost::make_shared<qi::TcpTransportSocket>();
+  qi::MessageSocketPtr socket = boost::make_shared<qi::TcpMessageSocket<>>();
   const std::string& fakeMachineId = "there is relatively low chances this \
       could end being the same machineID than the actual one of this \
       machine. Then again, one can't be too sure, and we should probably \
       randomly generate it in order to guarantee this test will be consistent.\
-      Butwe can probably take this chance.";
+      But we can probably take this chance.";
 
   ASSERT_NE(fakeMachineId, qi::os::getMachineId());
 
@@ -110,7 +130,7 @@ TEST_F(TestTransportSocketCache, DifferentMachineIdLocalConnection)
   serviceInfo.setMachineId(fakeMachineId);
   serviceInfo.setEndpoints(server_.endpoints());
 
-  qi::Future<qi::TransportSocketPtr> tentativeSocketFuture = cache_.socket(serviceInfo, "");
+  qi::Future<qi::MessageSocketPtr> tentativeSocketFuture = cache_.socket(serviceInfo, "");
 
   ASSERT_FALSE(tentativeSocketFuture.hasError());
   ASSERT_EQ(tentativeSocketFuture.value(), socket);
@@ -126,7 +146,7 @@ static bool publicIp(const qi::Url& url)
 
 TEST_F(TestTransportSocketCache, SameMachinePublicIp)
 {
-  qi::TransportSocketPtr client = boost::make_shared<qi::TcpTransportSocket>();
+  qi::MessageSocketPtr client = boost::make_shared<qi::TcpMessageSocket<>>();
 
   server_.listen("tcp://0.0.0.0:0").wait();
   qi::UrlVector endpoints = server_.endpoints();
@@ -143,7 +163,7 @@ TEST_F(TestTransportSocketCache, SameMachinePublicIp)
   qi::ServiceInfo info;
   info.setMachineId(qi::os::getMachineId());
   info.setEndpoints(v);
-  qi::Future<qi::TransportSocketPtr> tentativeSocketFuture = cache_.socket(info, "");
+  qi::Future<qi::MessageSocketPtr> tentativeSocketFuture = cache_.socket(info, "");
 
   tentativeSocketFuture.wait();
   ASSERT_FALSE(tentativeSocketFuture.hasError());
@@ -167,7 +187,8 @@ TEST(TestCall, IPV6Accepted)
   ASSERT_FALSE(fut.hasError());
 
 
-  qi::TransportSocketPtr socket = qi::makeTransportSocket("tcp");
+  auto socket = qi::makeMessageSocket("tcp");
+  const auto _ = ka::scoped([=]{ socket->disconnect(); });
   fut = socket->connect(ipv6Url);
 
   ASSERT_FALSE(fut.hasError());
@@ -186,7 +207,8 @@ TEST(TestCall, IPV6Rejected)
   qi::Url ipv6Url("tcp://[::1]:4444");
   ASSERT_TRUE(ipv6Url.isValid());
 
-  qi::TransportSocketPtr socket = qi::makeTransportSocket("tcp");
+  auto socket = qi::makeMessageSocket("tcp");
+  const auto _ = ka::scoped([=]{ socket->disconnect(); });
   qi::Future<void> fut = socket->connect(ipv6Url);
 
   ASSERT_TRUE(fut.hasError());
@@ -197,13 +219,4 @@ TEST(TestCall, IPV6Rejected)
   ASSERT_TRUE(fut.hasError());
 
   qi::os::setenv("QIMESSAGING_ENABLE_IPV6", initialEnvValue.c_str());
-}
-
-
-
-int main(int ac, char **av)
-{
-  qi::Application app(ac, av);
-  ::testing::InitGoogleTest(&ac, av);
-  return RUN_ALL_TESTS();
 }

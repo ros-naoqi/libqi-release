@@ -3,6 +3,7 @@
 **  See COPYING for the license
 */
 
+#include <qi/assert.hpp>
 #include <qi/buffer.hpp>
 #include <qi/log.hpp>
 
@@ -12,7 +13,7 @@
 #include <iomanip>
 #include <ctype.h>
 
-#include <boost/pool/singleton_pool.hpp>
+#include <boost/make_shared.hpp>
 
 #include "buffer_p.hpp"
 
@@ -21,13 +22,7 @@ qiLogCategory("qi.Buffer");
 
 namespace qi
 {
-  BufferPrivate::BufferPrivate() // cppcheck-suppress uninitMemberVar
-    : _bigdata(0)
-    , _cachedSubBufferTotalSize(0)
-    , used(0)
-    , available(sizeof(_data))
-  {
-  }
+  BufferPrivate::BufferPrivate() = default;
 
   BufferPrivate::~BufferPrivate()
   {
@@ -38,21 +33,49 @@ namespace qi
     }
   }
 
-  struct MyPoolTag { };
-  typedef boost::singleton_pool<MyPoolTag, sizeof(BufferPrivate)> buffer_pool;
-
-  void* BufferPrivate::operator new(size_t sz)
+  BufferPrivate::BufferPrivate(const BufferPrivate& b)
+    : _bigdata(nullptr)
+    , _cachedSubBufferTotalSize(b._cachedSubBufferTotalSize)
+    , used(b.used)
+    , available(b.available)
+    , _subBuffers(b._subBuffers)
   {
-    assert(sz <= sizeof(BufferPrivate));
-    return buffer_pool::malloc();
+    if (b._bigdata)
+    {
+      _bigdata = static_cast<unsigned char*>(malloc(b.used));
+      ::memcpy(_bigdata, b._bigdata, b.used);
+    }
+    else
+    {
+      ::memcpy(_data, b._data, b.used);
+    }
   }
 
-  void BufferPrivate::operator delete(void* ptr)
+  BufferPrivate& BufferPrivate::operator=(const BufferPrivate& b)
   {
-    buffer_pool::free(ptr);
+    if (&b == this) return *this;
+    _cachedSubBufferTotalSize = b._cachedSubBufferTotalSize;
+    used = b.used;
+    available = b.available;
+    _subBuffers = b._subBuffers;
+    if (_bigdata)
+    {
+      free(_bigdata);
+      _bigdata = NULL;
+    }
+    if (b._bigdata)
+    {
+      _bigdata = static_cast<unsigned char*>(malloc(b.used));
+      ::memcpy(_bigdata, b._bigdata, b.used);
+    }
+    else
+    {
+      ::memcpy(_data, b._data, b.used);
+    }
+    return *this;
   }
 
-  int BufferPrivate::indexOfSubBuffer(size_t offset) const
+  boost::optional<size_t> BufferPrivate::indexOfSubBuffer(size_t offset) const
   {
     for(unsigned i = 0; i < _subBuffers.size(); ++i) {
       if (_subBuffers[i].first == offset) {
@@ -60,31 +83,32 @@ namespace qi
       }
     }
 
-    return -1;
+    return {};
   }
 
-  Buffer::Buffer()
-    : _p(boost::shared_ptr<BufferPrivate>(new BufferPrivate()))
+  bool operator==(const BufferPrivate& a, const BufferPrivate& b)
   {
-  }
-
-  Buffer::Buffer(const Buffer& b)
-  {
-    (*this) = b;
-  }
-
-  Buffer& Buffer::operator=(const Buffer& b)
-  {
-    _p = b._p;
-    return *this;
+    if (a.used != b.used) return false;
+    // The "available" member is ignored as it does not affect the behavior of the object.
+    // Idem for _cachedSubBufferTotalSize which is a cached data.
+    const auto aData = a.data();
+    const auto bData = b.data();
+    const bool aIsNull = (aData == nullptr);
+    const bool bIsNull = (bData == nullptr);
+    if (aIsNull != bIsNull) return false;
+    if (aIsNull) return true; // Both are null.
+    // Neither a nor b are null. We also know that a.used == b.used.
+    return std::equal(aData, aData + a.used, bData) && a._subBuffers == b._subBuffers;
   }
 
   unsigned char* BufferPrivate::data()
   {
-    if (_bigdata)
-      return (_bigdata);
+    return _bigdata ? _bigdata : _data;
+  }
 
-    return (_data);
+  const unsigned char* BufferPrivate::data() const
+  {
+    return const_cast<BufferPrivate*>(this)->data();
   }
 
   bool BufferPrivate::resize(size_t neededSize)
@@ -102,6 +126,36 @@ namespace qi
     available = neededSize;
     _bigdata = newBigdata; // Don't worry, realloc free previous buffer if needed
     return true;
+  }
+
+  Buffer::Buffer()
+    : _p(boost::make_shared<BufferPrivate>())
+  {
+  }
+
+  Buffer::Buffer(const Buffer& b)
+    : _p(boost::make_shared<BufferPrivate>(*b._p))
+  {
+  }
+
+  Buffer& Buffer::operator=(const Buffer& b)
+  {
+    _p = boost::make_shared<BufferPrivate>(*b._p);
+    return *this;
+  }
+
+  Buffer::Buffer(Buffer&& b)
+    : _p(std::move(b._p))
+  {
+    // The default state of a qi::Buffer contains a valid BufferPrivate pointer.
+    b._p = boost::make_shared<BufferPrivate>();
+  }
+
+  Buffer& Buffer::operator=(Buffer&& b)
+  {
+    _p = std::move(b._p);
+    b._p = boost::make_shared<BufferPrivate>();
+    return *this;
   }
 
   bool Buffer::write(const void *data, size_t size)
@@ -126,7 +180,7 @@ namespace qi
     size_t subBufferSize = buffer.size();
     size_t actualUsed = _p->used;
 
-    write((uint32_t*)&subBufferSize, sizeof(uint32_t));
+    write((size_type*)&subBufferSize, sizeof(size_type));
 
     _p->_subBuffers.push_back(std::make_pair(actualUsed, buffer));
     _p->_cachedSubBufferTotalSize += buffer.totalSize();
@@ -135,17 +189,19 @@ namespace qi
 
   bool Buffer::hasSubBuffer(size_t offset) const
   {
-    return (_p->indexOfSubBuffer(offset) != -1);
+    return _p->indexOfSubBuffer(offset) ? true : false;
   }
 
   const Buffer& Buffer::subBuffer(size_t offset) const
   {
-    int index = _p->indexOfSubBuffer(offset);
-
-    if (index == -1)
+    if (const auto index = _p->indexOfSubBuffer(offset))
+    {
+      return _p->_subBuffers[*index].second;
+    }
+    else
+    {
       throw std::runtime_error("No sub-buffer at the specified offset.");
-
-    return _p->_subBuffers[index].second;
+    }
   }
 
   size_t Buffer::size() const
@@ -220,6 +276,13 @@ namespace qi
     return copy;
   }
 
+  bool Buffer::operator==(const Buffer& b) const
+  {
+    const bool aHasBuffer = (_p.get() != nullptr);
+    const bool bHasBuffer = (b._p.get() != nullptr);
+    return (aHasBuffer == bHasBuffer) && (!aHasBuffer || *_p == *b._p);
+  }
+
   namespace detail {
     void printBuffer(std::ostream& stream, const Buffer& buffer)
     {
@@ -234,7 +297,7 @@ namespace qi
 
       while (i < buffer.size()) {
         if (i % 16 == 0) stream << std::hex << std::setfill('0') << std::setw(8) << i << ": ";
-        stream << std::setw(2) << (const unsigned int) data[i];
+        stream << std::setw(2) << static_cast<unsigned int>(data[i]);
         i++;
         if (i % 2 == 0) stream << ' ';
         if (i % 16 == 0)
@@ -257,7 +320,7 @@ namespace qi
 
       for (unsigned int j = i - 16; j < buffer.size(); j++) {
         char c = data[j];
-        stream << (isgraph(c) ? c : '.');
+        stream << (c >= 0 && isgraph(c) ? c : '.'); // isgraph() required a value which can be represented by an unsigned char
       }
 
       stream.flags(flags);

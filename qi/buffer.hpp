@@ -76,6 +76,8 @@ namespace qi
   class QI_API Buffer
   {
   public:
+    using size_type = qi::uint32_t;
+
     /// \brief Default constructor.
     Buffer();
 
@@ -94,6 +96,20 @@ namespace qi
      * \param buffer The buffer to copy.
      */
     Buffer& operator = (const Buffer& buffer);
+
+    /**
+     * \brief Move constructor.
+     * The moved-from buffer's state is like a default constructed Buffer.
+     * \param buffer The buffer to move from.
+     */
+    Buffer(Buffer&& buffer);
+
+    /**
+     * \brief Move assignment operator.
+     * The moved-from buffer's state is like a default constructed Buffer.
+     * \param buffer The buffer to move from.
+     */
+    Buffer& operator = (Buffer&& buffer);
 
     /**
      * \brief Write data in the buffer.
@@ -194,6 +210,7 @@ namespace qi
      */
     size_t read(void* buffer, size_t offset = 0, size_t length = 0) const;
 
+    bool operator==(const Buffer& b) const;
   private:
     friend class BufferReader;
     // CS4251
@@ -267,9 +284,9 @@ namespace qi
     size_t position() const;
 
   private:
-    Buffer _buffer;
-    size_t _cursor;
-    size_t _subCursor; // position in sub-buffers
+    const Buffer* _buffer;
+    size_t  _cursor;
+    size_t  _subCursor; // position in sub-buffers
   };
 
   namespace detail {

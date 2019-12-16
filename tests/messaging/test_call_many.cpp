@@ -3,14 +3,15 @@
 */
 
 #include <map>
-#include <gtest/gtest.h>
 #include <qi/application.hpp>
 #include <qi/anyobject.hpp>
 #include <qi/type/dynamicobjectbuilder.hpp>
 #include <qi/session.hpp>
 #include <testsession/testsessionpair.hpp>
+#include <qi/testutils/testutils.hpp>
+#include <gtest/gtest.h>
 
-qi::AnyObject          oclient1, oclient2;
+qi::AnyObject oclient1, oclient2;
 static qi::Promise<bool> payload;
 
 void onFire1(const int& pl)
@@ -32,8 +33,9 @@ void onFire2(const int& pl)
 TEST(Test, Recurse)
 {
   payload = qi::Promise<bool>();
+
   TestSessionPair       p1;
-  TestSessionPair       p2(p1);
+  TestSessionPair       p2(TestSessionPair::ShareServiceDirectory, p1);
   qi::DynamicObjectBuilder     ob1, ob2;
   ob1.advertiseMethod("onFire1", &onFire1);
   ob2.advertiseMethod("onFire2", &onFire2);
@@ -41,17 +43,17 @@ TEST(Test, Recurse)
   unsigned int           nbServices = TestMode::getTestMode() == TestMode::Mode_Nightmare ? 2 : 1;
 
   // Two objects with a fire event and a onFire method.
-  ASSERT_NO_THROW(p1.server()->registerService("coin1", oserver1).hasValue(4000));
-  ASSERT_NO_THROW(p2.server()->registerService("coin2", oserver2).hasValue(4000));
+
+  ASSERT_TRUE(test::finishesWithValue(p1.server()->registerService("coin1", oserver1)));
+  ASSERT_TRUE(test::finishesWithValue(p2.server()->registerService("coin2", oserver2)));
   EXPECT_EQ(nbServices, p1.server()->services(qi::Session::ServiceLocality_Local).value().size());
   EXPECT_EQ(nbServices, p2.server()->services(qi::Session::ServiceLocality_Local).value().size());
-  oclient1 = p2.client()->service("coin1");
-  oclient2 = p1.client()->service("coin2");
-#ifdef WIN32
+
+  ASSERT_TRUE(test::finishesWithValue(p2.client()->waitForService("coin1")));
+  ASSERT_TRUE(test::finishesWithValue(p1.client()->waitForService("coin2")));
+  oclient1 = p2.client()->service("coin1").value();
+  oclient2 = p1.client()->service("coin2").value();
   int niter = 1000;
-#else
-  int niter = 1000;
-#endif
   if (TestMode::getTestMode() == TestMode::Mode_SSL)
   {
     niter /= 100;
@@ -62,15 +64,7 @@ TEST(Test, Recurse)
     niter = 50;
   }
   oclient1.call<void>("onFire1", niter);
-  ASSERT_NO_THROW(payload.future().hasValue(20000));
+  ASSERT_TRUE(test::finishesWithValue(payload.future()));
   oclient1.reset();
   oclient2.reset();
-}
-
-
-int main(int argc, char **argv) {
-  qi::Application app(argc, argv);
-  TestMode::initTestMode(argc, argv);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }
