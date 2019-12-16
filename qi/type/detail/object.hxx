@@ -254,12 +254,12 @@ public:
   template<typename U> Object<T>& operator=(const Object<U>& o);
   // Templates above do not replace default ctor or copy operator
   Object(const Object& o);
-  // Disable the ctor taking future if T is Empty, as it would conflict with
   Object<T>& operator=(const Object& o);
+  // Disable the ctor taking future if T is Empty, as it would conflict with
   // We use None to disable it. The method must be instantiable because when we
   // export the class under windows, all functions are instanciated
   // Future cast operator
-  using MaybeAnyObject = typename boost::mpl::if_<typename std::is_same<T, Empty>::type, None, Object<Empty>>::type;
+  using MaybeAnyObject = typename boost::mpl::if_<typename boost::is_same<T, Empty>::type, None, Object<Empty>>::type;
   Object(const qi::Future<MaybeAnyObject>& fobj);
   Object(const qi::FutureSync<MaybeAnyObject>& fobj);
 
@@ -557,7 +557,7 @@ template<typename T> inline boost::shared_ptr<T> Object<T>::asSharedPtr()
 template<typename T> inline void Object<T>::init(detail::ManagedObjectPtr obj)
 {
   _obj = obj;
-  if (!std::is_same<T, Empty>::value && obj)
+  if (!boost::is_same<T, Empty>::value && obj)
     checkT();
   _obj = obj;
 }
@@ -603,7 +603,7 @@ template<typename T> Object<T>::operator Object<Empty>() const { return Object<E
 /// Check tha value actually has the T interface
 template<typename T> void Object<T>::checkT()
 {
-  if (std::is_same<T, Empty>::value || !_obj)
+  if (boost::is_same<T, Empty>::value || !_obj)
     return;
 
   const auto isMatchingType = [&] {
