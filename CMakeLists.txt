@@ -69,11 +69,9 @@ set(QI_H qi/detail/async.hxx
          qi/detail/futurebarrier.hpp
          qi/detail/futureunwrap.hpp
          qi/detail/executioncontext.hpp
-
-         qi/detail/mpl.hpp
-         qi/detail/print.hpp
          qi/detail/log.hxx
          qi/detail/mpl.hpp
+         qi/detail/print.hpp
          qi/detail/trackable.hxx
          qi/detail/warn_push_ignore_deprecated.hpp
          qi/detail/warn_pop_ignore_deprecated.hpp
@@ -132,8 +130,8 @@ set(QI_C src/dlfcn.cpp
          src/locale-light.cpp
          src/os.cpp
          src/path_conf.cpp
-         src/print.cpp
          src/periodictask.cpp
+         src/print.cpp
          src/utils.hpp
          src/utils.cpp
          src/eventloop.cpp
@@ -216,7 +214,6 @@ set(QITYPE_H       qi/anyfunction.hpp
                    qi/type/typedispatcher.hpp)
 
 
-
 set(QITYPE_C src/type/binarycodec.cpp
              src/type/binarycodec_p.hpp
              src/type/dynamicobject.cpp
@@ -269,7 +266,7 @@ set(QIM_H qi/api.hpp
           qi/url.hpp
 )
 
-set(QIM_C 
+set(QIM_C
   src/messaging/applicationsession_internal.hpp
   src/messaging/applicationsession_internal.cpp
   src/messaging/applicationsession.cpp
@@ -319,7 +316,7 @@ set(QIM_C
   src/messaging/url.cpp
   src/registration.cpp
 )
-        
+
 set(QI_SOCKET_H
   src/messaging/sock/accept.hpp
   src/messaging/sock/common.hpp
