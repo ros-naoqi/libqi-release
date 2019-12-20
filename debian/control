@@ -1,0 +1,12 @@
+Source: ros-melodic-naoqi-libqi
+Section: misc
+Priority: optional
+Maintainer: Maxime Busy <mbusy@softbankrobotics.com>
+Build-Depends: debhelper (>= 9.0.0), libboost-all-dev, libssl-dev, ros-melodic-catkin
+Homepage: http://doc.aldebaran.com/libqi
+Standards-Version: 3.9.2
+
+Package: ros-melodic-naoqi-libqi
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libssl-dev
+Description: Aldebaran's libqi: a core library for NAOqiOS development
