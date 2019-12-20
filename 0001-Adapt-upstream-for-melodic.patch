@@ -1,7 +1,7 @@
-From 1a89b602916149c0f3529fc3cd6abf112b36aecf Mon Sep 17 00:00:00 2001
+From f6fbc2317528918ee76546c1e661a9589bebab17 Mon Sep 17 00:00:00 2001
 From: Pandhariix <mbusy.pro@gmail.com>
 Date: Mon, 16 Dec 2019 14:48:33 +0100
-Subject: [PATCH 1/4] Adapt upstream for melodic
+Subject: [PATCH 1/5] Adapt upstream for melodic
 
 ---
  CMakeLists.txt                       | 210 ++++++++++++++++-------------------

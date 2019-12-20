@@ -1,7 +1,7 @@
-From 547fb27066ae31c4ae001b01626e8554839d940a Mon Sep 17 00:00:00 2001
+From 0f47a4119dd59973fc52dd782df6eb5dbca7d722 Mon Sep 17 00:00:00 2001
 From: Pandhariix <mbusy.pro@gmail.com>
 Date: Mon, 16 Dec 2019 14:54:43 +0100
-Subject: [PATCH 2/4] Add extra cmake rules for libqi
+Subject: [PATCH 2/5] Add extra cmake rules for libqi
 
 ---
  cmake/libqi-extras.cmake.em | 6 ++++++
