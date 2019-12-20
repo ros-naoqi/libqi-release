@@ -1,3 +1,26 @@
+## naoqi_libqi (melodic) - 2.9.0-8
+
+The packages in the `naoqi_libqi` repository were released into the `melodic` distro by running `/usr/bin/bloom-release --track melodic --rosdistro melodic naoqi_libqi` on `Fri, 20 Dec 2019 13:20:49 -0000`
+
+The `naoqi_libqi` package was released.
+
+Version of package(s) in repository `naoqi_libqi`:
+
+- upstream repository: https://github.com/aldebaran/libqi.git
+- release repository: https://github.com/ros-naoqi/libqi-release.git
+- rosdistro version: `2.9.0-7`
+- old version: `2.9.0-7`
+- new version: `2.9.0-8`
+
+Versions of tools used:
+
+- bloom version: `0.9.0`
+- catkin_pkg version: `0.4.15`
+- rosdep version: `0.16.1`
+- rosdistro version: `0.8.0`
+- vcstools version: `0.1.42`
+
+
 ## naoqi_libqi (melodic) - 2.9.0-7
 
 The packages in the `naoqi_libqi` repository were released into the `melodic` distro by running `/usr/bin/bloom-release naoqi_libqi --track melodic --rosdistro melodic` on `Wed, 18 Dec 2019 12:27:43 -0000`
