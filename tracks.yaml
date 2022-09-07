@@ -157,13 +157,13 @@ tracks:
         :{release_inc}
       devel_branch: null
       last_release: release-2.9
-      last_version: 2.9.0
+      last_version: 2.9.7
       name: upstream
-      patches: noetic
+      patches: null
       release_inc: '-1'
       release_repo_url: null
       release_tag: :{ask}
       ros_distro: noetic
       vcs_type: git
-      vcs_uri: https://github.com/aldebaran/libqi.git
+      vcs_uri: https://github.com/ros-naoqi/libqi.git
       version: :{ask}
