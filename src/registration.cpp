@@ -7,6 +7,8 @@
 #include <qi/anyobject.hpp>
 #include <qi/session.hpp>
 #include <qi/path.hpp>
+#include <ka/empty.hpp>
+#include <ka/src.hpp>
 
 #include "type/metaobject_p.hpp"
 #include "type/metamethod_p.hpp"
@@ -182,11 +184,54 @@ QI_TYPE_STRUCT_AGREGATE_CONSTRUCTOR_REGISTER(::qi::MetaObject,
   QI_STRUCT_HELPER("properties", propertyMap),
   QI_STRUCT_HELPER("description", description));
 
+namespace qi{
+namespace {
+
+  class ObjectUidTypeInterface : public RawTypeInterface
+  {
+  public:
+
+    std::pair<char*, size_t> get(void* storage) override
+    {
+      auto& uid = *static_cast<ObjectUid*>(Methods::ptrFromStorage(&storage));
+      return { reinterpret_cast<char*>(begin(uid)), size(uid) };
+    }
+
+    void set(void** storage, const char* ptr, size_t sz) override
+    {
+      auto& uid = *static_cast<ObjectUid*>(ptrFromStorage(storage));
+      std::copy(ptr, ptr + sz, begin(uid));
+    }
+    using Methods = DefaultTypeImplMethods<ObjectUid, TypeByPointerPOD<ObjectUid> >;
+    _QI_BOUNCE_TYPE_METHODS(Methods);
+  };
+
+}}
+
+QI_TYPE_REGISTER_CUSTOM(qi::ObjectUid, qi::ObjectUidTypeInterface);
+
 static qi::ServiceInfoPrivate* serviceInfoPrivate(qi::ServiceInfo* svcinfo) {
     return svcinfo->_p;
 }
 QI_EQUIVALENT_STRING_REGISTER(qi::Url, &qi::Url::str);
-QI_TYPE_STRUCT(qi::ServiceInfoPrivate, name, serviceId, machineId, processId, endpoints, sessionId);
+
+namespace
+{
+  qi::Uri uriOrThrow(const std::string& str)
+  {
+    auto res = qi::uri(str);
+    if (ka::empty(res))
+      throw std::runtime_error("URI parsing error: '" + str + "' is not a valid URI.");
+    return ka::src(std::move(res));
+  }
+}
+
+QI_EQUIVALENT_STRING_REGISTER2(
+  qi::Uri,
+  static_cast<std::string (*)(const qi::Uri&)>(&qi::to_string),
+  &::uriOrThrow);
+QI_TYPE_STRUCT_EXTENSION_ADDED_FIELDS(qi::ServiceInfoPrivate, "objectUid");
+QI_TYPE_STRUCT(qi::ServiceInfoPrivate, name, serviceId, machineId, processId, endpoints, sessionId, objectUid);
 QI_TYPE_REGISTER(::qi::ServiceInfoPrivate);
 
 QI_TYPE_STRUCT_BOUNCE_REGISTER(::qi::ServiceInfo, ::qi::ServiceInfoPrivate, serviceInfoPrivate);

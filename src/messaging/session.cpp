@@ -4,10 +4,9 @@
 */
 
 // Disable "'this': used in base member initializer list"
-#ifdef _MSC_VER
-# pragma warning( push )
-# pragma warning(disable: 4355)
-#endif
+#include <ka/macro.hpp>
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4355, )
 
 #include <sstream>
 #include <qi/session.hpp>
@@ -131,7 +130,10 @@ namespace qi {
        return;
      }
      qiLogVerbose() << "Inserting sd to cache for " << mid <<" " << url.str();
-     _socketsCache.insert(mid, sdSocket->remoteEndpoint().value(), sdSocket);
+     _socketsCache.insert(mid, *toUri(sdSocket->remoteEndpoint().value()), sdSocket);
+     // Also add a relative endpoint to the ServiceDirectory with the same socket, so that for
+     // services that expose this relative endpoint, the client may reuse its socket.
+     _socketsCache.insert(mid, *uri("qi:ServiceDirectory"), sdSocket);
      p.setValue(0);
   }
 
@@ -151,10 +153,10 @@ namespace qi {
     qi::Future<void> f = _sdClient.connect(serviceDirectoryURL);
     qi::Promise<void> p;
 
-    f.then([=](Future<void> f) {
+    f.then(track([=](Future<void> f) {
       _sdClientClosedByThis = false;
       addSdSocketToCache(f, serviceDirectoryURL, p);
-    });
+    }, this));
     return p.future();
   }
 
@@ -387,7 +389,7 @@ namespace qi {
     qi::Promise<void> p;
     //will listen and connect
     qi::Future<void> f = _sd.listenStandalone(addresses);
-    f.then(std::bind(&SessionPrivate::listenStandaloneCont, this, p, std::placeholders::_1));
+    f.then(track(std::bind(&SessionPrivate::listenStandaloneCont, this, p, std::placeholders::_1), this));
     return p.future();
   }
 
@@ -406,7 +408,7 @@ namespace qi {
 
   bool Session::setIdentity(const std::string& key, const std::string& crt)
   {
-    return _p->_serverObject.setIdentity(key, crt);
+    return _p->_serverObject.setIdentity(key, crt).value();
   }
 
   qi::FutureSync<unsigned int> Session::registerService(const std::string &name, qi::AnyObject obj)
@@ -438,7 +440,7 @@ namespace qi {
 
   std::vector<qi::Url> Session::endpoints() const
   {
-    return _p->_serverObject.endpoints();
+    return _p->_serverObject.endpoints().value();
   }
 
   qi::FutureSync<unsigned int> Session::loadService(const std::string &moduleName, const std::string& renameModule, const AnyReferenceVector& args)
@@ -454,27 +456,27 @@ namespace qi {
     return registerService(rename, retval.to<qi::AnyObject>());
   }
 
-  qi::Future<AnyValue> Session::_callModule(const std::string &moduleName,
+  qi::Future<AnyValue> Session::_callModule(const std::string &moduleFunction,
       const AnyReferenceVector& args,
       qi::MetaCallType metacallType)
   {
-    size_t separatorPos = moduleName.find_last_of(".");
-    std::string package = moduleName.substr(0, separatorPos);
-    std::string function = moduleName.substr(separatorPos + 1);
+    size_t separatorPos = moduleFunction.find_last_of(".");
+    std::string moduleName = moduleFunction.substr(0, separatorPos);
+    std::string functionName = moduleFunction.substr(separatorPos + 1);
 
-    qi::AnyModule p = qi::import(package);
+    qi::AnyModule module = qi::import(moduleName);
 
     AnyReferenceVector fullargs;
     SessionPtr thisptr = shared_from_this();
     fullargs.push_back(AnyReference::from(thisptr));
     fullargs.insert(fullargs.end(), args.begin(), args.end());
 
-    int id = p.metaObject().findMethod(function, fullargs);
+    int id = module.metaObject().findMethod(functionName, fullargs);
     qi::Future<AnyReference> ret;
     if (id > 0)
-      ret = p.metaCall(function, fullargs, metacallType);
+      ret = module.metaCall(functionName, fullargs, metacallType);
     else
-      ret = p.metaCall(function, args, metacallType);
+      ret = module.metaCall(functionName, args, metacallType);
 
     qi::Promise<AnyValue> promise;
     promise.setOnCancel([ret](qi::Promise<AnyValue>&) mutable { ret.cancel(); });
@@ -565,6 +567,4 @@ namespace qi {
 
 }
 
-#ifdef _MSC_VER
-# pragma warning( pop )
-#endif
+KA_WARNING_POP()

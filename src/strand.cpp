@@ -36,10 +36,28 @@ namespace
   template<class Proc>
   Strand::OptionalErrorMessage safeInvoke(Proc&& proc) noexcept
   {
-    return ka::invoke_catch(ka::exception_message{}, [&] {
+    return ka::invoke_catch(ka::exception_message_t{}, [&] {
       std::forward<Proc>(proc)();
       return Strand::OptionalErrorMessage{};
     });
+  }
+
+  // Tries to set a promise in error, absorbing the exception if the promise
+  // was already set.
+  void trySetError(Promise<void> prom, const std::string& error)
+  {
+    if (!prom.future().isFinished())
+    {
+      try
+      {
+        prom.setError(error);
+      }
+      catch (const FutureException& ex)
+      {
+        if (ex.state() != FutureException::ExceptionState_PromiseAlreadySet)
+          throw;
+      }
+    }
   }
 
   static const auto dyingStrandMessage = "The strand is dying.";
@@ -140,7 +158,7 @@ StrandPrivate::StrandPrivate(qi::ExecutionContext& executor)
 
 
 StrandPrivate::~StrandPrivate() {
-  const auto error = ka::invoke_catch(ka::exception_message{}, [this]{
+  const auto error = ka::invoke_catch(ka::exception_message_t{}, [this]{
     join();
     return Strand::OptionalErrorMessage{};
   });
@@ -232,8 +250,18 @@ Future<void> StrandPrivate::asyncDelayImpl(boost::function<void()> cb, qi::Durat
 
 Future<void> StrandPrivate::deferImpl(boost::function<void()> cb, qi::Duration delay, ExecutionOptions options)
 {
+  boost::recursive_mutex::scoped_lock lock(_mutex);
+  if (_dying)
+  {
+    qiLogDebug() << this << " strand is dying, stopping defer call";
+    return makeFutureError<void>(dyingStrandMessage);
+  }
+
   boost::shared_ptr<Callback> cbStruct = createCallback(std::move(cb), options);
-  cbStruct->promise = qi::Promise<void>(boost::bind(&StrandPrivate::cancel, this, cbStruct));
+
+  cbStruct->promise = qi::Promise<void>(
+    ka::scope_lock_proc(boost::bind(&StrandPrivate::cancel, this, cbStruct),
+                        ka::mutable_store(weak_from_this())));
 
   qiLogDebug() << "Deferring job id " << cbStruct->id << " in " << qi::to_string(delay);
   if (delay.count())
@@ -255,6 +283,13 @@ void StrandPrivate::enqueue(boost::shared_ptr<Callback> cbStruct, ExecutionOptio
     boost::recursive_mutex::scoped_lock lock(_mutex);
     qiLogDebug() << "Enqueueing job id " << cbStruct->id;
 
+    if (_dying)
+    {
+      trySetError(cbStruct->promise, dyingStrandMessage);
+      qiLogDebug() << "Strand is dying on job id " << cbStruct->id;
+      return false;
+    }
+
     auto scheduleCallback = [&] {
       _queue.push_back(cbStruct);
       cbStruct->state = State::Scheduled;
@@ -263,13 +298,6 @@ void StrandPrivate::enqueue(boost::shared_ptr<Callback> cbStruct, ExecutionOptio
     // the callback may have been canceled
     if (cbStruct->state == State::None)
     {
-      if (_dying)
-      {
-        cbStruct->promise.setError(dyingStrandMessage);
-        qiLogDebug() << "Strand is dying on job id " << cbStruct->id;
-        return false;
-      }
-
       qiLogDebug() << "Strand callback state is None on job id " << cbStruct->id;
       scheduleCallback();
     }
@@ -398,6 +426,13 @@ void StrandPrivate::cancel(boost::shared_ptr<Callback> cbStruct)
 {
   boost::recursive_mutex::scoped_lock lock(_mutex);
 
+  if (_dying)
+  {
+    qiLogDebug() << this << " strand is dying, stopping task cancellation";
+    trySetError(cbStruct->promise, dyingStrandMessage);
+    return;
+  }
+
   switch (cbStruct->state)
   {
     case State::None:
@@ -486,7 +521,7 @@ void Strand::join() QI_NOEXCEPT(true)
 Strand::OptionalErrorMessage Strand::join(std::nothrow_t) QI_NOEXCEPT(true)
 {
   // Catch any exception and return its message.
-  return ka::invoke_catch(ka::exception_message{}, [this]() {join(); return OptionalErrorMessage{};});
+  return ka::invoke_catch(ka::exception_message_t{}, [this]() {join(); return OptionalErrorMessage{};});
 }
 
 Future<void> Strand::async(const boost::function<void()>& cb,
@@ -536,7 +571,7 @@ void Strand::postImpl(boost::function<void()> callback, ExecutionOptions options
     prv->enqueue(prv->createCallback([=] {
       auto errorLogger = ka::compose([](const std::string& msg) {
         qiLogWarning() << "Uncaught error in task posted in a strand: " << msg;
-      }, ka::exception_message{});
+      }, ka::exception_message_t{});
 
       ka::invoke_catch(std::move(errorLogger), callback);
     }, options), options);

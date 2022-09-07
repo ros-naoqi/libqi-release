@@ -37,13 +37,15 @@ TEST(NetConnectSocket, ResolveCalledAfterParentHasBeenDestroyed)
       }};
     }
   );
-  ConnectSocket<N, S>* p = nullptr;
+  using C = ConnectSocket<N, S>;
+  typename std::aligned_storage<sizeof(C), alignof(C)>::type storage;
+  auto& connect = reinterpret_cast<C&>(storage);
   Promise<ErrorCode<N>> promiseError;
   IoService<N>& io = N::defaultIoService();
   {
     using Side = HandshakeSide<S>;
-    ConnectSocket<N, S> connect{io};
-    SslContext<N> context { Method<SslContext<N>>::sslv23 };
+    auto _ = ka::scoped(new (&connect) C{io}, [](C* p){ p->~C(); });
+    SslContext<N> context { Method<SslContext<N>>::tlsv12 };
     connect(Url{"tcp://10.11.12.13:1234"}, SslEnabled{false},
       [&] { return makeSslSocketPtr<N>(io, context); },
       IpV6Enabled{false}, Side::client,
@@ -51,10 +53,9 @@ TEST(NetConnectSocket, ResolveCalledAfterParentHasBeenDestroyed)
         promiseError.setValue(e);
       }
     );
-    p = &connect;
   }
   // The connecting object is now destroyed and on top of that we wipe out its memory.
-  overwrite(p);
+  overwrite(&connect);
   // Now we unblock the resolve handler.
   nukeObject.setValue(0);
   // We wait for an error to occur.
@@ -152,7 +153,7 @@ TYPED_TEST(NetConnectFuture, FailsOnResolve)
   const Url url{"tcp://10.11.12.13:1234"};
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(url, SslEnabled{ false }, [&] { return makeSslSocketPtr<N>(io, context); },
           IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasError());
@@ -188,21 +189,22 @@ TYPED_TEST(NetConnectFuture, ResolveCalledAfterParentHasBeenDestroyed)
       }};
     }
   );
-  ConnectFuture* p = nullptr;
+
+  using C = ConnectFuture;
+  typename std::aligned_storage<sizeof(C), alignof(C)>::type storage;
+  auto& connect = reinterpret_cast<C&>(storage);
   qi::Future<SocketPtr<S>> connected;
   IoService<N>& io = N::defaultIoService();
   {
     using Side = HandshakeSide<S>;
-    ConnectFuture connect{io};
-    SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+    auto _ = ka::scoped(new (&connect) C{io}, [](C* p){ p->~C(); });
+    SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
     connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ false },
             [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
     connected = connect.complete();
-    p = &connect;
   }
   // The connecting object is now destroyed and on top of that we wipe out its memory.
-  // cppcheck-suppress deadpointer
-  overwrite(p);
+  overwrite(&connect);
   // Now we unblock the resolve handler.
   nukeObject.setValue(0);
   // We wait for an error to occur.
@@ -242,7 +244,7 @@ TYPED_TEST(NetConnectFuture, ResolvedBySkippingIpV6)
   static const std::string host = "1.2.3.4";
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://" + host + ":9876" }, SslEnabled{ false },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasError());
@@ -272,7 +274,7 @@ TYPED_TEST(NetConnectFuture, OnlyIpV6EndpointsResolvedButIpV6NotAllowed)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ false },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasError());
@@ -313,7 +315,7 @@ TYPED_TEST(NetConnectFuture, ConnectCalledAfterParentHasBeenDestroyed)
   {
     using Side = HandshakeSide<S>;
     ConnectFuture connect{io};
-    SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+    SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
     connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ false },
             [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
     connected = connect.complete();
@@ -349,7 +351,7 @@ TYPED_TEST(NetConnectFuture, FailsOnConnect)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ false },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasError());
@@ -376,7 +378,7 @@ TYPED_TEST(NetConnectFuture, SucceedsNonSsl)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ false },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasValue());
@@ -407,7 +409,7 @@ TYPED_TEST(NetConnectFuture, FailsOnHandshake)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ true },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasError());
@@ -435,29 +437,29 @@ TYPED_TEST(NetConnectFuture, HandshakeHandlerCalledAfterParentHasBeenDestroyed)
     S::async_handshake,
     [&](S::handshake_type, N::_anyHandler h) {
       // We launch asynchronously to return immediately.
-      t = std::move(std::thread([=]{
+      t = std::thread([=]{
         // Wait for the object destruction.
         nukeObject.future().wait();
         // Now call the handler.
         h(operationAborted<ErrorCode<N>>());
-      }));
+      });
     }
   );
-  ConnectFuture* p = nullptr;
+  using C = ConnectFuture;
+  typename std::aligned_storage<sizeof(C), alignof(C)>::type storage;
+  auto& connect = reinterpret_cast<C&>(storage);
   qi::Future<SocketPtr<S>> connected;
   IoService<N>& io = N::defaultIoService();
   {
     using Side = HandshakeSide<S>;
-    ConnectFuture connect{io};
-    SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+    auto _ = ka::scoped(new (&connect) C{io}, [](C* p){ p->~C(); });
+    SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
     connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ true },
             [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
     connected = connect.complete();
-    p = &connect;
   }
   // The connecting object is now destroyed and on top of that we wipe out its memory.
-  // cppcheck-suppress deadpointer
-  overwrite(p);
+  overwrite(&connect);
   // Now we unblock the handler.
   nukeObject.setValue(0);
   // We wait for an error to occur.
@@ -489,7 +491,7 @@ TYPED_TEST(NetConnectFuture, SucceedsSsl)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectFuture connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{ "tcp://10.11.12.13:1234" }, SslEnabled{ true },
           [&] { return makeSslSocketPtr<N>(io, context); }, IpV6Enabled{ false }, Side::client);
   ASSERT_TRUE(connect.complete().hasValue());
@@ -566,7 +568,7 @@ TEST(NetConnectFutureStop, WhileResolving)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectSocketFuture<N, S> connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{"tcp://10.11.12.13:1234"}, SslEnabled{true},
     [&] { return makeSslSocketPtr<N>(io, context); },
     IpV6Enabled{false}, Side::client, Seconds{100},
@@ -617,7 +619,7 @@ TEST(NetConnectFutureStop, WhileConnecting)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectSocketFuture<N, S> connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{"tcp://10.11.12.13:1234"}, SslEnabled{true},
     [&] { return makeSslSocketPtr<N>(io, context); },
     IpV6Enabled{false}, Side::client, Seconds{100},
@@ -668,7 +670,7 @@ TEST(NetConnectFutureStop, WhileHandshaking)
   IoService<N>& io = N::defaultIoService();
   using Side = HandshakeSide<S>;
   ConnectSocketFuture<N, S> connect{io};
-  SslContext<N> context{ Method<SslContext<N>>::sslv23 };
+  SslContext<N> context{ Method<SslContext<N>>::tlsv12 };
   connect(Url{"tcp://10.11.12.13:1234"}, SslEnabled{true},
     [&] { return makeSslSocketPtr<N>(io, context); },
     IpV6Enabled{false}, Side::client, Seconds{100},

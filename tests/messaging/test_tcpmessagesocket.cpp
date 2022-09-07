@@ -1,4 +1,5 @@
 #include <chrono>
+#include <functional>
 #include <numeric>
 #include <random>
 #include <gtest/gtest.h>
@@ -92,7 +93,7 @@ bool messageEqual(const qi::Message& m0, const qi::Message& m1)
 template<typename... Args>
 struct DisconnectSignal
 {
-  qi::SignalLink link = 0;
+  qi::SignalLink link = qi::SignalBase::invalidSignalLink;
   qi::Signal<Args...>* signal = nullptr;
 
   DisconnectSignal(qi::SignalLink link, qi::Signal<Args...>* signal)
@@ -102,7 +103,7 @@ struct DisconnectSignal
 
   void operator()()
   {
-    if (signal && link != 0)
+    if (signal && qi::isValidSignalLink(link))
       signal->disconnect(link);
   }
 };
@@ -143,10 +144,12 @@ SignalConnectionPtr connectSignals(const SocketPtr& socket)
 
   const qi::SignalLink linkConnected =
       socket->connected.connect([=]() { cptr->promises._connectedReceived.setValue(0); });
+  EXPECT_TRUE(qi::isValidSignalLink(linkConnected));
   DisconnectSignal<> disconnectConnected{ linkConnected, &socket->connected };
 
   const qi::SignalLink linkDisconnected = socket->disconnected.connect(
       [=](const std::string& msg) { cptr->promises._disconnectedReceived.setValue(msg); });
+  EXPECT_TRUE(qi::isValidSignalLink(linkDisconnected));
   DisconnectSignal<std::string> disconnectDisconnected{ linkDisconnected, &socket->disconnected };
 
   const auto lifetimeTransfo = ka::data_bound_transfo(socket);
@@ -598,6 +601,49 @@ TYPED_TEST(NetMessageSocket, DisconnectWhileDisconnecting)
 
   for (auto& t: readThreads) t.join();
   for (auto& t: writeThreads) t.join();
+}
+
+namespace {
+  // Stores a value into a `Mutable` (i.e. pointer, reference, iterator, etc.).
+  template<typename T>
+  struct store_mutable_t {
+    T t;
+  // Procedure<void (Mutable U)>:
+    template<typename U>
+    void operator()(U&& u) const {
+      using ka::src;
+      src(u).store(t);
+    }
+  };
+  KA_DERIVE_CTOR_FUNCTION_TEMPLATE(store_mutable)
+
+} // namespace
+
+// Failure of setting the cipher list results in a failed connection.
+TYPED_TEST(NetMessageSocket, trySetCipherListTls12AndBelowFails)
+{
+  using namespace qi;
+  using namespace qi::sock;
+  using N = mock::Network;
+
+  auto socket = boost::make_shared<TcpMessageSocket<N>>();
+
+  // Next try to set the cipher list will fail.
+  auto p = &N::resultOfTrySetCipherListTls12AndBelow;
+  auto _ = ka::scoped_apply_and_retract(
+    p,
+    store_mutable(false),    // Store `false` to make fail.
+    store_mutable(p->load()) // Restore original value on scope exit.
+  );
+
+  Future<void> futConnect = socket->connect(Url{"tcp://10.11.12.13:1234"});
+
+  // Failed connection.
+  ASSERT_EQ(FutureState_FinishedWithError, futConnect.wait(defaultTimeout));
+
+  // Expected error.
+  const auto errorMsg = ErrorCode<N>{ErrorCode<N>::socketCreationFailed}.message();
+  ASSERT_TRUE(futConnect.error().find(errorMsg) != std::string::npos);
 }
 
 // Stress test for disconnections.

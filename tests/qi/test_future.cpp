@@ -18,6 +18,7 @@
 #include <qi/testutils/testutils.hpp>
 #include <ka/conceptpredicate.hpp>
 #include <ka/src.hpp>
+#include <ka/macro.hpp>
 #include "test_future.hpp"
 
 qiLogCategory("test");
@@ -342,8 +343,8 @@ TEST_F(FutureFixture, TestPromiseAdapter)
     {
       boost::shared_ptr<DelCheck> dc = boost::make_shared<DelCheck>();
       wdc = dc;
-      p.future().connect(&DelCheck::foo, dc);
-      p2.future().connect(&DelCheck::foo, dc);
+      p.future().connect(std::bind(&DelCheck::foo, dc));
+      p2.future().connect(std::bind(&DelCheck::foo, dc));
     }
     EXPECT_FALSE(wdc.expired());
 
@@ -630,6 +631,13 @@ TEST(FutureTestCancel, Canceleable)
   EXPECT_THROW(f.hasValue(qi::FutureTimeout_None), qi::FutureException);
 }
 
+TEST(FutureTestCancel, CancelCannotThrow) // If this test fails, it can result in aborting the whole program.
+{
+  qi::Promise<void> promise([](qi::Promise<void>&) { throw 42; });
+  auto future = promise.future();
+  EXPECT_NO_THROW(future.cancel());
+}
+
 TEST(TestFutureCancel, CanceledDelayed)
 {
   // We can't guarantee when it will be cancelled but we can guarantee it will be
@@ -655,9 +663,12 @@ int assinc(const qi::Future<int>& f, int exp)
 
 TEST(FutureTestThen, ThenR)
 {
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4996, deprecated-declarations) // ignore use of deprecated overloads.
   qi::Future<int> f = qi::async(&get42);
   qi::Future<int> ff = f.thenR<int>(&assinc, _1, 42);
   qi::Future<int> fff = ff.thenR<int>(&assinc, _1, 43);
+KA_WARNING_POP()
 
   ASSERT_EQ(44, fff.value());
 }
@@ -698,9 +709,12 @@ int call(bool& b)
 TEST(FutureTestThen, AndThenR)
 {
   bool called = false;
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4996, deprecated-declarations) // ignore use of deprecated overloads.
   qi::Future<int> f = qi::async(&get42);
   qi::Future<int> ff = f.andThenR<int>(boost::bind(&fail, _1));
   qi::Future<int> fff = ff.andThenR<int>(boost::bind(&call, std::ref(called)));
+KA_WARNING_POP()
 
   fff.wait();
 
@@ -727,7 +741,10 @@ TEST(FutureTestThen, AndThenRVoid)
 {
   bool called = false;
   qi::Promise<void> p;
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4996, deprecated-declarations) // ignore use of deprecated overloads.
   qi::Future<void> ff = p.future().andThenR<void>(boost::bind(&call, std::ref(called)));
+KA_WARNING_POP()
   p.setValue(0);
 
   ff.wait();
@@ -742,8 +759,11 @@ TEST(FutureTestThen, AndThenRCancel)
 
   bool called = false;
   qi::Future<int> f = qi::Future<int>(42);
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4996, deprecated-declarations) // ignore use of deprecated overloads.
   qi::Future<int> ff = f.andThenR<int>(boost::bind(&block, _1, blockProm.future()));
   qi::Future<int> fff = ff.andThenR<int>(boost::bind(&call, std::ref(called)));
+KA_WARNING_POP()
 
   fff.cancel();
   blockProm.setValue(0);
@@ -906,11 +926,14 @@ TEST(FutureTestUnwrap, TryUnwrapOnFutureOfFutureIntermediateVariable)
 
 TEST(FutureTestUnwrap, TryUnwrapOnFutureOfFutureDeprecatedSignature)
 {
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4996, deprecated-declarations) // ignore use of deprecated overloads.
   auto machin = qi::detail::tryUnwrap(
         qi::Future<qi::Future<void>>{qi::Future<void>{nullptr}}, 0);
   static_assert(
         std::is_same<decltype(machin), qi::Future<void>>::value,
         "Try unwrap does not unwrap future of futures!");
+KA_WARNING_POP()
 }
 
 TEST(FutureTestUnwrap, TryUnwrapOnValue)

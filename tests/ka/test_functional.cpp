@@ -15,6 +15,7 @@
 #include <ka/algorithm.hpp>
 #include <ka/conceptpredicate.hpp>
 #include <ka/functional.hpp>
+#include <ka/macro.hpp>
 #include <ka/memory.hpp>
 #include <ka/mutablestore.hpp>
 #include <ka/mutex.hpp>
@@ -22,6 +23,8 @@
 #include <ka/testutils.hpp>
 #include <ka/typetraits.hpp>
 #include <ka/utility.hpp>
+
+KA_WARNING_DISABLE(, unused-function)
 
 TEST(FunctionalPolymorphicConstantFunction, RegularNonVoid) {
   using namespace ka;
@@ -82,6 +85,49 @@ TEST(FunctionalPolymorphicConstantFunction, BasicVoid) {
   ASSERT_NO_THROW(f(true));
   ASSERT_NO_THROW(f(std::vector<int>{5, 7, 2, 1}));
   ASSERT_NO_THROW(f(1, 2.345, "abcd", true));
+}
+
+TEST(FunctionalPolymorphicConstantFunction, Retraction) {
+  using namespace ka;
+  constant_function_t<void> f;
+  auto g = retract(f);
+  ASSERT_EQ(f, g);
+  ASSERT_NO_THROW(f());
+  ASSERT_NO_THROW(g());
+}
+
+namespace test_constant_procedure_ns {
+  using ka::test::A;
+
+  auto f() -> A {
+    return A{1};
+  }
+  auto g() -> A {
+    return A{2};
+  }
+  auto h() -> A {
+    return A{3};
+  }
+} // namespace test_constant_procedure_ns
+
+TEST(Functional, ConstantProcedureRegular) {
+  using namespace ka;
+  using namespace test_constant_procedure_ns;
+  ASSERT_TRUE(is_regular({
+    constant_procedure(f),
+    constant_procedure(g),
+    constant_procedure(h)
+  }));
+}
+
+TEST(Functional, ConstantProcedure) {
+  using namespace ka::test;
+  using namespace test_constant_procedure_ns;
+  auto g = ka::constant_procedure(f);
+  ASSERT_EQ(f(), g());
+  ASSERT_EQ(f(), g(B{5}));
+  ASSERT_EQ(f(), g(B{5}, C{6}));
+  ASSERT_EQ(f(), g(B{5}, C{6}, D{7}));
 }
 
 namespace {
@@ -268,7 +314,7 @@ TEST(FunctionalCompose, Multi) {
 
 TEST(FunctionalCompose, Retraction) {
   using namespace ka;
-  using namespace test;
+  using namespace test_functional;
   // We compose a function and its retraction and expect to get the identity
   // function.
   f_t f;
@@ -285,7 +331,7 @@ TEST(FunctionalCompose, Retraction) {
 
 TEST(FunctionalCompose, SeemsRetractionButNotQuite) {
   using namespace ka;
-  using namespace test;
+  using namespace test_functional;
   // Even if the two functions have retractions (even, are isomorphisms), and
   // can be composed (right domain and codomain), `g_inv_t` is _not_ a retraction
   // for `F`.
@@ -296,10 +342,46 @@ TEST(FunctionalCompose, SeemsRetractionButNotQuite) {
   static_assert(!Equal<decltype(ginv_f), id_transfo_t>::value, "");
 }
 
+namespace {
+  struct plus_t {
+    float a;
+    KA_GENERATE_FRIEND_REGULAR_OPS_1(plus_t, a)
+    float operator()(float b) const {
+      return a + b;
+    }
+    friend plus_t retract(plus_t const& x) {
+      return {-x.a};
+    }
+  };
+  struct times_t {
+    float a;
+    KA_GENERATE_FRIEND_REGULAR_OPS_1(times_t, a)
+    float operator()(int b) const {
+      return a * b;
+    }
+    friend times_t retract(times_t const& x) {
+      return {1.f / x.a};
+    }
+  };
+}
+
+TEST(FunctionalCompose, RetractionOfComposition) {
+  using namespace ka;
+
+  auto incr = plus_t{1};
+  auto twice = times_t{2};
+
+  ASSERT_EQ(3, compose(incr, twice)(1)); // (1*2)+1
+  ASSERT_EQ(11, compose(incr, twice)(5)); // (5*2)+1
+
+  ASSERT_EQ(1, retract(compose(incr, twice))(3)); // (3-1)/2
+  ASSERT_EQ(5, retract(compose(incr, twice))(11)); // (11-1)/2
+}
+
 TEST(FunctionalCompose, Identity) {
   using namespace ka;
   using namespace ka::functional_ops;
-  using namespace test;
+  using namespace test_functional;
   f_t f;
   id_transfo_t _1;
   static_assert(Equal<Decay<decltype(_1 * _1)>, decltype(_1)>::value, "");
@@ -311,8 +393,8 @@ TEST(FunctionalCompose, Identity) {
 // TODO: Remove this define (but keep the content) when get rid of VS2013.
 #if KA_COMPILER_VS2013_OR_BELOW
   // To avoid "unreferenced local variable" warnings.
-  f(test::e0_t::a);
-  _1(test::e0_t::a);
+  f(e0_t::a);
+  _1(e0_t::a);
 #endif
 }
 
@@ -322,7 +404,7 @@ TEST(FunctionalCompose, Simplification) {
 #if !KA_COMPILER_VS2013_OR_BELOW
   using namespace ka;
   using namespace ka::functional_ops;
-  using namespace test;
+  using namespace test_functional;
   // We expect chains of composition to be simplified in the right way.
   f_t f;
   auto g = retract(f);
@@ -416,6 +498,41 @@ TEST(FunctionalCompose, OperatorPipe) {
   }
 }
 
+TEST(FunctionalComposeT, Regular) {
+  using namespace ka;
+  compose_t comp;
+  ASSERT_TRUE(is_regular({comp})); // only one possible value because no state
+}
+
+TEST(FunctionalComposeT, Basic) {
+  using namespace ka; using namespace std::placeholders; using std::string; using std::vector;
+  auto even = [](int x) -> bool { return x % 2 == 0; };
+  auto int_ = [](string const& x) -> int { return std::stoi(x); };
+  auto evenInt = compose_t{}(even, int_);
+
+  ASSERT_FALSE(evenInt("123"));
+  ASSERT_TRUE(evenInt("1234"));
+  ASSERT_EQ(evenInt("123"), compose(even, int_)("123"));
+  ASSERT_EQ(evenInt("1234"), compose(even, int_)("1234"));
+}
+
+TEST(FunctionalComposeT, Bind) {
+  using namespace ka; using namespace std::placeholders; using std::string; using std::vector;
+  auto even = [](int x) -> bool { return x % 2 == 0; };
+  auto comp_even = std::bind(compose_t{}, even, _1); // comp_even f = even ∘ f
+
+  auto int_ = [](string const& x) -> int { return std::stoi(x); };
+  auto str_even = comp_even(int_); // str_even: string → int → bool
+  ASSERT_TRUE(str_even("20"));
+  ASSERT_FALSE(str_even("21"));
+
+  using V = vector<double>;
+  auto len = [](V const& x) -> int { return x.size(); };
+  auto len_even = comp_even(len); // len_even: vector<float> → int → bool
+  ASSERT_TRUE(len_even(V{1.4, 76.2}));
+  ASSERT_FALSE(len_even(V{3.56}));
+}
+
 namespace {
   void remove_n(std::string& s, char c, int n) {
     ka::erase_if(s, [&](char x) {return x == c && --n >= 0;});
@@ -480,7 +597,7 @@ TEST(FunctionalComposeAccu, Multi) {
 
 TEST(FunctionalComposeAccu, Retraction) {
   using namespace ka;
-  using namespace test;
+  using namespace test_functional;
   // We compose an action and its retraction and expect to get the identity
   // action.
   a_t f;
@@ -543,10 +660,58 @@ TEST(FunctionalComposeAccu, ComposeAction) {
   }
 }
 
+namespace {
+  struct plus_accu_t {
+    float a;
+    KA_GENERATE_FRIEND_REGULAR_OPS_1(plus_accu_t, a)
+    void operator()(float& b) const {
+      b += a;
+    }
+    friend plus_accu_t retract(plus_accu_t const& x) {
+      return {-x.a};
+    }
+  };
+  struct times_accu_t {
+    float a;
+    KA_GENERATE_FRIEND_REGULAR_OPS_1(times_accu_t, a)
+    void operator()(float& b) const {
+      b *= a;
+    }
+    friend times_accu_t retract(times_accu_t const& x) {
+      return {1.f / x.a};
+    }
+  };
+}
+
+TEST(FunctionalComposeAccu, RetractionOfComposition) {
+  using namespace ka;
+
+  auto incr = plus_accu_t{1.f};
+  auto twice = times_accu_t{2.f};
+  auto f = compose_accu(incr, twice);
+
+  float a = 0.f;
+  a = 1.f;
+  f(a); // (1*2)+1
+  ASSERT_EQ(3, a);
+
+  a = 5.f;
+  f(a); // (5*2)+1
+  ASSERT_EQ(11, a);
+
+  a = 3.f;
+  retract(f)(a); // (3-1)/2
+  ASSERT_EQ(1, a);
+
+  a = 11.f;
+  retract(f)(a); // (11-1)/2
+  ASSERT_EQ(5, a);
+}
+
 TEST(FunctionalComposeAccu, Identity) {
   using namespace ka;
   using ka::functional_ops_accu::operator*;
-  using namespace test;
+  using namespace test_functional;
   a_t f;
   id_action_t _1;
   static_assert(Equal<Decay<decltype(_1 * _1)>, decltype(_1)>::value, "");
@@ -592,7 +757,7 @@ TEST(FunctionalComposeAccu, OperatorPipe) {
 TEST(FunctionalComposeAccu, Simplification) {
   using namespace ka;
   using ka::functional_ops_accu::operator*;
-  using namespace test;
+  using namespace test_functional;
   // We expect chains of composition to be simplified in the right way.
   a_t f;
   auto g = retract(f);
@@ -720,6 +885,21 @@ TEST(FunctionalComposeAccu, Id) {
   }
 }
 
+TEST(FunctionalComposeAccu, NonVoidReturn) {
+  using namespace ka;
+
+  auto f = [](float& x) -> unit_t {
+    x /= 2.f;
+    return {};
+  };
+  auto g = [](float& x) -> unit_t {
+    x = -x;
+    return {};
+  };
+  float x = 3.f;
+  static_assert(Equal<unit_t, decltype(compose_accu(f, g)(x))>::value, "");
+}
+
 namespace {
   struct x_t {
     x_t() = default;
@@ -729,16 +909,11 @@ namespace {
   };
 
   template<typename T>
-  struct constant_unit_t {
+  struct constant_default_t {
     T operator()() const {
       return T{};
     }
   };
-
-  template<typename T>
-  bool equal(T const& a, T const& b) {
-    return a == b;
-  }
 }
 
 using types = testing::Types<
@@ -785,7 +960,7 @@ TYPED_TEST(FunctionalSemiLift1, VoidCodomain) {
 
   auto noop = [](int) {
   };
-  constant_unit_t<T> unit;
+  constant_default_t<T> unit;
   auto f = semilift(noop, unit);
 
   static_assert(Equal<T, decltype(f(0))>::value, "");
@@ -798,7 +973,7 @@ TYPED_TEST(FunctionalSemiLift1, VoidCodomainVoidDomain) {
 
   auto noop = [] {
   };
-  constant_unit_t<T> unit;
+  constant_default_t<T> unit;
   auto f = semilift(noop, unit);
 
   static_assert(Equal<T, decltype(f())>::value, "");
@@ -1115,7 +1290,7 @@ TEST(FunctionalApply, Array) {
 
 TEST(FunctionalApply, Custom) {
   using namespace ka;
-  using X = test::x_t<int, char, float>;
+  using X = test_functional::x_t<int, char, float>;
   auto g = [](int i, char c, float f) {
     return X{i, c, f};
   };
@@ -1392,4 +1567,124 @@ TYPED_TEST(FunctionalScopeLockMutexes, Mutexes) {
     ASSERT_TRUE(is_locked(m));
   }
   ASSERT_FALSE(is_locked(m));
+}
+
+// `equal_t` is `Regular`.
+TEST(FunctionalEqual, Regular) {
+  using namespace ka;
+  ASSERT_EQ(equal, equal_t{});
+  ASSERT_TRUE(is_regular({equal, equal, equal})); // only one possible value because no state
+}
+
+namespace test_equal {
+  struct X {
+    int i;
+    mutable bool called;
+    auto operator==(X x) const -> bool {
+      called = true;
+      return i == x.i;
+    }
+  };
+} // namespace test_equal
+
+// `equal` calls `operator==`.
+TEST(FunctionalEqual, CallOperatorEqual) {
+  using test_equal::X;
+  auto const x0 = X{1, false};
+  auto const x1 = X{1, false};
+  ASSERT_FALSE(x0.called);
+  ASSERT_TRUE(ka::equal(x0, x1));
+  ASSERT_TRUE(x0.called);
+}
+
+// `equal` strictly calls `operator==` without any other operation.
+TEST(FunctionalEqual, IsomorphicToOperatorEqual) {
+  using namespace ka;
+  using test::A;
+  // This is an approximation.
+  for (auto i = 0; i != 10; ++i) {
+    for (auto j = 0; j != 10; ++j) {
+      ASSERT_TRUE(equal(A{i}, A{j}) == (i == j));
+    }
+  }
+}
+
+namespace test_equal {
+  struct Y {
+    short i;
+  };
+  // Heterogeneous comparison.
+  auto operator==(ka::test::A a, Y y) -> bool {
+    return a.value == y.i;
+  }
+} // namespace test_equal
+
+// `equal_t` is polymorphic and non-homogeneous (parameters can be of different
+// types).
+TEST(FunctionalEqual, Polymorphic) {
+  using namespace ka;
+  using test::A;
+  using test::B;
+  using test_equal::Y;
+  ASSERT_TRUE(equal(A{2}, A{2}));
+  ASSERT_TRUE(equal(B{3}, B{3}));
+  ASSERT_TRUE(equal(A{3}, Y{3})); // Different types with no common type.
+}
+
+TEST(FunctionalProductT, Regular) {
+  using namespace ka;
+  using namespace ka::test;
+  {
+    auto const f = product_t<>{};
+    ASSERT_TRUE(is_regular({f, f, f})); // only one possible value because no state
+  } {
+    auto const f = product_t<D, B, A>{};
+    ASSERT_TRUE(is_regular({f, f, f})); // only one possible value because no state
+  }
+}
+
+TEST(FunctionalProductT, ProductType) {
+  using namespace ka;
+  using namespace ka::test;
+  using std::get;
+
+  // Product of no type is unit.
+  EXPECT_EQ(unit, product_t<>{});
+
+  // Product comes with projections.
+  auto const a = A{12};
+  auto const b = B{-3};
+  auto const c = C{982};
+  auto const p = product_t<A, B, C>{a, b, c};
+  EXPECT_EQ(a, get<0>(p));
+  EXPECT_EQ(b, get<1>(p));
+  EXPECT_EQ(c, get<2>(p));
+}
+
+TEST(FunctionalProduct, PolymorphicVariadicFunction) {
+  using namespace ka;
+  using namespace ka::test;
+
+  // 0 argument.
+  EXPECT_EQ(product_t<>{}, product());
+
+  // 1 argument.
+  auto const a = A{12};
+  EXPECT_EQ(product_t<A>{a}, product(a));
+
+  // n arguments.
+  auto const b = B{-3};
+  auto const c = C{982};
+  EXPECT_EQ((product_t<A, B, C>{a, b, c}), product(a, b, c));
+  EXPECT_EQ((product_t<B, C, B, A>{b, c, b, a}), product(b, c, b, a));
+}
+
+TEST(FunctionalProduct, FunctionObject) {
+  using namespace ka;
+  using namespace ka::test;
+  using ka::functional_ops::operator*; // Mathematical function composition.
+  auto f = [](A a) -> B {return B{-2 * a.value};};
+  auto g = product * f;
+  EXPECT_EQ(product_t<B>{B{0}}, g(A{0}));
+  EXPECT_EQ(product_t<B>{B{-6}}, g(A{3}));
 }

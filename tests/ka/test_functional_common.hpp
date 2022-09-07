@@ -5,8 +5,9 @@
 #include <type_traits>
 #include <boost/config.hpp>
 #include <ka/macroregular.hpp>
+#include <ka/macro.hpp>
 
-namespace test {
+namespace test_functional {
   template<std::size_t N>
   using index = std::integral_constant<std::size_t, N>;
 
@@ -28,27 +29,32 @@ namespace test {
     C const& get(index<2>) const {return c;}
   };
 
-} // namespace test
+} // namespace test_functional
 
 namespace std {
+
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(, pragmas)
+KA_WARNING_DISABLE(, mismatched-tags)
   template<typename A, typename B, typename C>
-  struct tuple_size<test::x_t<A, B, C>> : integral_constant<size_t, 3> {
+  struct tuple_size<test_functional::x_t<A, B, C>> : integral_constant<size_t, 3> {
   };
+KA_WARNING_POP()
 
   template<size_t I, typename A, typename B, typename C>
-  BOOST_CONSTEXPR auto get(test::x_t<A, B, C>& x)
+  BOOST_CONSTEXPR auto get(test_functional::x_t<A, B, C>& x)
       -> decltype(x.get(integral_constant<size_t, I>{})) {
     return x.get(integral_constant<size_t, I>{});
   }
 
   template<size_t I, typename A, typename B, typename C>
-  BOOST_CONSTEXPR auto get(test::x_t<A, B, C> const& x)
+  BOOST_CONSTEXPR auto get(test_functional::x_t<A, B, C> const& x)
       -> decltype(x.get(integral_constant<size_t, I>{})) {
     return x.get(integral_constant<size_t, I>{});
   }
 } // namespace std
 
-namespace test {
+namespace test_functional {
   enum class e0_t {
     a = 345,
     b = 432
@@ -196,6 +202,6 @@ namespace test {
     }
     using retract_type = one_;
   };
-} // namespace test
+} // namespace test_functional
 
 #endif // TESTS_KA_FUNCTIONALCOMMON_HPP

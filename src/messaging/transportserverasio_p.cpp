@@ -12,6 +12,7 @@
 #include <ka/memory.hpp>
 #include <qi/log.hpp>
 #include <qi/eventloop.hpp>
+#include <qi/macro.hpp>
 #include "transportserver.hpp"
 #include "messagesocket.hpp"
 #include "tcpmessagesocket.hpp"
@@ -90,7 +91,7 @@ namespace qi
             qiLogError() << "bug: socket not stored by the newConnection handler (usecount:" << socket.use_count() << ")";
         }
     }
-    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(_acceptor->get_io_service(), _sslContext);
+    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(PTR_GET_IO_SERVICE(_acceptor), _sslContext);
     _acceptor->async_accept(_s->lowest_layer(),
                            boost::bind(_onAccept, shared_from_this(), _1, _s));
   }
@@ -189,6 +190,23 @@ namespace qi
     *_asyncEndpoints = updateEP();
   }
 
+  // Diffie-Hellman parameters of size 3072 bits at `PEM` format.
+  //
+  // Generation example: `openssl dhparam -outform PEM -out dhparams.pem 3072`
+  static char const* diffieHellmanParameters()
+  {
+    // Hardcoded for security reasons.
+    return
+      "-----BEGIN DH PARAMETERS-----\n"
+      "MIIBCAKCAQEAxtYYmi/o+PGc1/j5SLb/kPRjSJj2ZlnFHI6OxYjU1sr36KuOz6x+\n"
+      "MuRYnUcHChATpZ88lbhyw7w/L+R+E9uuOkkU78zNXv5xsElsKfl2BQpdO8N+h3y4\n"
+      "SlN3P8F8TmAgmRG/LZaABycWONSeRXGPZ76dE79z+0UE+Ae7jHqRCfjsudpb/DfB\n"
+      "JnnMYOsONQnpYywEjIJ6H5voGoYR5QLZPqBRHZuZTb8cBg5psPzIIHB3h77f6Xe8\n"
+      "irSYKhLmM3WqwDPnIZq+NdBrYZOziOrQqTdtcuPTtxYhhodIHhDK9213/onRSqft\n"
+      "mOEHq1J6vhjsv1mCAcZDvJYRQEFN3/gSywIBAg==\n"
+      "-----END DH PARAMETERS-----";
+  }
+
   qi::Future<void> TransportServerAsioPrivate::listen(const qi::Url& url)
   {
     _listenUrl = url;
@@ -196,7 +214,8 @@ namespace qi
     using namespace boost::asio;
 #ifndef ANDROID
     // resolve endpoint
-    ip::tcp::resolver r(_acceptor->get_io_service());
+    // ip::tcp::resolver r(_acceptor->get_executor());
+    ip::tcp::resolver r(PTR_GET_IO_SERVICE(_acceptor));
     ip::tcp::resolver::query q(_listenUrl.host(), boost::lexical_cast<std::string>(_listenUrl.port()),
                                boost::asio::ip::tcp::resolver::query::all_matching);
     ip::tcp::resolver::iterator it = r.resolve(q);
@@ -227,7 +246,7 @@ namespace qi
     boost::asio::socket_base::reuse_address option(false);
 #else
     boost::asio::socket_base::reuse_address option(true);
-    fcntl(_acceptor->native(), F_SETFD, FD_CLOEXEC);
+    fcntl(_acceptor->native_handle(), F_SETFD, FD_CLOEXEC);
 #endif
     _acceptor->set_option(option);
     try
@@ -286,14 +305,29 @@ namespace qi
         return qi::makeFutureError<void>(s);
       }
 
+      using N = sock::NetworkAsio;
+      setCipherListTls12AndBelow<N>(*_sslContext, N::serverCipherList());
+
+      // Protocols are explicitly forbidden to allow TLS 1.2 only.
+      // A white list interface would be preferable, but `Asio` lets us no
+      // choice.
       _sslContext->set_options(
-        boost::asio::ssl::context::default_workarounds
-        | boost::asio::ssl::context::no_sslv2);
+          boost::asio::ssl::context::default_workarounds
+        | boost::asio::ssl::context::no_sslv2
+        | boost::asio::ssl::context::no_sslv3
+        | boost::asio::ssl::context::no_tlsv1
+        | boost::asio::ssl::context::no_tlsv1_1
+      );
       _sslContext->use_certificate_chain_file(self->_identityCertificate.c_str());
       _sslContext->use_private_key_file(self->_identityKey.c_str(), boost::asio::ssl::context::pem);
+
+      _sslContext->use_tmp_dh(boost::asio::const_buffer(
+        diffieHellmanParameters(),
+        std::strlen(diffieHellmanParameters())
+      ));
     }
 
-    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(_acceptor->get_io_service(), _sslContext);
+    _s = sock::makeSocketWithContextPtr<sock::NetworkAsio>(PTR_GET_IO_SERVICE(_acceptor), _sslContext);
     _acceptor->async_accept(_s->lowest_layer(),
       boost::bind(_onAccept, shared_from_this(), _1, _s));
     _connectionPromise.setValue(0);
@@ -327,8 +361,8 @@ namespace qi
     , _self(self)
     , _acceptor(new boost::asio::ip::tcp::acceptor(*asIoServicePtr(ctx)))
     , _live(true)
-    , _sslContext(sock::makeSslContextPtr<sock::NetworkAsio>(*asIoServicePtr(ctx),
-                                                             sock::SslContext<sock::NetworkAsio>::sslv23))
+    , _sslContext(sock::makeSslContextPtr<sock::NetworkAsio>(
+                    sock::SslContext<sock::NetworkAsio>::tlsv12))
     , _s()
     , _ssl(false)
     , _port(0)

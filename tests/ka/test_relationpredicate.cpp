@@ -1,8 +1,12 @@
 #include <ka/relationpredicate.hpp>
 #include "test_relations.hpp"
 #include <gtest/gtest.h>
+#include <cmath>
 #include <cstdint>
 #include <ka/range.hpp>
+#include <ka/macro.hpp>
+
+KA_WARNING_DISABLE(, unused-function)
 
 /// @file
 /// This file tests predicates on relations (is_transitive, is_total_ordering, etc.).
@@ -10,7 +14,7 @@
 
 TEST(RelationPredicate, IsTransitive) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
   {
@@ -61,7 +65,7 @@ TEST(RelationPredicate, IsTransitive) {
 
 TEST(RelationPredicate, IsReflexive) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
   {
@@ -134,7 +138,7 @@ namespace {
 
 TEST(RelationPredicate, IsSymmetric) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int_t;
   auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
   {
@@ -181,7 +185,7 @@ TEST(RelationPredicate, IsSymmetric) {
 
 TEST(RelationPredicate, IsEquivalence) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
   {
@@ -216,9 +220,45 @@ TEST(RelationPredicate, IsEquivalence) {
   }
 }
 
+TEST(RelationPredicate, AreComplement) {
+  using namespace ka;
+  using namespace test_relation;
+  using N = int;
+  auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
+  {
+    auto eq = [](N a, N b) {return a == b;};
+    auto ne = [](N a, N b) {return a != b;};
+    auto lt = [](N a, N b) {return a < b;};
+    auto ge = [](N a, N b) {return a >= b;};
+    auto gt = [](N a, N b) {return a > b;};
+    EXPECT_TRUE(are_complement(eq, ne, ints_0_to_9));
+    EXPECT_TRUE(are_complement(ne, eq, ints_0_to_9));
+    EXPECT_FALSE(are_complement(eq, eq, ints_0_to_9));
+    EXPECT_FALSE(are_complement(ne, ne, ints_0_to_9));
+    EXPECT_TRUE(are_complement(lt, ge, ints_0_to_9));
+    EXPECT_TRUE(are_complement(ge, lt, ints_0_to_9));
+    EXPECT_FALSE(are_complement(lt, lt, ints_0_to_9));
+    EXPECT_FALSE(are_complement(ge, ge, ints_0_to_9));
+    EXPECT_FALSE(are_complement(lt, gt, ints_0_to_9));
+  }
+  auto dist = [](N a, N b) -> N {return std::abs(b - a);};
+  auto dist_odd = [=](N a, N b) -> bool {return dist(a, b) % 2 == 1;};
+  {
+    auto dist_even = [=](N a, N b) -> bool {return dist(a, b) % 2 == 0;};
+    EXPECT_TRUE(are_complement(dist_even, dist_odd, ints_0_to_9));
+  }
+  {
+    auto pseudo_dist_even = [=](N a, N b) {
+      return dist(a, b) % 2 == 0 || (a == 2 && b == 9);
+    };
+    // Relations both hold for `(2, 9)`.
+    EXPECT_FALSE(are_complement(pseudo_dist_even, dist_odd, ints_0_to_9));
+  }
+}
+
 TEST(RelationPredicate, IsTrichotomic) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   {
     auto eq = [](N a, N b) {return a == b;};
@@ -242,7 +282,7 @@ TEST(RelationPredicate, IsTrichotomic) {
 
 TEST(RelationPredicate, IsWeakOrdering) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   {
     auto eq = [](N a, N b) {return a == b;};
@@ -290,7 +330,7 @@ TEST(RelationPredicate, IsWeakOrdering) {
 
 TEST(RelationPredicate, IsTotalOrdering) {
   using namespace ka;
-  using namespace test;
+  using namespace test_relation;
   using N = int;
   auto ints_0_to_9 = bounded_range(N{0}, N{10}); // 10 is excluded
   {

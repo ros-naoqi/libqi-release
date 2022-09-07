@@ -931,6 +931,7 @@ TEST(TestObject, traceGeneric)
   qi::SignalLink id = obj.connect("traceObject",
     (boost::function<void(qi::EventTrace)>)
     boost::bind(&pushTrace, boost::ref(traces), boost::ref(mutex), _1)).value();
+  ASSERT_TRUE(qi::isValidSignalLink(id));
   obj.call<void>("sleep", qi::MilliSeconds{ 100 });
   for (unsigned i=0; i<20; ++i) {
     {
@@ -991,6 +992,7 @@ TEST(TestObject, traceType)
   qi::SignalLink id = oa1.connect("traceObject",
     (boost::function<void(qi::EventTrace)>)
     boost::bind(&pushTrace, boost::ref(traces), boost::ref(mutex), _1)).value();
+  ASSERT_TRUE(qi::isValidSignalLink(id));
 
   EXPECT_EQ(3, oa1.call<int>("add", 2));
   for (unsigned i=0; i<20; ++i) {
@@ -1305,17 +1307,17 @@ class Apple
 
 QI_REGISTER_OBJECT(Apple, getWeight, getType);
 
-bool init_testpkg_module(qi::ModuleBuilder* mb) {
+bool init_testmodule_module(qi::ModuleBuilder* mb) {
   mb->advertiseFactory<Sleeper>("Sleeper");
   mb->advertiseFactory<Apple, std::string>("Apple");
   mb->advertiseFactory<Apple, int, std::string>("Fruit");
   return true;
 }
-QI_REGISTER_MODULE_EMBEDDED("testpkg", &init_testpkg_module);
+QI_REGISTER_MODULE_EMBEDDED("testmodule", &init_testmodule_module);
 
 TEST(TestObject, Factory)
 {
-  qi::AnyModule p = qi::import("testpkg");
+  qi::AnyModule p = qi::import("testmodule");
   ASSERT_ANY_THROW(p.call<qi::AnyObject>("Apple"));
   ASSERT_ANY_THROW(p.call<qi::AnyObject>("Apple", 33.33));
   ASSERT_ANY_THROW(p.call<qi::AnyObject>("Fruit"));
@@ -1477,7 +1479,7 @@ TEST(TestObject, EqualityAnyArguments)
 
 TEST(TestObject, DifferenceFactory)
 {
-  qi::AnyModule p = qi::import("testpkg");
+  qi::AnyModule p = qi::import("testmodule");
   EXPECT_NE(p.call<qi::AnyObject>("Apple", "red"), p.call<qi::AnyObject>("Apple", "red"));
   {
     qi::AnyObject o0 = p.call<qi::AnyObject>("Apple", "red");

@@ -16,6 +16,7 @@ qi_create_gmock(
   test_qi
 
   SRC
+  "test_application.cpp"
   "test_bind.cpp"
   "test_buffer.cpp"
   "test_bufferreader.cpp"
@@ -34,6 +35,7 @@ qi_create_gmock(
   "test_path_conf.cpp"
   "test_periodictask.cpp"
   "test_ptruid.cpp"
+  "test_objectuid.cpp"
   "test_qi.cpp" # main
   "test_qiatomic.cpp"
   "test_qiclock.cpp"
@@ -42,6 +44,7 @@ qi_create_gmock(
   "test_qilog.cpp"
   "test_qilog_async.cpp"
   "test_qilog_sync.cpp"
+  "test_qilog_sync_invokecatch.cpp"
   "test_qios.cpp"
   "test_src.cpp"
   "test_strand.cpp"

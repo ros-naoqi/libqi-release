@@ -665,7 +665,9 @@ TEST(TestCall, PairClientListen)
   qi::DynamicObjectBuilder ob;
   ob.advertiseMethod("addOne", &addOne);
   qi::AnyObject obj(ob.object());
-  p.client()->registerService("adder", obj);
+  auto client = p.client();
+  client->listen("tcp://localhost:0").value();
+  client->registerService("adder", obj);
   qi::AnyObject o = p.server()->service("adder").value();
   ASSERT_TRUE(o);
 }
@@ -1868,9 +1870,9 @@ QI_REGISTER_OBJECT(StrandedObjectWithReadOnlyProperty, x, add);
 
 template<typename T>
 auto makeFutureErrorFromException()
-  -> decltype(ka::compose(qi::makeFutureError<T>, ka::exception_message{}))
+  -> decltype(ka::compose(qi::makeFutureError<T>, ka::exception_message_t{}))
 {
-  return ka::compose(qi::makeFutureError<T>, ka::exception_message{});
+  return ka::compose(qi::makeFutureError<T>, ka::exception_message_t{});
 }
 
 

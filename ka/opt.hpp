@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <iterator>
 #include <boost/optional/optional.hpp>
+#include "functional.hpp"
 #include "macro.hpp"
 #include "macroregular.hpp"
 #include "scoped.hpp"
@@ -13,6 +14,22 @@
 
 namespace ka
 {
+  namespace detail {
+    /// Flattens an `opt_t<opt_t<T>>` into a `opt_t<T>`.
+    ///
+    /// Returns the internal optional value if it exists, empty otherwise.
+    template<typename T> constexpr
+    auto flatten_impl(opt_t<opt_t<T>> const& o) noexcept -> opt_t<T> {
+      return o.empty() ? opt_t<T>{} : *o;
+    }
+
+    /// Rvalue-ref overload of `flatten` of `opt_t`.
+    template<typename T> constexpr
+    auto flatten_impl(opt_t<opt_t<T>>&& o) noexcept -> opt_t<T> {
+      return o.empty() ? opt_t<T>{} : std::move(*o);
+    }
+  } // namespace detail
+
   /// Contains a value or nothing.
   ///
   /// This type is similar to `std::optional` but has two distinctive features:
@@ -161,7 +178,7 @@ namespace ka
       opt = x.opt;
       return *this;
     }
-    opt_t(opt_t&& x) : opt(move(x.opt)) {
+    opt_t(opt_t&& x) : opt(std::move(x.opt)) {
     }
     opt_t& operator=(opt_t&& x) {
       opt = std::move(x.opt);
@@ -186,8 +203,8 @@ namespace ka
     }
 
   // ...:
-    T&& operator*() && {
-      return *opt;
+    T operator*() && {
+      return std::move(*opt);
     }
 #else
   // Readable:
@@ -212,8 +229,7 @@ namespace ka
     /// Procedure<T (Args...)> Proc
     template<typename Proc, typename... Args>
     opt_t& call_set(Proc&& p, Args&&... args) {
-      opt = fwd<Proc>(p)(fwd<Args>(args)...);
-      return *this;
+      return set(fwd<Proc>(p)(fwd<Args>(args)...));
     }
 
     T const* get_ptr() const KA_NOEXCEPT_EXPR(opt.get_ptr()) {
@@ -538,6 +554,26 @@ namespace ka
     const_reference at(size_type n) const {
       return const_cast<opt_t&>(*this).at(n);
     }
+  // Functor:
+    /// Function<U (T)> F
+    template<typename F>
+    auto fmap(F&& f) const -> opt_t<CodomainFor<F, T>> {
+      using U = CodomainFor<F, T>;
+      if (empty()) {
+        return opt_t<U>{};
+      } else {
+        return opt_t<U>{}.call_set(fwd<F>(f), **this);
+      }
+    }
+
+    constexpr
+    auto flatten() const& noexcept -> T {
+      return detail::flatten_impl(*this);
+    }
+
+    auto flatten() && noexcept -> T {
+      return detail::flatten_impl(std::move(*this));
+    }
   };
 
   /// Constructs an optional set with the given parameter.
@@ -632,6 +668,29 @@ namespace ka
     bool empty() const KA_NOEXCEPT_EXPR(true) {
       return empty_;
     }
+  // Functor:
+    /// Procedure<_ ()> F
+    template<typename F>
+    opt_t<CodomainFor<F>> fmap(F&& f) const {
+      return fmap_dispatch(Equal<void, CodomainFor<F>>{}, fwd<F>(f));
+    }
+  private:
+    template<typename F>
+    opt_t<void> fmap_dispatch(true_t /* VoidCodomain */, F&& f) const {
+      if (!empty()) {
+        fwd<F>(f)();
+      }
+      return *this;
+    }
+
+    template<typename F>
+    opt_t<CodomainFor<F>> fmap_dispatch(false_t /* VoidCodomain */, F&& f) const {
+      opt_t<CodomainFor<F>> o;
+      if (!empty()) {
+        o.call_set(fwd<F>(f));
+      }
+      return o;
+    }
   };
 
   /// Constructs a `void` optional that is set.
@@ -655,6 +714,85 @@ namespace ka
     template<typename T> KA_CONSTEXPR
     bool empty(boost::optional<T> const& t) {
       return !static_cast<bool>(t);
+    }
+  } // namespace detail
+
+  namespace fmap_ns {
+  // model FunctorApp opt:
+    /// meaning(fmap(f, ka_opts...)) =
+    ///     all_are_set
+    ///       ? opt(f(src(ka_opts)...)) // set (void case handled)
+    ///       : opt_t<U>()              // empty
+    ///   where
+    ///     all_are_set = !ka_opts.empty() && ...
+    ///     U = typeof(f(ka_opts...))
+    ///
+    /// Function<U (T...)> F
+    template<typename F, typename T, typename... O>
+    auto fmap(F&& f, opt_t<T> const& x, O&&... o)
+        -> opt_t<CodomainFor<F, T, typename Decay<O>::value_type...>> {
+      // The pattern
+      //  ```
+      //  type res;
+      //  if (condition) res = value;
+      //  return res;
+      //  ```
+      //  sadly tends to generate more efficient code on current compilers
+      //  (gcc9, clang9), even with optimizations activated, than
+      //  ```
+      //  return condition
+      //    ? type(value)
+      //    : type();
+      //  ```
+      //  .
+      using U = CodomainFor<F, T, typename Decay<O>::value_type...>;
+      opt_t<U> res;
+
+      // TODO: Use fold expression when available.
+      std::array<bool, 1 + sizeof...(O)> empties = {x.empty(), o.empty()...};
+      if (std::none_of(empties.begin(), empties.end(), id_transfo_t{})) {
+        res.call_set(fwd<F>(f), src(x), src(fwd<O>(o))...);
+      }
+      return res;
+    }
+
+  // model FunctorApp boost::optional:
+    /// meaning(fmap(f, boost_opts...)) = meaning(fmap(f, as_ka_opt(boost_opts)...))
+    ///   where
+    ///     meaning(as_ka_opt(boost_opt)) = meaning(boost_opt)
+    ///
+    /// Function<U (T...)> F
+    template<typename F, typename T, typename... O>
+    auto fmap(F&& f, boost::optional<T> const& x, O&&... o)
+        -> boost::optional<CodomainFor<F, T, typename Decay<O>::value_type...>> {
+      using U = CodomainFor<F, T, typename Decay<O>::value_type...>;
+      boost::optional<U> res;
+
+      // TODO: Use fold expression when available.
+      std::array<bool, 1 + sizeof...(O)> empties = {!x, (!o)...};
+      if (std::none_of(empties.begin(), empties.end(), id_transfo_t{})) {
+        res = boost::optional<U>(fwd<F>(f)(x.value(), fwd<O>(o).value()...));
+      }
+      return res;
+    }
+  } // namespace fmap_ns
+
+  namespace detail {
+    // Overloads are defined here and available for `flatten_fn_t`.
+
+    /// Flattens a `boost::optional<boost::optional<T>>` into a `boost::optional<T>`.
+    ///
+    /// Returns the internal optional value if it exists, empty otherwise.template<typename T>
+    template<typename T> constexpr
+    auto flatten(boost::optional<boost::optional<T>> const& o) noexcept
+      -> boost::optional<T> {
+      return o ? *o : boost::optional<T>{};
+    }
+
+    /// Rvalue-ref overload of `flatten` of `boost::optional`.
+    template<typename T>
+    auto flatten(boost::optional<boost::optional<T>>&& o) noexcept -> boost::optional<T> {
+      return o ? std::move(*o) : boost::optional<T>{};
     }
   } // namespace detail
 } // namespace ka

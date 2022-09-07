@@ -44,6 +44,33 @@ TEST(UtilityFwd, RealWord) {
   ASSERT_EQ(ref_kind_t::r_value, f(move_only_t<int>{4}));
 }
 
+// Codomain of `ka::mv` is the same as the one of `std::move`.
+TEST(UtilityMv, Basic) {
+  using namespace ka;
+  // r-value
+  static_assert(Equal<decltype(std::move(5)), decltype(mv(5))>::value, "");
+  static_assert(std::is_rvalue_reference<decltype(mv(5))>::value, "");
+
+  // l-value
+  int i = 5;
+  static_assert(Equal<decltype(std::move(i)), decltype(mv(i))>::value, "");
+  static_assert(std::is_rvalue_reference<decltype(mv(i))>::value, "");
+}
+
+namespace ka {
+  auto h(ka::move_only_t<int> m) -> int {
+    return *m;
+  }
+} // namespace ka
+
+// `ka::mv` does move values.
+TEST(UtilityMv, RealWorld) {
+  using namespace ka;
+  auto const i = 4;
+  auto m = move_only_t<int>{i};
+  ASSERT_EQ(i, h(mv(m))); // `h` mandates moving `m`.
+}
+
 TEST(UtilityDeclref, Basic) {
   using namespace ka;
   static_assert(Equal<decltype(declref<int>()), int&>::value, "");
@@ -52,7 +79,7 @@ TEST(UtilityDeclref, Basic) {
   static_assert(Equal<decltype(declref<const int>()), const int&>::value, "");
 }
 
-namespace test {
+namespace test_utility {
   template<typename T>
   T& k(T& t);
 
@@ -63,11 +90,11 @@ namespace test {
   struct x_t {
     using type = decltype(k(ka::declref<T>()));
   };
-} // namespace test
+} // namespace test_utility
 
 TEST(UtilityDeclref, RealWorld) {
   using namespace ka;
-  using namespace test;
+  using namespace test_utility;
   static_assert(Equal<x_t<int>::type, int&>::value, "");
   static_assert(Equal<x_t<int [2]>::type, int*>::value, "");
 }
@@ -105,4 +132,42 @@ TEST(UtilityExchange, MoveOnly) {
 
   EXPECT_EQ(33, *a);
   EXPECT_EQ(42, *b);
+}
+
+namespace test_utility {
+  int op(ka::type_t<ka::test::A>, int i) {
+    return i + 1;
+  }
+  int op(ka::type_t<ka::test::B>, int i) {
+    return i * 2;
+  }
+}
+
+// Example of `type_t` used as dispatch facility.
+TEST(Utility, TypeTDispatch) {
+  using namespace ka;
+  using namespace ka::test;
+  using test_utility::op;
+  auto const i = 32;
+  EXPECT_EQ(i + 1, op(type_t<A>{}, i));
+  EXPECT_EQ(i * 2, op(type_t<B>{}, i));
+}
+
+TEST(Utility, TypeTAsProduct) {
+  using namespace ka;
+  using namespace ka::test;
+  using testing::StaticAssertTypeEq;
+  StaticAssertTypeEq<A, std::tuple_element<0, type_t<A>>::type>();
+  StaticAssertTypeEq<B, std::tuple_element<1, type_t<A, B>>::type>();
+  StaticAssertTypeEq<C, std::tuple_element<2, type_t<A, B, C>>::type>();
+  StaticAssertTypeEq<D, std::tuple_element<3, type_t<A, B, C, D>>::type>();
+  StaticAssertTypeEq<E, std::tuple_element<4, type_t<A, B, C, D, E>>::type>();
+  StaticAssertTypeEq<F, std::tuple_element<5, type_t<A, B, C, D, E, F>>::type>();
+
+  StaticAssertTypeEq<A, std::tuple_element<0, type_t<A, B, C, D, E, F>>::type>();
+  StaticAssertTypeEq<B, std::tuple_element<1, type_t<A, B, C, D, E, F>>::type>();
+  StaticAssertTypeEq<C, std::tuple_element<2, type_t<A, B, C, D, E, F>>::type>();
+  StaticAssertTypeEq<D, std::tuple_element<3, type_t<A, B, C, D, E, F>>::type>();
+  StaticAssertTypeEq<E, std::tuple_element<4, type_t<A, B, C, D, E, F>>::type>();
+  StaticAssertTypeEq<F, std::tuple_element<5, type_t<A, B, C, D, E, F>>::type>();
 }

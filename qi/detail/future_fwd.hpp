@@ -13,6 +13,7 @@
 
 # include <ka/functional.hpp>
 # include <ka/errorhandling.hpp>
+# include <ka/macro.hpp>
 # include <qi/api.hpp>
 # include <qi/assert.hpp>
 # include <qi/atomic.hpp>
@@ -31,11 +32,9 @@
 # include <boost/thread/recursive_mutex.hpp>
 # include <boost/exception/diagnostic_information.hpp>
 
-# ifdef _MSC_VER
-#   pragma warning( push )
-#   pragma warning( disable: 4251 )
-#   pragma warning( disable: 4275 ) //std::runtime_error: no dll interface
-# endif
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4251, )
+KA_WARNING_DISABLE(4275, )  //std::runtime_error: no dll interface
 
 namespace qi {
 
@@ -381,7 +380,7 @@ namespace qi {
      * expected to set a value or an error to the Future as fast as possible.
      * Note that cancelation may be asynchronous.
      */
-    void cancel()
+    void cancel() noexcept
     {
       _p->cancel(*this);
     }
@@ -760,7 +759,7 @@ namespace qi {
     bool hasError(int msecs = FutureTimeout_Infinite) const            { _sync = false; return _future.hasError(msecs); }
     bool hasValue(int msecs = FutureTimeout_Infinite) const            { _sync = false; return _future.hasValue(msecs); }
     const std::string &error(int msecs = FutureTimeout_Infinite) const { _sync = false; return _future.error(msecs); }
-    void cancel()                                                      { _sync = false; _future.cancel(); }
+    void cancel() noexcept                                             { _sync = false; _future.cancel(); }
     bool isCancelable() const                                          { _sync = false; return true; }
     void connect(const Connection& s)                                  { _sync = false; _future.connect(s);}
     void _connect(const boost::function<void()>& s)                    { _sync = false; _future._connect(s);}
@@ -893,8 +892,6 @@ namespace qi {
 
     /** Set a cancel callback. If the cancel is requested, calls this callback
      * immediately.
-     * \throws std::exception if the promise was not created as a cancelable
-     * promise.
      */
     void setOnCancel(boost::function<void (qi::Promise<T>&)> cancelCallback)
     {
@@ -991,7 +988,7 @@ namespace qi {
       FutureBaseTyped();
       ~FutureBaseTyped();
 
-      void cancel(qi::Future<T>& future);
+      void cancel(qi::Future<T>& future) noexcept;
 
       /*
        * inplace api for promise
@@ -1074,10 +1071,10 @@ namespace qi {
   template<typename T, typename F = ka::id_transfo_t>
   auto futureErrorFromException(F errorMsgTransfo = {})
     // TODO: Remove this when we can use C++14
-    -> decltype(ka::compose(ka::compose(makeFutureError<T>, errorMsgTransfo), ka::exception_message{}))
+    -> decltype(ka::compose(ka::compose(makeFutureError<T>, errorMsgTransfo), ka::exception_message_t{}))
   {
     using ka::functional_ops::operator*; // Right-to-left function composition.
-    return makeFutureError<T> * errorMsgTransfo * ka::exception_message{};
+    return makeFutureError<T> * errorMsgTransfo * ka::exception_message_t{};
   }
 
   /// Helper function that does nothing on future cancelation
@@ -1308,8 +1305,6 @@ namespace qi
 #endif
 }
 
-#ifdef _MSC_VER
-#  pragma warning( pop )
-#endif
+KA_WARNING_POP()
 
 #endif  // _QI_FUTURE_HPP_

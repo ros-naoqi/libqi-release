@@ -17,6 +17,30 @@
 #include <qi/buffer.hpp>
 #include <qi/numeric.hpp>
 
+#include <ka/range.hpp>
+#include <ka/relationpredicate.hpp>
+
+TEST(TestBuffer, IsEqualityComparable)
+{
+  const char data[] = "I like cookies.";
+  const char data2[] = "Donuts are good too.";
+  qi::Buffer buffers[4];
+  auto& a = buffers[0];
+  auto& b = buffers[1];
+  auto& c = buffers[2];
+  auto& d = buffers[3];
+
+  a.write(data, sizeof(data));
+  b.write(data2, sizeof(data2));
+  c.addSubBuffer(b);
+  d.addSubBuffer(a);
+  d.addSubBuffer(c);
+
+  auto range = ka::bounded_range(buffers);
+  EXPECT_TRUE(ka::is_equivalence(std::equal_to<qi::Buffer>{}, range));
+  EXPECT_TRUE(ka::are_complement(std::equal_to<qi::Buffer>{}, std::not_equal_to<qi::Buffer>{}, range));
+}
+
 
 TEST(TestBuffer, TestReserveSpace)
 {
@@ -38,8 +62,9 @@ TEST(TestBuffer, TestReserveSpace)
 
   // let's put a string in buffer
   reservedSpace1 = buffer.reserve(150);
+  ASSERT_NE(nullptr, reservedSpace1);
   //Oh wait it's a config file !
-  ASSERT_TRUE(buffer.reserve(1024) != NULL);
+  ASSERT_NE(nullptr, buffer.reserve(1024));
 
   std::vector<unsigned char> image(fiveM);
   for (int i = 0; i < fiveM; i++)

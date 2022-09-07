@@ -12,7 +12,7 @@
 /// Contains predicates that check at runtime if a relation has certain properties.
 ///
 /// Relation definition
-/// =============================================
+/// ===================
 /// A relation is a homogeneous binary predicate, i.e. a FunctionObject
 /// with the signature `bool (T, T)` (don't cry, everything's explained ;)).
 /// Following the conventional use in mathematics, the "domain" of a relation
@@ -23,7 +23,7 @@
 /// [Elements of Programming (Stepanov-MacJones, 2009)](http://elementsofprogramming.com/)
 ///
 /// Formal definition justification
-/// =============================================
+/// ===============================
 /// The definitions given here are formal in order to provide a solid foundation
 /// to build code upon. For example, the predicates defined here are needed to be
 /// able to check the regularity of types (see `isRegular` in conceptpredicate.hpp),
@@ -32,14 +32,14 @@
 /// condition to build easy-to-understand, maintainable and efficient components.
 ///
 /// A word on notation
-/// =============================================
+/// ==================
 /// Below, the symbol |-> is used to give the logical definition of a
 /// function. For example,
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// transitive: R
 ///   r |-> (forall a in the domain of R) r(a, a)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// means that `transitive` is a predicate on a relation that returns true if
 /// for all possible values accepted by r, the relation is true for the value
 /// relatively to itself.
@@ -50,52 +50,63 @@
 /// The symbol <=> means "is equivalent to".
 ///
 /// Properties
-/// =============================================
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ==========
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// transitive: R
 ///  r |-> (forall a, b, c in the domain of R) r(a, b) && r(b, c) implies r(a, c)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Example: "is ancestor" (if a is an ancestor of b, and b is an ancestor of c, a is an ancestor of c)
 ///
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// reflexive: R
 ///  r |-> (forall a in the domain of R) r(a, a)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Example: "is in the same place" (you're always in the same place than yourself)
 ///
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// symmetric: R
 ///  r |-> (forall a, b in domain the of R) r(a, b) implies r(b, a)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Example: "is brother" (if a is the brother of b, b is the brother of a)
 ///
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// equivalence: R
 ///  r |-> transitive(r) && reflexive(r) && symmetric(r)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Example: "has same parents"
 ///
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Property(Relation R0, Relation R1)
+///   requires(Domain(R0) = Domain(R1))
+/// are_complement: R0 x R1
+///  (r0, r1) |-> (forall a, b in the domain of R0) r0(a, b) != r1(a, b)
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// A relation r0 is the complement of another relation r1 iff for all pairs of
+/// element exactly one of these two relations hold at a time.
+///
+/// Example: "equal" and "different", "less than" and "greater or equal"
+///
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation R)
 /// totalOrdering: R
 ///  r |-> transitive(r)
 ///    && (forall a, b in the domain of R) exactly one of the following holds:
 ///      r(a, b), r(b, a) or a == b
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Note: The second condition (exactly one holds) is the trichotomy law.
 /// Example: "less on integers"
 ///
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Property(Relation<T> R, Relation<T> E)
 /// weakOrdering: R
 ///  r |-> transitive(r) && (exists e in E)equivalence(e) &&
 ///    && (forall a, b in the domain of R) exactly one of the following holds:
 ///      r(a, b), r(b, a) or e(a, b)
-/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Note: The second condition (exactly one holds) is the weak trichotomy law.
 ///
 /// Example: "is younger" with the equivalence "have same age"
@@ -187,6 +198,24 @@ namespace ka {
   template<typename R, typename T>
   bool is_equivalence(R r, std::initializer_list<T> values) {
     return is_equivalence(r, bounded_range(values));
+  }
+
+  /// Checks that the relations are complement of one another for all values in
+  /// the given range.
+  /// See the file comment for an explanation of what a "complement" means.
+  /// For this test to be exact, 'values' must contain all values in the domain
+  /// of R0.
+  /// Relation<T> R0, Relation<T> R1, ReadableForwardRange<T> Rng
+  template<typename R0, typename R1, typename Rng>
+  bool are_complement(R0 r0, R1 r1, Rng values) {
+    for (auto v0 = values; !is_empty(v0); pop(v0)) {
+      auto const& a = front(v0);
+      for (auto v1 = values; !is_empty(v1); pop(v1)) {
+        auto const& b = front(v1);
+        KA_TRUE_OR_RETURN_FALSE(r0(a, b) != r1(a, b));
+      }
+    }
+    return true;
   }
 
   /// Checks that the relation is weak trichotomic for all values in the given range.

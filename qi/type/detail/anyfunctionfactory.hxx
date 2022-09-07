@@ -7,6 +7,7 @@
 #ifndef _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_
 #define _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_
 
+#include <type_traits>
 #include <boost/mpl/for_each.hpp>
 #include <boost/mpl/transform_view.hpp>
 #include <boost/mpl/find_if.hpp>
@@ -32,10 +33,16 @@
 #include <boost/thread/mutex.hpp>
 #include <qi/atomic.hpp>
 #include <qi/anyvalue.hpp>
+#include <ka/macro.hpp>
 #include <ka/typetraits.hpp>
 
 namespace qi
 {
+
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4068, pragmas)
+KA_WARNING_DISABLE(, noexcept-type)
+
   namespace detail
   {
     /* General idea: code generated to make a function call taking a
@@ -74,8 +81,8 @@ namespace qi
     template<typename T>
     struct EqTypeBase<T, true>
     {
-      using type = typename boost::mpl::if_<typename boost::is_fundamental<T>::type, void*, T>::type;
-      using rType =  typename boost::mpl::if_<typename boost::is_fundamental<T>::type, void*, T>::type;
+      using type = typename boost::mpl::if_<typename std::is_fundamental<T>::type, void*, T>::type;
+      using rType =  typename boost::mpl::if_<typename std::is_fundamental<T>::type, void*, T>::type;
       using isReference = typename boost::is_reference<T>::type;
       static const int dbgTag = 1;
     };
@@ -716,6 +723,8 @@ namespace qi
     res.prependArgument((void*)(const void*)ptr);
     return res;
   }
+
+KA_WARNING_POP()
 
 }
 #endif  // _QITYPE_DETAIL_ANYFUNCTIONFACTORY_HXX_

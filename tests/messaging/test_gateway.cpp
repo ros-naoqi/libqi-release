@@ -43,8 +43,6 @@ namespace
 
   using qi::SessionPtr;
 
-  static const auto timeout = qi::MilliSeconds{ 1000 };
-
   class TestGateway : public ::testing::Test
   {
   public:
@@ -163,6 +161,7 @@ namespace
     qi::SessionPtr client = connectClientToGw();
     qi::SessionPtr serviceHost = connectClientToGw();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     qi::AnyObject service = client->service("my_service").value();
     int value = randomValue();
@@ -179,6 +178,7 @@ namespace
     qi::Promise<int> sync;
     qi::Future<int> fut = sync.future();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
 
     qi::AnyObject service = client->service("my_service").value();
@@ -203,18 +203,18 @@ namespace
     {
       qi::Promise<int> sync;
       serviceHost->serviceRegistered.connect(&serviceRegistered, _1, sync);
+      serviceHost->listen("tcp://localhost:0");
       serviceHost->registerService("my_service", makeBaseService());
       sync.future().wait();
     }
 
     qi::AnyObject service;
-    int value;
+    const int value = randomValue();
     {
       qi::Promise<int> sync;
       auto fut = sync.future();
-      ASSERT_EQ(qi::FutureState_FinishedWithValue, client->waitForService("my_service").wait(timeout));
+      ASSERT_TRUE(test::finishesWithValue(client->waitForService( "my_service" )));
       service = client->service("my_service").value();
-      value = randomValue();
       service.connect("echoSignal", boost::function<void (int)>(callsync_(sync, value)));
       service.post("echoSignal", value);
       fut.wait();
@@ -233,8 +233,9 @@ namespace
     qi::AnyObject service;
     ASSERT_ANY_THROW(service = client->service("my_service").value());
 
+    serviceHost->listen("tcp://localhost:0");
     const auto id = serviceHost->registerService("my_service", makeBaseService()).value();
-    ASSERT_EQ(qi::FutureState_FinishedWithValue, client->waitForService("my_service").wait(timeout));
+    ASSERT_TRUE(test::finishesWithValue(client->waitForService("my_service")));
     service = client->service("my_service").value();
     ASSERT_EQ(service.call<int>("echoValue", 44), 44);
     serviceHost->unregisterService(id);
@@ -247,12 +248,14 @@ namespace
     SessionPtr serviceHost = connectClientToGw();
     int value = randomValue();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     qi::AnyObject service = client->service("my_service").value();
 
     callsync_ callsync(qi::Promise<int>(), value, 1);
     qi::Future<int> fut = callsync.prom_.future();
     qi::SignalLink callsyncOnEchoLink = service.connect("echoSignal", [&](int value){ callsync(value); }).value();
+    ASSERT_TRUE(qi::isValidSignalLink(callsyncOnEchoLink));
     service.post("echoSignal", value);
     fut.wait();
     ASSERT_FALSE(fut.hasError());
@@ -268,6 +271,7 @@ namespace
     fut = witnessPromise.future();
     qi::SignalLink setValueOnEchoLink =
         service.connect("echoSignal", [&](int v){ witnessPromise.setValue(v); }).value();
+    ASSERT_TRUE(qi::isValidSignalLink(setValueOnEchoLink));
 
     service.post("echoSignal", value);
     fut.wait();
@@ -298,6 +302,7 @@ namespace
     qi::AnyObject serviceObjects[5] = {};
     int value = randomValue();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     for (int i = 0; i < 5; ++i)
       clients[i] = connectClientToGw();
@@ -321,6 +326,7 @@ namespace
     bool overflow = false;
     callsync_ callsync(prom, value, 5, &overflow);
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     for (int i = 0; i < 5; ++i)
       clients[i] = connectClientToGw();
@@ -357,7 +363,10 @@ namespace
 
     qi::Promise<void> sync;
     qi::SignalLink shl = serviceHost->disconnected.connect(setPromiseIfCountEquals, sync, std::ref(count), 2);
+    ASSERT_TRUE(qi::isValidSignalLink(shl));
     qi::SignalLink cl = client->disconnected.connect(setPromiseIfCountEquals, sync, std::ref(count), 2);
+    ASSERT_TRUE(qi::isValidSignalLink(cl));
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     service = client->service("my_service").value();
     int value = randomValue();
@@ -381,6 +390,7 @@ namespace
     const auto& firstEndpoint = gatewayEndpoints[0];
     serviceHost->connect(firstEndpoint);
     client->connect(firstEndpoint);
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     service = client->service("my_service").value();
     ASSERT_EQ(service.call<int>("echoValue", value), value);
@@ -397,10 +407,12 @@ namespace
     qi::Promise<int> sync;
     qi::Future<int> fut = sync.future();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     qi::AnyObject service = client->service("my_service").value();
     int value = randomValue();
     qi::SignalLink link = service.connect("echoSignal", boost::function<void (int)>(callsync_(sync, value))).value();
+    ASSERT_TRUE(qi::isValidSignalLink(link));
     service.post("echoSignal", value);
     fut.wait();
     ASSERT_FALSE(fut.hasError());
@@ -410,6 +422,7 @@ namespace
     ASSERT_FALSE(fut2.hasError());
 
     link = service.connect("echoSignal", boost::function<void (int)>(callsync_(sync, value))).value();
+    ASSERT_TRUE(qi::isValidSignalLink(link));
     service.post("echoSignal", value);
     fut.wait();
     ASSERT_FALSE(fut.hasError());
@@ -422,6 +435,7 @@ namespace
     qi::Promise<int> sync;
     qi::Future<int> fut = sync.future();
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", makeBaseService());
     qi::AnyObject service = client->service("my_service").value();
     qi::AnyObject danglingObject = service.call<qi::AnyObject>("getObject");
@@ -435,6 +449,7 @@ namespace
     // TestSignals
     value = randomValue();
     qi::SignalLink link = danglingObject.connect("echoSignal", boost::function<void (int)>(callsync_(sync, value))).value();
+    ASSERT_TRUE(qi::isValidSignalLink(link));
     danglingObject.post("echoSignal", value);
     fut.wait();
     ASSERT_FALSE(fut.hasError());
@@ -444,6 +459,7 @@ namespace
     ASSERT_FALSE(fut2.hasError());
     //qi::os::sleep(2);
     link = danglingObject.connect("echoSignal", boost::function<void (int)>(callsync_(sync, value))).value();
+    ASSERT_TRUE(qi::isValidSignalLink(link));
     danglingObject.post("echoSignal", value);
     fut.wait();
     ASSERT_FALSE(fut.hasError());
@@ -477,6 +493,7 @@ namespace
     qi::SessionPtr serviceHost = connectClientToGw();
     qi::Object<ObjectUserService> concreteService(new ObjectUserService);
 
+    serviceHost->listen("tcp://localhost:0");
     serviceHost->registerService("my_service", concreteService);
     qi::AnyObject service = client->service("my_service").value();
     qi::AnyObject clientHostedObject = makeBaseService();
@@ -515,6 +532,7 @@ namespace
 
     const auto serviceName = "my_service";
     qi::Object<ObjectUserService> concreteService(boost::make_shared<ObjectUserService>());
+    gwServer->listen("tcp://localhost:0");
     gwServer->registerService(serviceName, concreteService);
 
     qi::AnyObject serviceObject;
@@ -535,6 +553,7 @@ namespace
 
     const auto serviceName = "my_service";
     qi::Object<ObjectUserService> concreteService(boost::make_shared<ObjectUserService>());
+    gwServer->listen("tcp://localhost:0");
     gwServer->registerService(serviceName, concreteService);
 
     qi::AnyObject serviceObject;

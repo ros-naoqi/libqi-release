@@ -7,6 +7,7 @@
 #include <thread>
 #include <chrono>
 #include <boost/shared_ptr.hpp>
+#include <ka/macro.hpp>
 #include <ka/moveoncopy.hpp>
 #include <ka/utility.hpp>
 #include <ka/macroregular.hpp>
@@ -48,9 +49,10 @@ namespace mock
         fault,
         messageSize,
         shutdown,
-        unknown
+        socketCreationFailed,
+        unknown,
+        noMemory,
       } _value;
-      std::string _message;
       error_code_type(value_type c = success) : _value(c) {}
       explicit operator bool() const {return _value != success;}
       value_type value() const {return _value;}
@@ -69,11 +71,13 @@ namespace mock
         case fault: return "fault";
         case messageSize: return "messageSize";
         case shutdown: return "shutdown";
+        case socketCreationFailed: return "socketCreationFailed";
         case unknown: return "unknown";
+        case noMemory: return "noMemory";
         }
         throw std::runtime_error("error_code_type::message(): unknown code.");
       }
-      KA_GENERATE_FRIEND_REGULAR_OPS_2(error_code_type, _value, _message)
+      KA_GENERATE_FRIEND_REGULAR_OPS_1(error_code_type, _value)
     };
     struct io_service_type
     {
@@ -93,10 +97,15 @@ namespace mock
     };
     struct ssl_context_type
     {
-      enum class method {sslv23};
+      enum class method {tlsv12};
+      enum option {no_sslv2, no_sslv3, no_tlsv1, no_tlsv1_1};
+      friend option operator|(option a, option b) {
+        return option(static_cast<int>(a) | static_cast<int>(b));
+      }
       method m;
       ssl_context_type() = default;        // The 2 ctors are to avoid the
       ssl_context_type(method m) : m(m) {} // "not initialized" warning about m.
+      void set_options(option) {}
     };
     struct ssl_verify_mode_type
     {
@@ -198,7 +207,11 @@ namespace mock
       void listen(int, error_code_type&) {}
       void close(error_code_type&) {}
       static _anyAsyncAccepter async_accept;
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4068, pragmas)
+KA_WARNING_DISABLE(, missing-field-initializers)
       _endpoint local_endpoint(error_code_type&) const { return {}; }
+KA_WARNING_POP()
     };
     struct resolver_type
     {
@@ -290,13 +303,21 @@ namespace mock
     template<typename NetTransferHandler, typename NetSslSocket>
     static void async_read(NetSslSocket& s, _mutable_buffer_sequence b, NetTransferHandler h)
     {
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4068, pragmas)
+KA_WARNING_DISABLE(, undefined-var-template)
       SocketFunctions<NetSslSocket>::_async_read_socket(s, b, h);
+KA_WARNING_POP()
     }
 
     template<typename NetSslSocket, typename NetTransferHandler>
     static void async_write(NetSslSocket& s, const std::vector<_const_buffer_sequence>& b, NetTransferHandler h)
     {
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4068, pragmas)
+KA_WARNING_DISABLE(, undefined-var-template)
       SocketFunctions<NetSslSocket>::_async_write_socket(s, b, h);
+KA_WARNING_POP()
     }
 
     using _anyAsyncReaderNextLayer = std::function<void (ssl_socket_type::next_layer_type&, _mutable_buffer_sequence, _anyTransferHandler)>;
@@ -315,6 +336,24 @@ namespace mock
     static void async_write(ssl_socket_type::next_layer_type& s, const std::vector<_const_buffer_sequence>& b, NetTransferHandler h)
     {
       _async_write_next_layer(s, b, h);
+    }
+
+    static const char* clientCipherList()
+    {
+      return "";
+    }
+
+    static const char* serverCipherList()
+    {
+      return "";
+    }
+
+    static std::atomic_bool resultOfTrySetCipherListTls12AndBelow;
+
+    static bool trySetCipherListTls12AndBelow(
+      ssl_context_type&, const char* /* cipherList */)
+    {
+      return resultOfTrySetCipherListTls12AndBelow.load();
     }
   };
 
@@ -381,6 +420,18 @@ template<>
 inline ErrorCode<mock::Network> shutdown<ErrorCode<mock::Network>>()
 {
   return {ErrorCode<mock::Network>::shutdown};
+}
+
+template<>
+inline ErrorCode<mock::Network> socketCreationFailed<ErrorCode<mock::Network>>()
+{
+  return {ErrorCode<mock::Network>::socketCreationFailed};
+}
+
+template<>
+inline ErrorCode<mock::Network> noMemory<ErrorCode<mock::Network>>()
+{
+  return {ErrorCode<mock::Network>::noMemory};
 }
 
 }} // namespace qi::sock

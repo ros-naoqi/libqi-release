@@ -441,7 +441,7 @@ namespace ka {
 /// concept Range(R) =
 ///     Regular(R)
 ///  && is_empty: R -> bool
-///  && pop: R -> void
+///  && pop: R& -> void
 ///  && pop is not necessarily regular
 /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// In this basic concept, you can "iterate" through the range but not
@@ -492,6 +492,24 @@ namespace ka {
 ///  && (forall r in R where front(r) is defined) front(r) = x establishes front(r) == x
 /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 ///
+/// ## Linearizable
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// concept Linearizable(L) =
+///     Regular(L)
+///  && With InputIterator<T> I, Integral N:
+///       begin: L -> I
+///    && end: L -> I
+///    && size: L -> N
+///         l |-> end(l) - begin(l)
+///    && empty: L -> bool
+///         l |-> begin(l) == end(l)
+///    && []: L x N -> T
+///         (l, n) |-> src(begin(l) + n)
+///    && constant_time(empty)
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Range of iterators. Underlying values are not necessarily owned. Equality
+/// tests iterators themselves, not underlying values.
+///
 ///
 /// ## Empty
 /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -522,6 +540,81 @@ namespace ka {
 /// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 /// Typical models are: pointers, `std::shared_ptr`, `boost::shared_ptr`
 ///
+///
+/// ## Functor
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// concept Functor(T) =
+///     Regular(T<A>)
+///  && fmap: F x T<A> -> T<B>, where Function<B (A)> F
+///  && With `g ∘ f` denoting `compose(g, f)`,
+///          `fmap(h)` denoting partial function application of `fmap`,
+///          id_transfo_t id,
+///          `==` denoting function extensional equality (i.e. two functions are
+///          equal if for all inputs they have the same output):
+///       fmap(id) == id                   (preservation of identity)
+///    && fmap(g ∘ f) == fmap(g) ∘ fmap(f) (preservation of composition)
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// A functor is a projection of objects and morphisms (here resp., types
+/// and functions) that preserves identity and morphism composition (see
+/// contraints on `fmap` above).
+///
+/// The `Functor` concept implements the type projection through a template type
+/// (`T` above), and the function projection (also called sometimes 'lifting')
+/// through the `fmap` function.
+///
+/// Note: Projected functions are unary. See concept `FunctorApp` for n-ary
+/// functions.
+///
+/// The functor notion notably allows one to dissociate the work to apply to a
+/// value placed inside a data structure (the "what"), from how to actually
+/// apply it inside the data structure (the "how"). But beware that not all
+/// functor models are container-like, such as functions with a given domain, or
+/// futures.
+///
+/// Typical models are: std containers, std::optional, functions with a given
+/// domain, futures, etc.
+///
+///
+/// ## FunctorApp
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// concept FunctorApp(T) =
+///     Functor(T)
+///  && fmap: F x T<A> x ... -> T<Z>, where Function<Z (A x ...)> F
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// Functor that allows one to apply a n-ary function. The name is reminiscent
+/// of the notion of `Applicative` functor found in other languages.
+///
+/// Typical models are: non-key/value std containers (e.g. this includes
+/// `std::set` but excludes `std::map`), std::optional, futures, etc.
+///
+///
+/// ## ParseResult
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// concept ParseResult(R) =
+///      Functor(R)
+///   && With Regular A, InputIterator I:
+///        EmptyMutable(R<A>)
+///     && iter: R<A> -> I
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// A parse result contains an iterator and optionally a value.
+///
+///
+/// ## Parser
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// concept Parser(P) =
+///      Functor(P)
+///   && With Regular A, InputIterator I, ParseResult R:
+///        Function<R<A> (I, I)>(P<A>)
+///     && (forall pa in P<A>, b in I, e in I) With res = pa(b, e) in R<A>:
+///       readable_bounded_range(b, e) implies
+///            (iter(res) in [b, e]
+///         && ka::empty(res) implies iter(res) = b)
+/// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/// A parser is a function taking a range of symbols `[b, e)` as input and
+/// returning a parsing result. If parsing failed, the result is empty and its
+/// iterator `i` equals `b`. Otherwise, the result is non-empty, and `[b, i)`,
+/// with `i in [b, e]`, is the subrange successfully parsed.
+
 namespace concept { // To allow doc tools to extract this documentation.
 }
 } // namespace ka

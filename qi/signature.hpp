@@ -8,6 +8,7 @@
 #define _QI_SIGNATURE_HPP_
 
 #include <qi/api.hpp>
+#include <ka/macro.hpp>
 #include <string>
 #include <vector>
 #include <list>
@@ -15,10 +16,8 @@
 #include <sstream>
 #include <boost/shared_ptr.hpp>
 
-#ifdef _MSC_VER
-#  pragma warning( push )
-#  pragma warning( disable: 4251 )
-#endif
+KA_WARNING_PUSH()
+KA_WARNING_DISABLE(4251, )
 
 namespace qi {
 
@@ -153,8 +152,12 @@ namespace qi {
     friend QI_API bool operator==(const Signature &lhs, const Signature &rhs);
   };
 
+  inline std::ostream& operator<<(std::ostream& os, const Signature& s)
+  {
+    return os << s.toString();
+  }
 
-  QI_API inline bool operator!=(const Signature &lhs, const Signature &rhs)
+  inline bool operator!=(const Signature &lhs, const Signature &rhs)
   { return !(lhs == rhs); }
   QI_API bool operator==(const Signature &lhs, const Signature &rhs);
 
@@ -162,8 +165,6 @@ namespace qi {
 
 extern "C" QI_API char* signature_to_json(const char* sig);
 
-#ifdef _MSC_VER
-#  pragma warning( pop )
-#endif
+KA_WARNING_POP()
 
 #endif  // _QITYPE_SIGNATURE_HPP_
