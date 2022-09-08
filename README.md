@@ -1,3 +1,26 @@
+## naoqi_libqi (galactic) - 2.9.7-0
+
+The packages in the `naoqi_libqi` repository were released into the `galactic` distro by running `/usr/bin/bloom-release --rosdistro galactic --track galactic naoqi_libqi` on `Thu, 08 Sep 2022 21:47:55 -0000`
+
+The `naoqi_libqi` package was released.
+
+Version of package(s) in repository `naoqi_libqi`:
+
+- upstream repository: https://github.com/ros-naoqi/libqi.git
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `2.9.7--1`
+- new version: `2.9.7-0`
+
+Versions of tools used:
+
+- bloom version: `0.11.2`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.1`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
 ## naoqi_libqi (foxy) - 2.9.7-1
 
 The packages in the `naoqi_libqi` repository were released into the `foxy` distro by running `/usr/bin/bloom-release --rosdistro foxy --track foxy naoqi_libqi` on `Thu, 08 Sep 2022 21:32:40 -0000`
