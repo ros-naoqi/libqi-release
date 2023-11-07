@@ -1,0 +1,12 @@
+Source: ros-rolling-naoqi-libqi
+Section: misc
+Priority: optional
+Maintainer: Victor Paléologue <victor.paleologue@palaio.eu>
+Build-Depends: debhelper (>= 9.0.0), libboost-all-dev, libgmock-dev <!nocheck>, libssl-dev, ros-rolling-ament-cmake, ros-rolling-ros-workspace
+Homepage: http://doc.aldebaran.com/libqi
+Standards-Version: 3.9.2
+
+Package: ros-rolling-naoqi-libqi
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libssl-dev, ros-rolling-ros-workspace
+Description: Aldebaran's libqi: a core library for NAOqiOS development
