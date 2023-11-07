@@ -1,23 +1,94 @@
-# naoqi_libqi
+# ROS 2 port for libQi
 
-This fork is used to define the __naoqi_libqi__ ROS2 package, based on [__libqi__](https://github.com/aldebaran/libqi).
-
-libqi is a middle-ware framework that provides RPC, type-erasure,
+libQi is a C++ middleware that provides RPC, type-erasure,
 cross-language interoperability, OS abstractions, logging facilities,
 asynchronous task management, dynamic module loading.
 
 ## Compilation
-To compile __naoqi_libqi__, clone this repository in a ROS2 workspace and use the `colcon build` command.
 
-Please note that you should checkout the branch corresponding to your ROS distro (eg. `galactic-devel` for Galactic, `foxy-devel` for Foxy, etc...)
+Clone this project in your ROS 2 workspace (under `src/`),
+and run `colcon build`.
 
-## Status 
+## C++ Example
 
-The project can currently be successfully built for `Galactic (focal)` and `Foxy (focal)` from source. Please refer to the [build workflow](https://github.com/ros-naoqi/libqi/actions) for more information. The package binary status column details wether the package has been released for a specific distro.
+The following example shows some features of the framework, please refer to the
+documentation for further details.
 
+```cpp
+#include <boost/make_shared.hpp>
+#include <qi/log.hpp>
+#include <qi/applicationsession.hpp>
+#include <qi/anyobject.hpp>
 
-ROS Distro | Binary Status | Source Status | Github Build
-|-------------------|-------------------|-------------------|-------------------|
-Humble | | | [![ros2-humble-jammy](https://github.com/ros-naoqi/libqi/actions/workflows/humble_jammy.yml/badge.svg)](https://github.com/ros-naoqi/libqi/actions/workflows/humble_jammy.yml)
-Galactic | [![Build Status](https://build.ros2.org/job/Gbin_uF64__naoqi_libqi__ubuntu_focal_amd64__binary/badge/icon)](https://build.ros2.org/job/Gbin_uF64__naoqi_libqi__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Gsrc_uF__naoqi_libqi__ubuntu_focal__source/badge/icon)](https://build.ros2.org/job/Gsrc_uF__naoqi_libqi__ubuntu_focal__source/) | [![ros2-galactic-focal](https://github.com/ros-naoqi/libqi/actions/workflows/galactic_focal.yml/badge.svg)](https://github.com/ros-naoqi/libqi/actions/workflows/galactic_focal.yml)
-Foxy | [![Build Status](https://build.ros2.org/job/Fbin_uF64__naoqi_libqi__ubuntu_focal_amd64__binary/badge/icon)](https://build.ros2.org/job/Fbin_uF64__naoqi_libqi__ubuntu_focal_amd64__binary/) | [![Build Status](https://build.ros2.org/job/Fsrc_uF__naoqi_libqi__ubuntu_focal__source/badge/icon)](https://build.ros2.org/job/Fsrc_uF__naoqi_libqi__ubuntu_focal__source/) | [![ros2-foxy-focal](https://github.com/ros-naoqi/libqi/actions/workflows/foxy_focal.yml/badge.svg)](https://github.com/ros-naoqi/libqi/actions/workflows/foxy_focal.yml)
+qiLogCategory("myapplication");
+
+class MyService
+{
+public:
+  void myFunction(int val) {
+    qiLogInfo() << "myFunction called with " << val;
+  }
+  qi::Signal<int> eventTriggered;
+  qi::Property<float> angle;
+};
+
+// register the service to the type-system
+QI_REGISTER_OBJECT(MyService, myFunction, eventTriggered, angle);
+
+void print()
+{
+  qiLogInfo() << "print was called";
+}
+
+int main(int argc, char* argv[])
+{
+  qi::ApplicationSession app(argc, argv);
+
+  // connect the session included in the app
+  app.start();
+
+  qi::SessionPtr session = app.session();
+
+  // register our service
+  session->registerService("MyService", boost::make_shared<MyService>());
+
+  // get our service through the middleware
+  qi::AnyObject obj = session->service("MyService").value();
+
+  // call myFunction
+  obj.call<void>("myFunction", 42);
+
+  // call print in 2 seconds
+  qi::async(&print, qi::Seconds(2));
+
+  // block until ctrl-c
+  app.run();
+}
+```
+
+You can then run the program with:
+
+```bash
+./myservice --qi-standalone # for a standalone server
+./myservice --qi-url tcp://somemachine:9559 # to connect to another galaxy of sessions
+```
+
+## Links
+
+Upstream repository:
+http://github.com/aldebaran/libqi
+
+Documentation:
+http://doc.aldebaran.com/libqi/
+
+IRC Channel:
+#qi on freenode.
+
+Upstream Maintainers:
+
+- Joël Lamotte <jlamotte@aldebaran.com>
+- Jérémy Monnon <jmonnon@aldebaran.com>
+- Matthieu Paindavoine <matthieu.paindavoine@softbankrobotics.com>
+- Vincent Palancher <vincent.palancher@external.softbankrobotics.com>
+
+See the [`package.xml`](package.xml) for the ROS 2 maintainers.

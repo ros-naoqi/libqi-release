@@ -13,6 +13,8 @@
 
 qiLogCategory("Test.Task");
 
+namespace ph = boost::placeholders;
+
 class TestTask: public ::testing::Test
 {
 public:
@@ -38,7 +40,7 @@ protected:
   void SetUp()
   {
     p.server()->registerService("taskGen", taskGenService);
-    taskGenClient = p.client()->service("taskGen");
+    taskGenClient = p.client()->service("taskGen").value();
     ASSERT_TRUE(taskGenClient);
     taskGenProxy = qi::Object<TaskGenerator>(taskGenClient);
   }
@@ -126,7 +128,7 @@ TEST_F(TestTask, Signals)
   ASSERT_TRUE(task);
   qi::Promise<std::string> p;
   task->onParamChanged.connect(
-    boost::bind(&qi::Promise<std::string>::setValue, p, _1));
+    boost::bind(&qi::Promise<std::string>::setValue, p, ph::_1));
   task->setParam("foo");
   ASSERT_EQ("foo", p.future().value());
   std::vector<qi::Object<Task> > tasks = taskGenProxy->tasks();
@@ -171,7 +173,7 @@ TEST_F(TestTask, ManyManyTasks)
     Context c;
     c.session = new qi::Session();
     c.session->connect(p.serviceDirectoryEndpoints()[0]);
-    c.taskGenClient = c.session->service("taskGen");
+    c.taskGenClient = c.session->service("taskGen").value();
     c.taskGenProxy = qi::Object<TaskGenerator>(taskGenClient);
     clients.push_back(c);
   }
@@ -186,7 +188,7 @@ TEST_F(TestTask, ManyManyTasks)
         boost::lexical_cast<std::string>(i*NTASKS + j));
       clients[i].tasks.push_back(task);
       task->onStep.connect(
-        boost::bind(on_step, _1, boost::ref(counter)));
+        boost::bind(on_step, ph::_1, boost::ref(counter)));
     }
   }
   ASSERT_EQ(NCLIENTS*NTASKS, taskGenProxy->taskCount());

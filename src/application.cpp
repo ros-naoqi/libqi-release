@@ -33,6 +33,7 @@
 qiLogCategory("qi.Application");
 
 namespace bfs = boost::filesystem;
+namespace ph = boost::placeholders;
 
 static std::string _sdkPath;
 static boost::program_options::options_description _options;
@@ -55,7 +56,7 @@ static void parseArguments(int argc, char* argv[])
 
 namespace qi {
   static int         globalArgc = -1;
-  static std::vector<char*> globalArgv;
+  static char**      globalArgv = nullptr;
   static bool        globalInitialized = false;
   static bool        globalTerminated = false;
 
@@ -103,7 +104,7 @@ namespace qi {
       case 1:
         qiLogVerbose() << "Sending the stop command...";
         //register the signal again to call exit the next time if stop did not succeed
-        Application::atSignal(boost::bind<void>(&stop_handler, _1), signal_number);
+        Application::atSignal(boost::bind<void>(&stop_handler, ph::_1), signal_number);
         // Stop might immediately trigger application destruction, so it has
         // to go after atSignal.
         Application::stop();
@@ -180,7 +181,7 @@ namespace qi {
     globalIoService.emplace(ioServiceConcurrencyHint);
 
     globalArgc = argc;
-    globalArgv = std::vector<char*>(argv, argv + argc);
+    globalArgv = argv;
     std::vector<std::string>& args = lazyGet(globalArguments);
     args.clear();
     for (int i=0; i<argc; ++i)
@@ -232,7 +233,7 @@ namespace qi {
         /* Set arguments to what was not used */
         ::qi::Application::setArguments(args);
         argc = Application::argc();
-        argv = globalArgv.data();
+        argv = globalArgv;
       }
       catch (po::error& e)
       {
@@ -312,12 +313,12 @@ namespace qi {
     // run is called, so we catch sigint/sigterm, the default
     // implementation call Application::stop that
     // will make this loop exit.
-    atSignal.emplace_back(boost::bind(stop_handler, _1), SIGTERM);
-    atSignal.emplace_back(boost::bind(stop_handler, _1), SIGINT);
+    atSignal.emplace_back(boost::bind(stop_handler, ph::_1), SIGTERM);
+    atSignal.emplace_back(boost::bind(stop_handler, ph::_1), SIGINT);
 
     for(const auto& func: atSignal)
       signalSets.emplace(signalSets.end(), *globalIoService, func.second)->async_wait(
-                  boost::bind(signal_handler, _1, _2, std::move(func.first)));
+                  boost::bind(signal_handler, ph::_1, ph::_2, std::move(func.first)));
 
     // Call every function registered as "atRun"
     for(auto& function: lazyGet(globalAtRun))
@@ -364,7 +365,7 @@ namespace qi {
   {
     globalArgc = static_cast<int>(args.size());
     lazyGet(globalArguments) = args;
-    globalArgv.resize(args.size() + 1);
+    globalArgv = new char*[args.size() + 1];
     for (unsigned i=0; i<args.size(); ++i)
       globalArgv[i] = qi::os::strdup(args[i].c_str());
     globalArgv[args.size()] = 0;
@@ -373,7 +374,7 @@ namespace qi {
   void Application::setArguments(int argc, char** argv)
   {
     globalArgc = argc;
-    globalArgv = std::vector<char*>(argv, argv + argc);
+    globalArgv = argv;
     std::vector<std::string>& args = lazyGet(globalArguments);
     args.resize(argc);
     for (int i=0; i<argc; ++i)
@@ -397,7 +398,7 @@ namespace qi {
 
   const char** Application::argv()
   {
-    return const_cast<const char**>(globalArgv.data());
+    return (const char**)globalArgv;
   }
 
   bool Application::atEnter(std::function<void()> func)

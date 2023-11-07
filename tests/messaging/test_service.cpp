@@ -23,6 +23,8 @@
 
 qiLogCategory("test");
 
+namespace ph = boost::placeholders;
+
 static const qi::MilliSeconds usualTimeout{200};
 
 static std::string reply(const std::string &msg)
@@ -69,14 +71,14 @@ TEST(QiService, RemoteObjectCacheServerClose)
 
   p.server()->registerService("serviceTest", obj);
   qi::Future<qi::AnyObject> fut;
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   EXPECT_EQ(std::string("titi"), fut.value().call<std::string>("reply", "titi"));
 
   p.server()->close();
 
-  PERSIST_ASSERT(fut = p.client()->service("serviceTest"), fut.hasError(), std::chrono::milliseconds{1000});
+  PERSIST_ASSERT(fut = p.client()->service("serviceTest").value(), fut.hasError(), std::chrono::milliseconds{1000});
 }
 
 
@@ -90,14 +92,14 @@ TEST(QiService, RemoteObjectCacheUnregister)
 
   unsigned int idx = p.server()->registerService("serviceTest", obj).value();
   qi::Future<qi::AnyObject> fut;
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   EXPECT_EQ(std::string("titi"), fut.value().call<std::string>("reply", "titi"));
 
   p.server()->unregisterService(idx);
 
-  PERSIST_ASSERT(fut = p.client()->service("serviceTest"), fut.hasError(), std::chrono::milliseconds{1000});
+  PERSIST_ASSERT(fut = p.client()->service("serviceTest").value(), fut.hasError(), std::chrono::milliseconds{1000});
 
 }
 
@@ -112,20 +114,20 @@ TEST(QiService, RemoteObjectCacheABAUnregister)
 
   unsigned int idx = p.server()->registerService("serviceTest", obj).value();
   qi::Future<qi::AnyObject> fut;
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   EXPECT_EQ(std::string("titi"), fut.value().call<std::string>("reply", "titi"));
 
   p.server()->unregisterService(idx);
 
-  PERSIST_ASSERT(fut = p.client()->service("serviceTest"), fut.hasError(), std::chrono::milliseconds{1000});
+  PERSIST_ASSERT(fut = p.client()->service("serviceTest").value(), fut.hasError(), std::chrono::milliseconds{1000});
 
   unsigned int idx2 = p.server()->registerService("serviceTest", obj).value();
   //new service should not have a previoulsy registered ID
   EXPECT_NE(idx2, idx);
 
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   qi::Future<std::string> fret = fut.value().async<std::string>("reply", "titi");
@@ -149,14 +151,14 @@ TEST(QiService, RemoteObjectCacheABANewServer)
 
   unsigned int idx = p.server()->registerService("serviceTest", obj).value();
   qi::Future<qi::AnyObject> fut;
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   EXPECT_EQ(std::string("titi"), fut.value().call<std::string>("reply", "titi"));
 
   p.server()->close();
 
-  PERSIST_ASSERT(fut = p.client()->service("serviceTest"), fut.hasError(), std::chrono::milliseconds{1000});
+  PERSIST_ASSERT(fut = p.client()->service("serviceTest").value(), fut.hasError(), std::chrono::milliseconds{1000});
 
   qi::Future<void> f = ses->connect(p.client()->url().str());
   f.wait(8000);
@@ -166,7 +168,7 @@ TEST(QiService, RemoteObjectCacheABANewServer)
   //new service should not have a previoulsy registered ID
   EXPECT_NE(idx2, idx);
 
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   qi::Future<std::string> fret = fut.value().async<std::string>("reply", "titi");
@@ -189,7 +191,7 @@ TEST(QiService, RemoteObjectNackTransactionWhenServerClosed)
 
   p.server()->registerService("serviceTest", obj);
   qi::Future<qi::AnyObject> fut;
-  fut = p.client()->service("serviceTest");
+  fut = p.client()->service("serviceTest").value();
   EXPECT_FALSE(fut.hasError());
 
   qi::Future<void> fret = fut.value().async<void>("sleep", qi::Seconds{2});
@@ -246,7 +248,7 @@ TEST(QiService, ClassProperty)
 
   // test event
   qi::Atomic<int> hit{0};
-  boost::function<void(int)> incHit = boost::bind(&inc, &hit,_1);
+  boost::function<void(int)> incHit = boost::bind(&inc, &hit, ph::_1);
   f.prop.connect(incHit);
   obj.connect("offset", incHit);
   client.connect("offset", incHit);
@@ -273,7 +275,7 @@ TEST(QiService, GenericProperty)
   unsigned int propId = builder.advertiseProperty<int>("offset");
   qi::PropertyBase* prop;
   builder.advertiseMethod("ping",
-    (boost::function<int (int)>)boost::bind(&prop_ping, boost::ref(prop), _1));
+    (boost::function<int (int)>)boost::bind(&prop_ping, boost::ref(prop), ph::_1));
   qi::AnyObject obj = builder.object();
   prop = dobj->property(propId);
   prop->setValue(0);
@@ -290,7 +292,7 @@ TEST(QiService, GenericProperty)
 
   // test event
   qi::Atomic<int> hit;
-  boost::function<void(int)> incHit = boost::bind(&inc, &hit, _1);
+  boost::function<void(int)> incHit = boost::bind(&inc, &hit, ph::_1);
   qiLogVerbose() << "Connecting to signal";
   ASSERT_NE(qi::SignalBase::invalidSignalLink, prop->signal()->connect(incHit));
   ASSERT_NE(qi::SignalBase::invalidSignalLink, obj.connect("offset", incHit).value());

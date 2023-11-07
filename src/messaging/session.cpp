@@ -27,6 +27,8 @@ KA_WARNING_DISABLE(4355, )
 
 qiLogCategory("qimessaging.session");
 
+namespace ph = boost::placeholders;
+
 namespace qi {
   SessionPrivate::SessionPrivate(qi::Session* session,
                                  bool enforceAuth,
@@ -45,7 +47,7 @@ namespace qi {
     session->serviceUnregistered.setCallType(qi::MetaCallType_Queued);
 
     _sdClient.connected.connect(session->connected);
-    _sdClient.disconnected.connect(&SessionPrivate::onServiceDirectoryClientDisconnected, this, _1);
+    _sdClient.disconnected.connect(&SessionPrivate::onServiceDirectoryClientDisconnected, this, ph::_1);
     _sdClient.disconnected.connect(session->disconnected);
     _sdClient.serviceAdded.connect(session->serviceRegistered);
     _sdClient.serviceRemoved.connect(session->serviceUnregistered);
@@ -456,31 +458,31 @@ namespace qi {
     return registerService(rename, retval.to<qi::AnyObject>());
   }
 
-  qi::Future<AnyValue> Session::_callModule(const std::string &moduleFunction,
+  qi::Future<AnyValue> Session::_callModule(const std::string &moduleName,
       const AnyReferenceVector& args,
       qi::MetaCallType metacallType)
   {
-    size_t separatorPos = moduleFunction.find_last_of(".");
-    std::string moduleName = moduleFunction.substr(0, separatorPos);
-    std::string functionName = moduleFunction.substr(separatorPos + 1);
+    size_t separatorPos = moduleName.find_last_of(".");
+    std::string package = moduleName.substr(0, separatorPos);
+    std::string function = moduleName.substr(separatorPos + 1);
 
-    qi::AnyModule module = qi::import(moduleName);
+    qi::AnyModule p = qi::import(package);
 
     AnyReferenceVector fullargs;
     SessionPtr thisptr = shared_from_this();
     fullargs.push_back(AnyReference::from(thisptr));
     fullargs.insert(fullargs.end(), args.begin(), args.end());
 
-    int id = module.metaObject().findMethod(functionName, fullargs);
+    int id = p.metaObject().findMethod(function, fullargs);
     qi::Future<AnyReference> ret;
     if (id > 0)
-      ret = module.metaCall(functionName, fullargs, metacallType);
+      ret = p.metaCall(function, fullargs, metacallType);
     else
-      ret = module.metaCall(functionName, args, metacallType);
+      ret = p.metaCall(function, args, metacallType);
 
     qi::Promise<AnyValue> promise;
     promise.setOnCancel([ret](qi::Promise<AnyValue>&) mutable { ret.cancel(); });
-    ret.then(qi::bind(qi::detail::futureAdapter<qi::AnyValue>, _1, promise));
+    ret.then(qi::bind(qi::detail::futureAdapter<qi::AnyValue>, ph::_1, promise));
     return promise.future();
   }
 
