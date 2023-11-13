@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>naoqi_libqi</name>
-  <version>3.0.1</version>
+  <version>3.0.2</version>
   <description>Aldebaran's libqi: a core library for NAOqiOS development</description>
 
   <maintainer email="victor.paleologue@palaio.eu">Victor Paléologue</maintainer>
@@ -16,8 +16,7 @@
 
   <depend>boost</depend>
   <depend>libssl-dev</depend>
-  <test_depend>libgmock-dev</test_depend>
-
+  <test_depend>ament_cmake_gtest</test_depend>
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <export>
