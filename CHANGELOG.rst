@@ -2,6 +2,11 @@
 Changelog for package naoqi_libqi
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+3.0.2 (2023-11-13)
+------------------
+* ROS-compatible automated test
+* Contributors: Victor Paléologue
+
 3.0.1 (2023-11-09)
 ------------------
 * Rename license file
