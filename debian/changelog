@@ -1,0 +1,40 @@
+ros-rolling-naoqi-libqi (3.0.3-1trixie) trixie; urgency=high
+
+  * Update c++ to 14 for gtest compatability
+  * Support for Jazzy
+  * Update badges
+  * Contributors: Chris Birmingham, Victor Paléologue
+
+ -- "Victor Paléologue" <victor.paleologue@palaio.eu>  Thu, 19 Jun 2025 00:00:00 -0000
+
+ros-rolling-naoqi-libqi (3.0.2-1trixie) trixie; urgency=high
+
+  * ROS-compatible automated test
+  * Contributors: Victor Paléologue
+
+ -- "Victor Paléologue" <victor.paleologue@palaio.eu>  Mon, 13 Nov 2023 00:00:00 -0000
+
+ros-rolling-naoqi-libqi (3.0.1-1trixie) trixie; urgency=high
+
+  * Rename license file
+  * Contributors: Victor Paléologue
+
+ -- "Victor Paléologue" <victor.paleologue@palaio.eu>  Thu, 09 Nov 2023 00:00:00 -0000
+
+ros-rolling-naoqi-libqi (3.0.0-1trixie) trixie; urgency=high
+
+  * Add iron workflow for CI
+  * Restore GitHub workflows
+  * Contributors: Victor Paléologue
+  * Update README
+  * Avoid boost bind global placeholders
+    Finally, at last.
+  * Use .value() when getting a service
+  * Fix usage of boost::asio for 1.74
+  * Use explicit placeholders
+  * Port to ROS 2 restarted from version qi-framework-v1.8.7
+  * Contributors: Victor Paléologue
+
+ -- "Victor Paléologue" <victor.paleologue@palaio.eu>  Tue, 07 Nov 2023 00:00:00 -0000
+
+
