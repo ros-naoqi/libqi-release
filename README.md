@@ -1,3 +1,26 @@
+## naoqi_libqi (rolling) - 3.0.3-1
+
+The packages in the `naoqi_libqi` repository were released into the `rolling` distro by running `/root/Code/Palaio/naoqi-ros2-control/bloom-venv/bin/bloom-release -y --no-web --no-pull-request --override-release-repository-url https://github.com/ros-naoqi/libqi-release.git -r rolling -t rolling naoqi_libqi` on `Mon, 22 Jun 2026 09:32:36 -0000`
+
+The `naoqi_libqi` package was released.
+
+Version of package(s) in repository `naoqi_libqi`:
+
+- upstream repository: https://github.com/ros-naoqi/libqi.git
+- release repository: unknown
+- rosdistro version: `null`
+- old version: `null`
+- new version: `3.0.3-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.3`
+- catkin_pkg version: `1.1.0`
+- rosdep version: `0.26.0`
+- rosdistro version: `1.0.1`
+- vcstools version: `0.1.42`
+
+
 ## naoqi_libqi (kilted) - 3.0.3-1
 
 The packages in the `naoqi_libqi` repository were released into the `kilted` distro by running `/root/Code/Palaio/naoqi-ros2-control/bloom-venv/bin/bloom-release -y --no-web --no-pull-request --override-release-repository-url https://github.com/ros-naoqi/libqi-release.git -r kilted -t kilted naoqi_libqi` on `Mon, 22 Jun 2026 09:31:38 -0000`
