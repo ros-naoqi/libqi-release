@@ -2,6 +2,13 @@
 Changelog for package naoqi_libqi
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+3.0.3 (2025-06-19)
+------------------
+* Update c++ to 14 for gtest compatability
+* Support for Jazzy
+* Update badges
+* Contributors: Chris Birmingham, Victor Paléologue
+
 3.0.2 (2023-11-13)
 ------------------
 * ROS-compatible automated test
