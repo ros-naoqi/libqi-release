@@ -1,0 +1,12 @@
+Source: ros-kilted-naoqi-libqi
+Section: misc
+Priority: optional
+Maintainer: "Victor Paléologue" <victor.paleologue@palaio.eu>
+Build-Depends: debhelper (>= 9.0.0), libboost-all-dev, libssl-dev, ros-kilted-ament-cmake, ros-kilted-ament-cmake-gtest <!nocheck>, ros-kilted-ros-workspace
+Homepage: http://doc.aldebaran.com/libqi
+Standards-Version: 3.9.2
+
+Package: ros-kilted-naoqi-libqi
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libboost-all-dev, libssl-dev, ros-kilted-ros-workspace
+Description: Aldebaran's libqi: a core library for NAOqiOS development
