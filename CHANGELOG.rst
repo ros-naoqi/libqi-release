@@ -2,6 +2,23 @@
 Changelog for package naoqi_libqi
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+3.0.3 (2025-06-19)
+------------------
+* Update c++ to 14 for gtest compatability
+* Support for Jazzy
+* Update badges
+* Contributors: Chris Birmingham, Victor Paléologue
+
+3.0.2 (2023-11-13)
+------------------
+* ROS-compatible automated test
+* Contributors: Victor Paléologue
+
+3.0.1 (2023-11-09)
+------------------
+* Rename license file
+* Contributors: Victor Paléologue
+
 3.0.0 (2023-11-07)
 ------------------
 * Add `iron` workflow for CI
@@ -14,3 +31,4 @@ Changelog for package naoqi_libqi
 * Fix usage of `boost::asio` for 1.74
 * Use explicit placeholders
 * Port to ROS 2 restarted from version qi-framework-v1.8.7
+* Contributors: Victor Paléologue
